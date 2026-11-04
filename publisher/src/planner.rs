@@ -14,7 +14,7 @@ use bytes::Bytes;
 use desearch::feeds::{Feed, BULK, CHANGES};
 use desearch::r2::{self, Bucket, PARQUET};
 use desearch::time::utc_day;
-use futures::{stream, FutureExt, StreamExt};
+use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
@@ -105,6 +105,10 @@ const ROOM_SLOW: Duration = Duration::from_secs(2);
 /// Waits before asking again after a failed room question, before it is left for `ROOM_RETRY`.
 const ROOM_TRIES: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(2)];
 const FILES_PER_PASS: usize = 64;
+/// Change files this large or larger are fetched in ranges of `RANGE_BYTES`, `RANGES_PER_FILE` at once.
+const RANGED_FROM_BYTES: u64 = 16 << 20;
+const RANGE_BYTES: u64 = 8 << 20;
+const RANGES_PER_FILE: usize = 8;
 /// Set when no page waits without a change file to plan it from.
 const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
 const UNWAIT_BATCH: i64 = 100_000;
@@ -3255,13 +3259,29 @@ impl<T> std::future::Future for Ahead<T> {
 type Fetched = Result<std::result::Result<Vec<ChangeRow>, Unread>>;
 
 /// Change file `seq`'s rows, fetched and decoded.
+/// A change file, a large one in ranges fetched at once, as one GET of it streams many times slower than several.
+async fn get_whole(pages: &Bucket, key: &str) -> Result<Bytes, r2::Error> {
+    let Some(head) = pages.head(key).await? else { return Err(r2::Error::Missing) };
+    if head.size < RANGED_FROM_BYTES {
+        return pages.get(key).await;
+    }
+    let etag = Some(head.etag.as_str()).filter(|etag| !etag.is_empty());
+    let ranges = (0..head.size).step_by(RANGE_BYTES as usize).map(|start| start..(start + RANGE_BYTES).min(head.size));
+    let parts: Vec<Bytes> = stream::iter(ranges).map(|range| pages.get_range(key, range, etag)).buffered(RANGES_PER_FILE).try_collect().await?;
+    let mut whole = bytes::BytesMut::with_capacity(head.size as usize);
+    for part in parts {
+        whole.extend_from_slice(&part);
+    }
+    Ok(whole.freeze())
+}
+
 async fn fetch(pages: Bucket, seq: i64) -> Fetched {
     let key = match change_key(&pages, seq).await {
         Ok(Some(key)) => key,
         Ok(None) => return Ok(Err(Unread::NotNumbered)),
         Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
     };
-    match pages.get(&key).await {
+    match get_whole(&pages, &key).await {
         Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
             Ok(rows) => Ok(Ok(rows)),
             Err(error) => Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
@@ -3545,6 +3565,24 @@ mod tests {
     }
 
     /// Holds the state at `PLANNER_HOLD_STATE` for a minute, as a planner still stopping would; run as its own process by the test below.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_change_file_is_read_in_ranges_and_a_small_one_whole() {
+        let dir = std::env::temp_dir().join(format!("planner-ranges-{}", uuid::Uuid::new_v4().simple()));
+        let stub = desearch::stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+        let credentials = r2::Credentials { access_key: "test".into(), secret_key: "test".into(), region: "auto".into() };
+        let pages = Bucket::new(r2::client().unwrap(), &format!("http://{}", stub.addr), "desearch-pages", "", credentials, Default::default()).unwrap();
+        let large: Vec<u8> = (0..20u64 << 20).map(|n| (n.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 56) as u8).collect();
+        pages.put("changes/large.parquet", Bytes::from(large.clone()), PARQUET, None).await.unwrap();
+        pages.put("changes/small.parquet", Bytes::from_static(b"small"), PARQUET, None).await.unwrap();
+        let before = stub.state.count("GET");
+        assert_eq!(get_whole(&pages, "changes/large.parquet").await.unwrap(), large);
+        assert_eq!(stub.state.count("GET") - before, 3, "three ranges of 8 MB");
+        assert_eq!(&get_whole(&pages, "changes/small.parquet").await.unwrap()[..], b"small");
+        assert_eq!(stub.state.count("GET") - before, 4, "a small file in one GET");
+        assert!(matches!(get_whole(&pages, "changes/gone.parquet").await, Err(r2::Error::Missing)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_restarted_budget_goes_on_from_what_it_banked_and_refills_for_its_downtime_up_to_its_cap() {
         let now = now_us() as f64 / 1e6;
