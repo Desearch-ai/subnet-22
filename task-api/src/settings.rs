@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 use crate::budgets::{CRAWL, EMBED};
 use crate::embedding::{self, DESEARCH_4B_V1};
 use crate::queues::ACTIVE_S;
+use crate::registry::MinStake;
 use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
 use crate::rules;
 use crate::sampling::{CHECKS_PER_HOUR, EMBED_CHECKS_PER_HOUR, EMBED_SHARE, SHARE};
@@ -181,6 +182,9 @@ pub struct Settings {
     pub pages_prefix: String,
     pub pages_store: Option<PagesStore>,
     pub registry: RegistryMode,
+    /// TAO a permit needs staked behind it to vote in chain mode, in all and in alpha: mainnet's by default, lower on a testnet.
+    pub validator_min_stake: f64,
+    pub validator_min_alpha: f64,
     pub seeds: SeedsMode,
     pub admin_hotkeys: Vec<String>,
     pub admin_uris: String,
@@ -289,6 +293,8 @@ impl Settings {
             "storage_witness_quorum": self.storage_witness_quorum,
             "storage_witness_window": self.storage_witness_window,
             "registry": registry,
+            "validator_min_stake": self.validator_min_stake,
+            "validator_min_alpha": self.validator_min_alpha,
             "seeds": match self.seeds { SeedsMode::Chain { .. } => "chain", SeedsMode::Local { .. } => "local" },
             "block_seconds": match self.seeds { SeedsMode::Chain { .. } => crate::seeds::BLOCK_SECONDS, SeedsMode::Local { block_seconds, .. } => block_seconds },
             "anchored": self.anchor.is_some(),
@@ -437,6 +443,8 @@ impl Settings {
             pages_prefix: text("CF_R2_PAGES_PREFIX", ""),
             pages_store,
             registry,
+            validator_min_stake: number("TASK_API_VALIDATOR_MIN_STAKE", MinStake::default().total)?,
+            validator_min_alpha: number("TASK_API_VALIDATOR_MIN_ALPHA", MinStake::default().alpha)?,
             seeds,
             admin_hotkeys: listed(&text("TASK_API_ADMIN_HOTKEYS", "")),
             admin_uris: text("TASK_API_ADMIN_URIS", ""),
@@ -570,6 +578,8 @@ impl Settings {
             pages_prefix,
             pages_store,
             registry,
+            validator_min_stake,
+            validator_min_alpha,
             seeds,
             admin_hotkeys,
             admin_uris,
@@ -685,6 +695,8 @@ impl Settings {
             ("PAGES_S3_REGION", json!(pages_region)),
             ("TASK_API_REGISTRY", json!(registry_mode)),
             ("TASK_API_NETUID", json!(netuid)),
+            ("TASK_API_VALIDATOR_MIN_STAKE", json!(validator_min_stake)),
+            ("TASK_API_VALIDATOR_MIN_ALPHA", json!(validator_min_alpha)),
             // Secret URIs: the addresses they make, never the URIs.
             ("TASK_API_VALIDATOR_URIS", json!(validator_uris)),
             ("TASK_API_SEEDS", json!(seeds_mode)),

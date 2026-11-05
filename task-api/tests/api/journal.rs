@@ -2,10 +2,11 @@
 //! an altered, dropped, forked or made-up entry shows.
 
 use serde_json::{json, Value};
+use task_api::chain::Neuron;
 use task_api::journal::{self, Break};
 use task_api::replay::{check_anchor, replay_dir, Replay, FRAUD};
-use task_api::settings::AnchorSettings;
-use task_api::{lifecycle, snapshot};
+use task_api::settings::{AnchorSettings, RegistryMode};
+use task_api::{lifecycle, registry, snapshot};
 
 use crate::harness::{judged, objective_fail, parquet, task_id, urls, Client, Harness};
 
@@ -507,4 +508,55 @@ async fn with_anchoring_on_a_round_is_revealed_only_after_an_anchor_before_its_s
     });
     let (replay, _) = replayed(&h, &rerolled);
     assert!(replay.fraud().any(|d| d.kind == "recommit"), "{:?}", replay.divergences);
+}
+
+#[tokio::test]
+async fn a_testnet_log_replays_who_may_vote_under_the_minimum_stake_it_logged() {
+    let fake = crate::fakechain::FakeChain::start(1_000, 12.0).await;
+    let h = Harness::with(|s| {
+        s.registry = RegistryMode::Chain { netuid: 22, network: fake.url.clone() };
+        (s.validator_min_stake, s.validator_min_alpha) = (100.0, 1.0);
+    })
+    .await;
+    let neuron = |uid: i64, permit: bool, total_tao: u128, alpha_tao: u128| Neuron {
+        uid,
+        hotkey: format!("5Hotkey{uid}"),
+        coldkey: format!("5Coldkey{uid}"),
+        validator_permit: permit,
+        total_stake_rao: total_tao * 1_000_000_000,
+        alpha_stake_rao: alpha_tao * 1_000_000_000,
+        incentive: None,
+    };
+    // Short of mainnet's 10,000 TAO, but over this testnet's 100 TAO and 1 alpha; then too little stake, and no permit.
+    let neurons = vec![neuron(0, true, 500, 5), neuron(1, true, 50, 5), neuron(2, false, 500, 5)];
+    let loaded = h.state.registry.load(neurons.clone());
+    h.state
+        .db
+        .run(move |conn| {
+            registry::save(conn, &loaded)?;
+            registry::log_metagraph(conn, 22, Some(1_000), &neurons, &loaded)
+        })
+        .await
+        .unwrap();
+
+    let files = published(&h).await;
+    let all = entries(&files);
+    let settings = &all.iter().find(|e| e["kind"] == "start").unwrap()["input"]["settings"];
+    assert_eq!((settings["validator_min_stake"].clone(), settings["env"]["TASK_API_VALIDATOR_MIN_ALPHA"].clone()), (json!(100.0), json!(1.0)));
+    assert_eq!(all.iter().find(|e| e["kind"] == "metagraph").unwrap()["output"]["validators"], json!(["5Hotkey0"]));
+    let (replay, chained) = replayed(&h, &files);
+    assert_eq!(chained, Ok(()));
+    assert_eq!(replay.divergences, [], "the replay lets vote whom the API let vote");
+    assert_eq!(replay.meta("validators").unwrap(), Some(json!(["5Hotkey0"])));
+
+    // A start that names no minimums, as one logged before they were settings, is replayed under mainnet's: nobody here may vote.
+    let older = rechained(&h, &files, |entry| {
+        if entry["kind"] == "start" {
+            let settings = entry["input"]["settings"].as_object_mut().unwrap();
+            settings.remove("validator_min_stake");
+            settings.remove("validator_min_alpha");
+        }
+    });
+    let (replay, _) = replayed(&h, &older);
+    assert!(replay.fraud().any(|d| d.kind == "metagraph" && d.what == "who may vote" && d.replay == json!([])), "{:?}", replay.divergences);
 }

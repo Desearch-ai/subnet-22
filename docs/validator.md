@@ -127,7 +127,9 @@ python3 tools/approve_version.py --version <running> --next <new> --commit --net
 - [Rust](https://rustup.rs) and a C compiler (`build-essential`): `run.sh` builds the task API's replay
   tool from the release, and a validator that sets weights does not start without it
 - A hotkey on netuid 22 (netuid 41 on testnet) with a validator permit, at least 10,000 total stake
-  and at least 20 alpha; the task API only accepts check results from such hotkeys
+  and at least 20 alpha; the task API only accepts check results from such hotkeys. These are
+  mainnet's minimums; a task API on testnet may set lower ones (`TASK_API_VALIDATOR_MIN_STAKE`,
+  `TASK_API_VALIDATOR_MIN_ALPHA`), and its `/v1/config` shows them
 - A [ScrapingDog](https://www.scrapingdog.com/) API key: the validator fetches each sample itself
   first and uses ScrapingDog only for pages its own address cannot load
 - A [Weights & Biases](https://wandb.ai/) login, unless you pass `--wandb.off`

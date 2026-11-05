@@ -17,9 +17,21 @@ const REFRESH: Duration = Duration::from_secs(600);
 const RETRY: Duration = Duration::from_secs(60);
 /// A request waits this long for a first metagraph, then is asked to come back.
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(5);
-const MIN_TOTAL_STAKE: f64 = 10_000.0;
-const MIN_ALPHA_STAKE: f64 = 20.0;
 const RAO: f64 = 1e9;
+
+/// What a permit needs staked behind it to vote, in TAO: in all, and in the subnet's alpha. The default is mainnet's; a testnet
+/// sets lower.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinStake {
+    pub total: f64,
+    pub alpha: f64,
+}
+
+impl Default for MinStake {
+    fn default() -> Self {
+        MinStake { total: 10_000.0, alpha: 20.0 }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -105,8 +117,8 @@ pub fn log_metagraph(conn: &Connection, netuid: u16, block: Option<i64>, neurons
 }
 
 /// A permit alone is not enough: votes decide results, so a vote costs stake.
-pub fn is_validator(neuron: &Neuron) -> bool {
-    neuron.validator_permit && neuron.total_stake_rao as f64 / RAO >= MIN_TOTAL_STAKE && neuron.alpha_stake_rao as f64 / RAO >= MIN_ALPHA_STAKE
+pub fn is_validator(neuron: &Neuron, min: MinStake) -> bool {
+    neuron.validator_permit && neuron.total_stake_rao as f64 / RAO >= min.total && neuron.alpha_stake_rao as f64 / RAO >= min.alpha
 }
 
 /// The ss58 addresses of comma-separated secret URIs.
@@ -122,6 +134,7 @@ pub enum Registry {
     Chain {
         entries: RwLock<Arc<HashMap<String, Entry>>>,
         loaded: watch::Sender<bool>,
+        min_stake: MinStake,
     },
 }
 
@@ -130,8 +143,8 @@ impl Registry {
         Registry::Local { validators }
     }
 
-    pub fn chain() -> Registry {
-        Registry::Chain { entries: RwLock::default(), loaded: watch::channel(false).0 }
+    pub fn chain(min_stake: MinStake) -> Registry {
+        Registry::Chain { entries: RwLock::default(), loaded: watch::channel(false).0, min_stake }
     }
 
     /// Reloads the metagraph every ten minutes, keeping the last one when a reload fails.
@@ -164,12 +177,16 @@ impl Registry {
 
     /// Loads a fresh metagraph and returns its entries.
     pub fn load(&self, neurons: Vec<Neuron>) -> Vec<Entry> {
+        let min_stake = match self {
+            Registry::Chain { min_stake, .. } => *min_stake,
+            Registry::Local { .. } => MinStake::default(),
+        };
         let fresh: Vec<Entry> = neurons
             .iter()
             .map(|n| Entry {
                 hotkey: n.hotkey.clone(),
                 uid: Some(n.uid),
-                is_validator: is_validator(n),
+                is_validator: is_validator(n, min_stake),
                 coldkey: Some(n.coldkey.clone()),
                 incentive: n.incentive,
             })
@@ -180,7 +197,7 @@ impl Registry {
 
     /// Serves these entries until the next load.
     pub fn restore(&self, kept: Vec<Entry>) {
-        let Registry::Chain { entries, loaded } = self else { return };
+        let Registry::Chain { entries, loaded, .. } = self else { return };
         *entries.write().expect("registry lock") = Arc::new(kept.into_iter().map(|entry| (entry.hotkey.clone(), entry)).collect());
         loaded.send_replace(true);
     }
@@ -211,7 +228,7 @@ impl Registry {
             Registry::Local { validators } => {
                 Ok(Some(Entry { hotkey: hotkey.into(), uid: None, is_validator: validators.contains(hotkey), coldkey: None, incentive: None }))
             }
-            Registry::Chain { entries, loaded } => {
+            Registry::Chain { entries, loaded, .. } => {
                 let mut ready = loaded.subscribe();
                 if !matches!(tokio::time::timeout(FIRST_LOAD_WAIT, ready.wait_for(|loaded| *loaded)).await, Ok(Ok(_))) {
                     return Err(NotLoaded);
@@ -251,7 +268,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
         crate::journal::create(&conn).unwrap();
-        let registry = Registry::chain();
+        let registry = Registry::chain(MinStake::default());
         let neurons = vec![neuron(0, "5V1", "5Owner"), neuron(1, "5V2", "5Owner"), neuron(2, "5V3", "")];
         let entries = registry.load(neurons.clone());
         // The table and the log entry are written in one transaction, which is what a verdict's own transaction reads.
@@ -263,5 +280,21 @@ mod tests {
         assert_eq!((found["5V3"].as_str(), found["5Gone"].as_str()), ("5V3", "5Gone"), "no coldkey, or off the metagraph: the hotkey");
         let logged: String = conn.query_row("SELECT entry FROM journal WHERE kind = 'metagraph'", [], |row| row.get(0)).unwrap();
         assert!(logged.contains("\"block\":100"));
+    }
+
+    #[test]
+    fn a_testnet_lowers_the_stake_a_vote_needs() {
+        let staked = |total_tao: u128, alpha_tao: u128| Neuron {
+            total_stake_rao: total_tao * 1_000_000_000,
+            alpha_stake_rao: alpha_tao * 1_000_000_000,
+            ..neuron(0, "5V", "5O")
+        };
+        let testnet = MinStake { total: 100.0, alpha: 1.0 };
+        assert!(!is_validator(&staked(500, 5), MinStake::default()), "short of mainnet's 10,000 TAO");
+        assert!(is_validator(&staked(500, 5), testnet));
+        assert!(!is_validator(&staked(99, 5), testnet) && !is_validator(&staked(500, 0), testnet), "each minimum holds on its own");
+        assert!(!is_validator(&Neuron { validator_permit: false, ..staked(500, 5) }, testnet), "still a permit first");
+        let entries = Registry::chain(testnet).load(vec![staked(500, 5)]);
+        assert!(entries[0].is_validator, "the registry votes by the minimums it was made with");
     }
 }

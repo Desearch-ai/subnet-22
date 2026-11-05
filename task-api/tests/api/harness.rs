@@ -227,6 +227,8 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         pages_prefix: PAGES_PREFIX.into(),
         pages_store: None,
         registry: RegistryMode::Local { validator_uris: [VALIDATOR, OTHER_VALIDATOR, THIRD_VALIDATOR].join(",") },
+        validator_min_stake: 10_000.0,
+        validator_min_alpha: 20.0,
         seeds: SeedsMode::Local { block_seconds: 0.02, genesis: 0.0 },
         admin_hotkeys: Vec::new(),
         admin_uris: ADMIN.into(),

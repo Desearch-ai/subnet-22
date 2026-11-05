@@ -506,6 +506,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_REGISTRY` | — | `chain` or `local` |
 | `TASK_API_SEEDS` | `local` | `chain` or `local`: where round seeds come from |
 | `TASK_API_NETWORK` | `finney` | the chain in `chain` mode: a network name or JSON-RPC URL, or several comma-separated to fall back on in order |
+| `TASK_API_VALIDATOR_MIN_STAKE` | 10000 | total stake, in TAO, a validator permit needs behind it to vote in `chain` mode; the default is mainnet's, a testnet sets lower |
+| `TASK_API_VALIDATOR_MIN_ALPHA` | 20 | alpha stake a validator permit needs behind it to vote in `chain` mode; the default is mainnet's, a testnet sets lower |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
 | `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
@@ -578,7 +580,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_WRONG_REPORTS_WINDOW_S` | 86400 | that window |
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
-alpha of its own.
+alpha of its own: mainnet's minimums, the defaults of `TASK_API_VALIDATOR_MIN_STAKE` and
+`TASK_API_VALIDATOR_MIN_ALPHA`, which a testnet sets lower. Every `start` entry of the log names
+them, and a replay decides who may vote by them.
 
 ## Public endpoints
 

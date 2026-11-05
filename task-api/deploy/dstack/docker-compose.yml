@@ -47,6 +47,9 @@ services:
       TASK_API_CHAIN_FINALIZED: "1"
       TASK_API_CHAIN_COUNT_ON: "0"
       TASK_API_CHAIN_REFRESH_S: "6"
+      # Mainnet's minimum stake, in TAO in all and in alpha, behind a validator permit whose votes count.
+      TASK_API_VALIDATOR_MIN_STAKE: "10000"
+      TASK_API_VALIDATOR_MIN_ALPHA: "20"
       # Local mode only; written so that /v1/config is fully decided by this file.
       TASK_API_VALIDATOR_URIS: ""
       TASK_API_BLOCK_SECONDS: "12"

@@ -835,6 +835,12 @@ impl Replay {
             self.diverge(entry, FRAUD, "the metagraph this entry names was not published", entry["input"].clone(), Value::Null);
             return Ok(());
         };
+        // The stake the logging copy asked of a vote, mainnet's for a log from before it was a setting.
+        let (settings, mainnet) = (&self.start()?["settings"], registry::MinStake::default());
+        let min_stake = registry::MinStake {
+            total: settings["validator_min_stake"].as_f64().unwrap_or(mainnet.total),
+            alpha: settings["validator_min_alpha"].as_f64().unwrap_or(mainnet.alpha),
+        };
         let validators: Vec<String> = listed
             .iter()
             .filter_map(|n| {
@@ -847,7 +853,7 @@ impl Replay {
                     alpha_stake_rao: n[5].as_str().and_then(|s| s.parse().ok()).unwrap_or(0),
                     incentive: n[6].as_f64(),
                 };
-                registry::is_validator(&neuron).then_some(neuron.hotkey)
+                registry::is_validator(&neuron, min_stake).then_some(neuron.hotkey)
             })
             .collect();
         self.compare(entry, "who may vote", &entry["output"]["validators"], json!(validators));

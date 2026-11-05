@@ -23,7 +23,7 @@ use crate::flow::PublishRate;
 use crate::logs::Cache;
 use crate::py::{canonical, round_to};
 use crate::queues::{PublishQueue, TaskQueue, ValidationQueue};
-use crate::registry::{self, addresses, Registry};
+use crate::registry::{self, addresses, MinStake, Registry};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
 use crate::rules;
@@ -170,7 +170,7 @@ impl State {
         };
         let chain = network.map(|network| Chain::with(network, &settings.chain)).transpose()?.map(Arc::new);
         let registry = match &settings.registry {
-            RegistryMode::Chain { .. } => Registry::chain(),
+            RegistryMode::Chain { .. } => Registry::chain(MinStake { total: settings.validator_min_stake, alpha: settings.validator_min_alpha }),
             RegistryMode::Local { validator_uris } => Registry::local(addresses(validator_uris)?),
         };
         let kept = db.run(registry::saved).await?;
