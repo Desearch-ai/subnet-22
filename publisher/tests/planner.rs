@@ -2906,6 +2906,40 @@ async fn the_backfill_reads_the_next_shard_while_it_plans_the_one_before() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_sweeps_one_shard_of_each_index_shard_in_turn_and_reads_every_shard() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-spread");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: String| {
+        let record = v2(record(&url, &format!("{url} {}", article(2)), "article", "en"));
+        PageRow { key: page_key(&url).unwrap(), removed: false, change_seq: 1, version: record_version(&record), published_at: record.fetched_at.clone(), record }
+    };
+    for shard_number in 63..66 {
+        shard(&current, shard_number, vec![(0..2).map(|n| row(format!("https://news.example/s{shard_number}/{n}"))).collect()]).await;
+    }
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let mut sliced = settings(dir.join("state"), 3_600_000.0, 0);
+    (sliced.backfill, sliced.backfill_shards, sliced.fresh_flush_after) = (true, 63..66, Duration::ZERO);
+    let mut planner = Planner::new(sliced, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(1_000)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill > 0 {
+            break;
+        }
+    }
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.backfill().unwrap().map(|(shard, _)| shard), Some(64), "shard 64 starts the next index shard's run, and goes first");
+    sweep(&mut planner, 3).await;
+    assert_eq!((planner.counts.backfill, planner.counts.shards, planner.counts.shard_failures), (6, 3, 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shard_the_backfill_fails_to_read_three_times_in_a_row_is_gone_past_and_counted() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");

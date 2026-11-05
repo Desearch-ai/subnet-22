@@ -88,6 +88,8 @@ const WAITING_COUNT: &[u8] = b"waiting-count";
 const BACKFILL: &[u8] = b"backfill";
 /// Pages a backfill slice reads at most, for each it may plan.
 const READS_PER_PLANNED: usize = 4;
+/// `current/` shards in a row that one index shard holds, so a sweep in order would feed one index shard for hours.
+const CURRENT_SHARDS_PER_INDEX_SHARD: usize = 64;
 /// Pages read ahead from `current/` waiting for budget and room.
 const BACKFILL_AHEAD: usize = 49_152;
 /// How long a pass waits for the backfill's reader before going on.
@@ -2007,10 +2009,10 @@ impl Planner {
             println!("planner: {classed} waiting pages given the class of their site");
         }
         // A sweep of the shards reads the pages of every class at once; one begun for fewer classes starts again from its first shard.
-        let kept = planner.state.backfill_class_or_restart(planner.settings.backfill_shards.start)?;
+        let kept = planner.state.backfill_class_or_restart(planner.first_shard())?;
         planner.backfill_class = planner.every_class();
         if kept.is_some_and(|kept| kept != planner.backfill_class) && planner.state.backfill()?.is_some() {
-            planner.state.keep_backfill(planner.settings.backfill_shards.start, None)?;
+            planner.state.keep_backfill(planner.first_shard(), None)?;
         }
         planner.state.keep_backfill_class(planner.backfill_class)?;
         Ok(planner)
@@ -2638,11 +2640,11 @@ impl Planner {
                     // Inputs holding the shard's pages are saved first, as each moves the backfill's place to its own.
                     self.flush().await?;
                     self.counts.shards += u64::from(done.is_ok());
-                    if shard + 1 < self.settings.backfill_shards.end {
-                        self.state.keep_backfill(shard + 1, None)?;
+                    if let Some(next) = self.shard_after(shard) {
+                        self.state.keep_backfill(next, None)?;
                         continue;
                     }
-                    self.state.keep_backfill(self.settings.backfill_shards.start, None)?;
+                    self.state.keep_backfill(self.first_shard(), None)?;
                     // Pages the log passed by, or that came in since, are planned on the next sweep.
                     self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
                     println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
@@ -2659,13 +2661,14 @@ impl Planner {
         if self.next_sweep.is_some_and(|next| Instant::now() < next) {
             return Ok(false);
         }
-        let shards = self.settings.backfill_shards.clone();
-        let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
-        let (shard, after) = if shards.contains(&shard) { (shard, after) } else { (shards.start, None) };
+        let first = self.first_shard();
+        let (shard, after) = self.state.backfill()?.unwrap_or((first, None));
+        let (shard, after) = if self.settings.backfill_shards.contains(&shard) { (shard, after) } else { (first, None) };
+        let following = self.shard_after(shard);
         let ready = match self.next_reading.take() {
             Some(next) if next.shard == shard && after.is_none() => Some(next),
             // A shard read again after a failure keeps the one after it as read so far.
-            Some(next) if next.shard == shard + 1 => {
+            Some(next) if Some(next.shard) == following => {
                 self.next_reading = Some(next);
                 None
             }
@@ -2675,10 +2678,20 @@ impl Planner {
             Some(next) => next,
             None => self.spawn_reading(shard, after),
         });
-        if self.next_reading.is_none() && shard + 1 < shards.end {
-            self.next_reading = Some(self.spawn_reading(shard + 1, None));
+        if let Some(following) = following.filter(|_| self.next_reading.is_none()) {
+            self.next_reading = Some(self.spawn_reading(following, None));
         }
         Ok(true)
+    }
+
+    /// The first shard of a sweep.
+    fn first_shard(&self) -> usize {
+        sweep_order(&self.settings.backfill_shards).next().unwrap_or(self.settings.backfill_shards.start)
+    }
+
+    /// The shard a sweep reads after `shard`, none after its last.
+    fn shard_after(&self, shard: usize) -> Option<usize> {
+        sweep_order(&self.settings.backfill_shards).skip_while(|&read| read != shard).nth(1)
     }
 
     fn spawn_reading(&self, shard: usize, after: Option<String>) -> Reading {
@@ -3430,6 +3443,12 @@ fn planned_of(page: &PageRow, cleaned: &Cleaned, recipe: &'static str, (page_fir
     }
 }
 
+/// The shards of a sweep in the order read: one of each index shard's run in turn, so the pages planned spread over every index shard.
+fn sweep_order(shards: &Range<usize>) -> impl Iterator<Item = usize> {
+    let (span, shards) = (CURRENT_SHARDS_PER_INDEX_SHARD, shards.clone());
+    (0..span).flat_map(move |offset| shards.clone().filter(move |shard| shard % span == offset))
+}
+
 /// Whether a request failed for want of an answer in time.
 fn timed_out(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout))
@@ -3676,6 +3695,18 @@ mod tests {
         let crawled = Version { seq: Some(12), task_id: "t1".into(), ..bulk };
         assert_eq!(crawled.value().split('\t').nth(3), Some("12"));
         assert_eq!(Version::parse(crawled.value().as_bytes()), crawled);
+    }
+
+    #[test]
+    fn a_sweep_takes_one_shard_of_each_index_shard_in_turn_and_every_shard_once() {
+        let order: Vec<usize> = sweep_order(&(0..1024)).collect();
+        assert_eq!(order[..17], [0, 64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1]);
+        assert!(order.windows(2).all(|pair| pair[0] / CURRENT_SHARDS_PER_INDEX_SHARD != pair[1] / CURRENT_SHARDS_PER_INDEX_SHARD));
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..1024).collect::<Vec<_>>());
+        assert_eq!(sweep_order(&(7..9)).collect::<Vec<_>>(), [7, 8]);
+        assert_eq!(sweep_order(&(63..66)).collect::<Vec<_>>(), [64, 65, 63]);
     }
 
     #[test]
