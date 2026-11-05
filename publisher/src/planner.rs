@@ -88,7 +88,7 @@ const WAITING_COUNT: &[u8] = b"waiting-count";
 const BACKFILL: &[u8] = b"backfill";
 /// Pages a backfill slice reads at most, for each it may plan.
 const READS_PER_PLANNED: usize = 4;
-/// `current/` shards in a row that one index shard holds, so a sweep in order would feed one index shard for hours.
+/// `current/` shards in a row that one index shard holds.
 const CURRENT_SHARDS_PER_INDEX_SHARD: usize = 64;
 /// Pages read ahead from `current/` waiting for budget and room.
 const BACKFILL_AHEAD: usize = 49_152;
