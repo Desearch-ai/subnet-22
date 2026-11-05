@@ -415,9 +415,19 @@ pub fn manifest_hash_of(round: &Round) -> String {
 }
 
 /// A round whose commitment reached the chain too late commits again to a later seed block; logged, so the next anchor carries it.
+/// Blocks between a commitment and its seed block after the round's `recommits`-th miss: each miss leaves an anchor twice the
+/// inclusion window more, up to an epoch, when the chain's commitment budget is whole again. A congested chain delays a reveal by
+/// about twice its inclusion delay and a handful of commitments, never for good.
+pub fn reveal_lead(recommits: i64) -> i64 {
+    let doubled = crate::anchor::INCLUSION_BLOCKS.saturating_mul((1_i64 << recommits.clamp(0, 16)) - 1);
+    (crate::manifest::REVEAL_AFTER_BLOCKS + doubled).min(crate::anchor::EPOCH_BLOCKS)
+}
+
 pub async fn recommit(state: &State, round: &mut Round) -> Result<()> {
     let was = round.seed_block;
-    round.seed_block = state.seeds.target_block().await?;
+    let id = round.round_id.clone();
+    let before = state.db.run(move |conn| roundstore::recommits(conn, &id)).await?;
+    round.seed_block = state.seeds.current_block().await? + reveal_lead(before + 1);
     round.manifest_hash = manifest_hash_of(round);
     eprintln!("round={} was not anchored before block {was}; it commits again to block {}", round.round_id, round.seed_block);
     let moved = round.clone();

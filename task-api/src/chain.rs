@@ -472,10 +472,11 @@ impl Chain {
     }
 
     /// Every neuron of the subnet, from `SubnetInfoRuntimeApi.get_metagraph` as bittensor's metagraph reads it.
-    pub async fn metagraph(&self, netuid: u16) -> Result<Vec<Neuron>> {
-        // Endpoints a block apart answer differently, so a quorum reads at a block they agree on.
-        let at = if self.quorum > 1 { Some(self.head_hash().await?.1) } else { None };
-        self.metagraph_at(netuid, at.as_deref()).await
+    /// Every neuron of the subnet and the block they were read at: one block, so endpoints a block apart agree, and the log names
+    /// it so anyone can read the same metagraph from a node of their own.
+    pub async fn metagraph(&self, netuid: u16) -> Result<(i64, Vec<Neuron>)> {
+        let (block, at) = self.head_hash().await?;
+        Ok((block, self.metagraph_at(netuid, Some(&at)).await?))
     }
 
     /// Every neuron of the subnet at a block, or at the endpoint's own head.

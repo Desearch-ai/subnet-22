@@ -83,8 +83,11 @@ at or past the log entry holding its commitment was registered in a block before
 the API cannot have read the seed before the chain held what it committed to. While an anchor sent
 before the seed block may still land, the round waits; once none can, the round commits again to a
 later seed block (`recommit`, the same set or tasks under a new `manifest_hash`) and waits for that
-one. A replay of the log flags a reveal without such an anchor, and a commitment made again although
-one was anchored in time.
+one. Each miss leaves the next anchor more room: 30, 70, 150 and 310 blocks, then an epoch, so a
+congested chain delays a reveal by about twice its inclusion delay, never for good; periodic anchors
+leave 6 of the epoch's commitments to rounds. A replay of the log flags a reveal without such an
+anchor, and a commitment made again although one was anchored in time, counting the anchors a
+validator's own node shows as well as those the log names.
 
 ## Facts and judgments
 

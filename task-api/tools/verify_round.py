@@ -292,7 +292,7 @@ def verify(
         )
     else:
         print(
-            f"  {GREY}[ .. ] no --signer given: signatures prove only that one key signed the log{RESET}"
+            f"  {GREY}[ .. ] --signer '' given: signatures prove only that one key signed the log{RESET}"
         )
     ok &= check(
         "every log entry carries the API's signature",
@@ -586,8 +586,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--api", default="http://localhost:8080")
     parser.add_argument("--round", required=True)
+    pinned_signer, pinned_anchor = pinned()
     parser.add_argument(
-        "--signer", help="the ss58 key the API publishes for its receipts"
+        "--signer",
+        default=pinned_signer,
+        help="the ss58 key the API's receipts and log must be signed with; the one this release pins (desearch/trust.py)"
+        " by default, the custody record's holder after a handover",
     )
     parser.add_argument(
         "--node",
@@ -600,7 +604,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--anchor",
-        help="the hotkey that anchors the log (desearch.trust.TASK_API_ANCHOR_HOTKEY), to check the anchor came before the seed",
+        default=pinned_anchor,
+        help="the hotkey that anchors the log, to check the anchor came before the seed; the pinned one"
+        " (desearch.trust.TASK_API_ANCHOR_HOTKEY) by default",
     )
     parser.add_argument("--netuid", type=int, default=22)
     parser.add_argument(
@@ -642,6 +648,16 @@ def main() -> int:
         urls,
     )
     return 0 if passed else 1
+
+
+def pinned() -> tuple[str, str]:
+    """The signer and anchoring hotkey this release pins, read from the checkout the tool sits in when `desearch` is not installed."""
+    try:
+        from desearch.trust import TASK_API_ANCHOR_HOTKEY, TASK_API_SIGNER
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from desearch.trust import TASK_API_ANCHOR_HOTKEY, TASK_API_SIGNER
+    return TASK_API_SIGNER, TASK_API_ANCHOR_HOTKEY
 
 
 def read_urls(path: Path) -> list[list[str]]:

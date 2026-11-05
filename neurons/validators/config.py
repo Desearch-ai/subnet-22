@@ -8,6 +8,9 @@ from types import SimpleNamespace
 from desearch.trust import TASK_API_ANCHOR_HOTKEY, TASK_API_SIGNER
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
+REPO = Path(__file__).resolve().parents[2]
+# Where `run.sh` builds the task API's replay tool from this release's source.
+REPLAY_BIN = REPO / "task-api" / "target" / "release" / "task-api-replay"
 DEFAULT_LOG_DIR = "~/.bittensor/miners"
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
@@ -53,8 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--neuron.replay_bin",
         type=str,
-        help="The task API's replay tool (task-api-replay); with it, the log is replayed and every output the rules do not give is reported.",
-        default=os.environ.get("TASK_API_REPLAY_BIN", ""),
+        help="The task API's replay tool, which run.sh builds from this release (task-api/target/release/task-api-replay);"
+        " a validator that sets weights does not start without it.",
+        default=os.environ.get("TASK_API_REPLAY_BIN", str(REPLAY_BIN)),
+    )
+    parser.add_argument(
+        "--neuron.no_replay",
+        action="store_true",
+        help="Run without replaying the task API's log: the API's budgets, verdicts, shares and upload log then never reach the"
+        " weights, which come from this validator's own checks only.",
+        default=False,
     )
     parser.add_argument(
         "--neuron.storage_url",

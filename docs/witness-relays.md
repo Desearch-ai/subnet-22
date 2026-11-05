@@ -57,7 +57,8 @@ claim not held, a poll over its rate), a repeated completion answered from the f
 B logs every signed input, every witnessed request is owed an entry.
 
 - Each validator with a relay checks its own records every minute and publishes proofs at
-  `GET /v1/witness/proofs`; it logs every one as an error.
+  `GET /v1/witness/proofs`; it logs every one as an error. The fraud proofs its check of the API's log
+  writes are published beside them, at `GET /v1/journal/proofs`.
 - A miner can check the records its relays signed for it, kept in `WITNESSES_FILE`:
 
   ```bash

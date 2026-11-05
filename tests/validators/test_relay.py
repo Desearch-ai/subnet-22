@@ -460,3 +460,21 @@ async def test_the_interim_log_counts_a_request_only_through_a_receipt_signed_by
         assert (
             await ApiLog(w.http, w.api_url, impostor).included(logged) is None
         ), "a receipt the pinned key did not sign"
+
+
+async def test_a_relay_publishes_the_fraud_proofs_its_validator_found_in_the_log(
+    tmp_path,
+):
+    async with world(tmp_path) as w:
+        proofs = [{"problem": {"what": "the shares", "severity": "fraud", "seq": 2}}]
+        w.relays[0].journal_proofs = lambda since: [p for p in proofs if since <= 1.0]
+        async with w.http.get(f"{w.relay_urls[0]}/v1/journal/proofs") as r:
+            found = await r.json()
+        assert (
+            found["proofs"] == proofs
+            and found["validator"] == VALIDATORS[0].ss58_address
+        )
+        async with w.http.get(f"{w.relay_urls[1]}/v1/journal/proofs") as r:
+            assert (await r.json())[
+                "proofs"
+            ] == [], "a relay with no follower publishes none"

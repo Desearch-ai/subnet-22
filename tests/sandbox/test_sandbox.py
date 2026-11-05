@@ -5,6 +5,7 @@ import pyarrow.parquet as pq
 import pytest
 from aiohttp import web
 
+from neurons.validators import chain_reads
 from sandbox import local, run, urls
 from sandbox.chain import FakeChain
 from sandbox.local import Ports
@@ -264,7 +265,7 @@ def test_the_fake_chain_ticks_on_a_clock_and_seeds_from_the_block_number():
         block = await chain.block()
         return (
             block,
-            (await chain.block_info(block)).hash,
+            await chain_reads.block_hash(chain, block),
             await chain.uid("validator", 22),
             await chain.uid("nobody", 22),
             await chain.blocks_until_next_epoch(22),
@@ -656,10 +657,10 @@ def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights()
         return SimpleNamespace(amount=amount, uploads=1, checked=1, failed=0, rate=1.0)
 
     class Ledger:
-        def crawl_paid(self, rounds=None):
+        def crawl_paid(self, **_):
             return {"crawler": paid(100.0)}
 
-        def embed_paid(self):
+        def embed_paid(self, **_):
             return {"embedder": paid(5000.0)}
 
     chain = FakeChain(

@@ -123,3 +123,20 @@ def test_the_round_urls_are_read_as_the_pages_bucket_keeps_them(tmp_path):
     (tmp_path / "plain.json").write_text(json.dumps(PAIRS))
     assert sorted(verifier.read_urls(tmp_path / "packed")) == sorted(PAIRS)
     assert verifier.read_urls(tmp_path / "plain.json") == PAIRS
+
+
+def test_the_signer_and_the_anchor_default_to_the_pinned_ones(monkeypatch):
+    import sys
+
+    from desearch.trust import TASK_API_ANCHOR_HOTKEY, TASK_API_SIGNER
+
+    given = []
+    monkeypatch.setattr(verifier, "verify", lambda *args: given.append(args) or True)
+    monkeypatch.setattr(sys, "argv", ["verify_round.py", "--round", "r1"])
+    assert verifier.main() == 0
+    assert (given[0][4], given[0][7]) == (TASK_API_SIGNER, TASK_API_ANCHOR_HOTKEY)
+    monkeypatch.setattr(
+        sys, "argv", ["verify_round.py", "--round", "r1", "--signer", "5Other"]
+    )
+    verifier.main()
+    assert given[1][4] == "5Other"

@@ -69,8 +69,8 @@ pub fn saved(conn: &Connection) -> Result<Vec<Entry>> {
 }
 
 /// Writes the metagraph into the log when who is on the subnet, who may vote or the incentive changed since it was last written; the
-/// neurons with their stakes and incentive go in a blob, so a replay sees who could vote and what capped each budget, and anyone can
-/// check it against the chain at that block.
+/// neurons with their stakes and incentive go in a blob, so a replay sees who could vote and what capped each budget, and every
+/// validator checks it against its own node at the block it was read at.
 pub fn log_metagraph(conn: &Connection, netuid: u16, block: Option<i64>, neurons: &[Neuron], entries: &[Entry]) -> Result<()> {
     let mut members: Vec<Value> = entries.iter().map(|e| json!([e.uid, e.hotkey, e.coldkey, e.is_validator, e.incentive])).collect();
     members.sort_by_key(|member| member.to_string());
@@ -129,12 +129,11 @@ impl Registry {
         tokio::spawn(async move {
             loop {
                 let wait = match chain.metagraph(netuid).await {
-                    Ok(neurons) => {
-                        let block = chain.last_read().map(|(block, _)| block);
+                    Ok((block, neurons)) => {
                         let entries = registry.load(neurons.clone());
                         let saved = db.run(move |conn| {
                             save(conn, &entries)?;
-                            log_metagraph(conn, netuid, block, &neurons, &entries)
+                            log_metagraph(conn, netuid, Some(block), &neurons, &entries)
                         });
                         if let Err(error) = saved.await {
                             eprintln!("could not keep the metagraph: {error:#}");

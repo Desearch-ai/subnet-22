@@ -28,9 +28,11 @@ use crate::state::State;
 pub const TAG: &str = "sn22j1:";
 /// Commitments a hotkey may make per epoch: 3,100 bytes, each call counted as 100 at least.
 pub const PER_EPOCH: i64 = 31;
-const EPOCH_BLOCKS: i64 = 361;
+pub const EPOCH_BLOCKS: i64 = 361;
 /// Blocks an anchor is waited for before it is sent again.
-const INCLUSION_BLOCKS: i64 = 20;
+pub const INCLUSION_BLOCKS: i64 = 20;
+/// Commitments per epoch the periodic anchors leave to rounds, whose seed blocks wait on them.
+pub const ROUND_RESERVE: i64 = 6;
 
 /// An entry's hash as the chain holds it, and the block that committed it.
 #[derive(Clone, Debug, PartialEq)]
@@ -383,6 +385,27 @@ pub struct Anchoring {
     key: Option<Hotkey>,
 }
 
+/// The head to anchor at `block`, when one is due: every `every_blocks`, or `min_blocks` after the last once a round committed
+/// since, and never while the last one sent may still land. Periodic anchors leave `ROUND_RESERVE` of the epoch's commitments to
+/// rounds, so a round's commitment reaches the chain before its seed block even when the budget runs low.
+pub fn due(conn: &Connection, block: i64, settings: &crate::settings::AnchorSettings) -> Result<Option<(i64, String)>> {
+    let (seq, head) = journal::head(conn)?;
+    let last: Option<(i64, Option<i64>, i64)> = conn
+        .query_row("SELECT seq, block, sent_at FROM log_anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .optional()?;
+    let sent: i64 = conn.query_row("SELECT COUNT(*) FROM log_anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
+    let (last_seq, last_block, last_sent) = last.unwrap_or((0, Some(0), 0));
+    // A round's commitment should reach the chain before its seed block, so a round opening is anchored soon.
+    let opened: bool = conn
+        .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round', 'recommit') LIMIT 1", [last_seq], |_| Ok(()))
+        .optional()?
+        .is_some();
+    let waiting = last_block.is_none() && block < last_sent + INCLUSION_BLOCKS;
+    let (wait, budget) = if opened { (settings.min_blocks, settings.per_epoch) } else { (settings.every_blocks, settings.per_epoch - ROUND_RESERVE) };
+    let due = seq > last_seq && !waiting && block >= last_sent + wait && sent < budget;
+    Ok(due.then_some((seq, head)))
+}
+
 /// One pass: confirms an anchor sent before, and sends the head when it is due. Runs only on the copy holding the janitor lease.
 pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
     let Some(settings) = state.settings.anchor.clone() else { return Ok(()) };
@@ -411,27 +434,11 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
             })
             .await?;
     }
-    let due = state
-        .db
-        .run(move |conn| {
-            let (seq, head) = journal::head(conn)?;
-            let last: Option<(i64, Option<i64>, i64)> = conn
-                .query_row("SELECT seq, block, sent_at FROM log_anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .optional()?;
-            let sent: i64 = conn.query_row("SELECT COUNT(*) FROM log_anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
-            let (last_seq, last_block, last_sent) = last.unwrap_or((0, Some(0), 0));
-            // A round's commitment should reach the chain before its seed block, so a round opening is anchored soon.
-            let opened: bool = conn
-                .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round', 'recommit') LIMIT 1", [last_seq], |_| Ok(()))
-                .optional()?
-                .is_some();
-            let waiting = last_block.is_none() && block < last_sent + INCLUSION_BLOCKS;
-            let wait = if opened { settings.min_blocks } else { settings.every_blocks };
-            let due = seq > last_seq && !waiting && block >= last_sent + wait && sent < settings.per_epoch;
-            Ok(due.then_some((seq, head)))
-        })
-        .await?;
-    let Some((seq, head)) = due else { return Ok(()) };
+    let found = {
+        let settings = settings.clone();
+        state.db.run(move |conn| due(conn, block, &settings)).await?
+    };
+    let Some((seq, head)) = found else { return Ok(()) };
     let extrinsic = extrinsics.commitment(key, settings.netuid, seq, &head).await?;
     let sent = extrinsics.submit(&extrinsic).await?;
     state
@@ -450,6 +457,41 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn anchored_log(sent: &[(i64, i64)]) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        journal::create(&conn).unwrap();
+        create(&conn).unwrap();
+        for (seq, sent_at) in sent {
+            conn.execute("INSERT INTO log_anchors (seq, head, block, sent_at, extrinsic) VALUES (?, 'h', ?, ?, '')", params![seq, sent_at + 1, sent_at])
+                .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn periodic_anchors_leave_part_of_the_epoch_to_rounds() {
+        let settings =
+            crate::settings::AnchorSettings { network: String::new(), netuid: 22, key_uri: String::new(), every_blocks: 12, min_blocks: 3, per_epoch: 30 };
+        // Periodic anchors have used all but the reserve of the last epoch.
+        let sent: Vec<(i64, i64)> = (0..30 - ROUND_RESERVE).map(|i| (i + 1, 1_000 + i * 12)).collect();
+        let conn = anchored_log(&sent);
+        let block = 1_000 + 30 * 12;
+        for _ in 0..40 {
+            journal::append(&conn, journal::Record::new("claim", 0.0, serde_json::json!({}), serde_json::Value::Null)).unwrap();
+        }
+        assert_eq!(due(&conn, block, &settings).unwrap(), None, "the periodic anchor waits for the window to move");
+        journal::append(&conn, journal::Record::new("enqueue", 0.0, serde_json::json!({}), serde_json::Value::Null)).unwrap();
+        let (seq, _) = due(&conn, block, &settings).unwrap().expect("a round's commitment is anchored from the reserve");
+        assert_eq!(seq, 41);
+        // Past the whole budget even a round waits.
+        let full: Vec<(i64, i64)> = (0..30).map(|i| (i + 1, 1_000 + i * 12)).collect();
+        let conn = anchored_log(&full);
+        for _ in 0..40 {
+            journal::append(&conn, journal::Record::new("enqueue", 0.0, serde_json::json!({}), serde_json::Value::Null)).unwrap();
+        }
+        assert_eq!(due(&conn, block, &settings).unwrap(), None);
+    }
 
     #[test]
     fn storage_prefixes_hash_as_substrate_does() {

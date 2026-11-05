@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import math
 import os
@@ -24,6 +25,7 @@ from desearch.manifest import seed_from_hash
 from desearch.witness import ApiLog
 from bittensor.wallets import Wallet
 
+from neurons.validators import chain_reads
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.custody import LEGACY_SIGNER, Custody
@@ -35,7 +37,12 @@ from neurons.validators.fetchers import (
     ScrapingDogAccount,
 )
 from neurons.validators.governance import read_snapshot
-from neurons.validators.journal import JournalFollower, JournalLogView
+from neurons.validators.journal import (
+    JournalFollower,
+    JournalLogView,
+    metagraph_rows,
+    replay_problem,
+)
 from neurons.validators.ledger import Ledger
 from neurons.validators.relay import Relay, serve
 from neurons.validators.upload_log import UploadLog
@@ -86,9 +93,8 @@ class Validator:
             os.path.join(self.config.neuron.full_path, "witness.db")
         )
         self.stopping = asyncio.Event()
-        # What the task API's log shows it did against its own rules; kept for the run and written to fraud proofs as found.
-        self.journal_problems = []
-        # The log follower, once the log is followed; witness checks read it.
+        # The log follower, once the log is followed; witness checks read it, and the weights only use the API's inputs while
+        # it vouches for the log.
         self.journal = None
         self.custody: Custody | None = None
         self.custody_ready = asyncio.Lock()
@@ -111,6 +117,7 @@ class Validator:
         await self.head.refresh()
 
     async def run(self) -> None:
+        self.require_replay()
         await self.initialize()
         self.init_wandb()
         loop = asyncio.get_running_loop()
@@ -284,11 +291,29 @@ class Validator:
             )
         return None
 
+    def require_replay(self) -> None:
+        """A validator that sets weights replays the task API's log with its rules, and does not start without the tool unless
+        told to run without it, which keeps the API's inputs out of its weights."""
+        neuron = self.config.neuron
+        if neuron.no_replay:
+            log.warning(
+                "--neuron.no_replay: the task API's log is not replayed, so its budgets, verdicts, shares and upload log never"
+                " reach the weights, which come from this validator's own checks only"
+            )
+            return
+        if neuron.disable_set_weights:
+            return
+        if problem := replay_problem(neuron.replay_bin):
+            log.critical(
+                f"Not starting: {problem}. run.sh builds it (`cargo build --release --locked --bin task-api-replay` in task-api/);"
+                " point --neuron.replay_bin at it, or pass --neuron.no_replay to set weights from this validator's own checks only."
+            )
+            raise SystemExit(1)
+
     async def seed_for(self, block: int) -> str | None:
-        """The sample seed for an upload, from the chain itself; None until its block exists."""
-        if block > await self.subtensor.block():
-            return None
-        return seed_from_hash((await self.subtensor.block_info(block)).hash)
+        """The sample seed for an upload, from the chain itself; None until its block is finalized."""
+        found = await self.block_hash(block)
+        return None if found is None else seed_from_hash(found)
 
     async def api_signer(self) -> Custody:
         """Who signs manifests and the upload log: the attested custody chain, set up once."""
@@ -366,10 +391,24 @@ class Validator:
         return ""
 
     async def block_hash(self, block: int) -> str | None:
-        """A block's hash from our own node; None until it exists."""
-        if block > await self.subtensor.block():
-            return None
-        return (await self.subtensor.block_info(block)).hash
+        """A block's hash from our own node by its number, which a pruned node answers for any block; None until it is finalized."""
+        return await chain_reads.block_hash(self.subtensor, block)
+
+    async def finalized_block(self) -> int:
+        return await chain_reads.finalized_block(self.subtensor)
+
+    async def block_extrinsics(self, block: int) -> list[bytes] | None:
+        # The follower asks only for blocks up to the finalized head it has just read.
+        return await chain_reads.block_extrinsics(
+            self.subtensor, block, finalized=block
+        )
+
+    async def metagraph_at(self, netuid: int, block: int) -> list[list]:
+        """The metagraph as the API logs it, from our own node at `block`; an archive node answers for blocks a pruned one forgot."""
+        graph = await self.archive.subnets.metagraph(netuid, block, commitments=False)
+        if graph is None:
+            raise ValueError(f"subnet {netuid} does not exist at block {block}")
+        return metagraph_rows(graph)
 
     async def journal_anchor(self) -> Anchor | None:
         """The head of the task API's log as its anchor hotkey last committed it on this subnet, from our own node."""
@@ -380,28 +419,42 @@ class Validator:
         return anchor_from_commitment(record)
 
     async def follow_journal(self) -> None:
-        """Checks the task API's log as it is published: links, signatures, block hashes and anchors, and replays it when the tool is installed."""
+        """Checks the task API's log as it is published: links, signatures, block hashes, the metagraph and every anchor its key
+        sent, against our own node, and replays it with the API's rules. A fraud proof is published and keeps the API's inputs
+        out of the weights until the log holds together again."""
+        neuron = self.config.neuron
         follower = JournalFollower(
             self.http,
-            self.config.neuron.storage_url,
+            neuron.storage_url,
             await self.api_signer(),
-            Path(self.config.neuron.full_path) / "journal",
+            Path(neuron.full_path) / "journal",
             self.block_hash,
             self.journal_anchor,
-            self.config.neuron.replay_bin,
+            # A validator that sets no weights runs without the tool when it is missing; one that does would not have started.
+            (
+                ""
+                if neuron.no_replay or replay_problem(neuron.replay_bin)
+                else neuron.replay_bin
+            ),
+            chain_head=self.finalized_block,
+            block_extrinsics=self.block_extrinsics,
+            anchor_hotkey=neuron.task_api_anchor,
+            metagraph_at=self.metagraph_at,
         )
         self.journal = follower
-        if not self.config.neuron.replay_bin:
-            log.info(
-                "No --neuron.replay_bin: the task API's log is checked, not replayed"
-            )
         while not self.stopping.is_set():
             try:
-                problems = await follower.poll()
-                self.journal_problems += [p for p in problems if p.severity == "fraud"]
+                for problem in await follower.poll():
+                    if problem.severity == "fraud":
+                        self.publish_proof(problem)
             except Exception as error:
                 log.warning(f"Task API log unavailable, retrying: {error!r}")
             await asyncio.sleep(JOURNAL_POLL_S)
+
+    def publish_proof(self, problem) -> None:
+        """A fraud proof goes out with this validator's run as well as from its relay (`/v1/journal/proofs`)."""
+        if wandb.run is not None:
+            wandb.log({"task_api_fraud": json.dumps(problem.as_dict())[:20_000]})
 
     async def serve_relay(self) -> None:
         """A path to the task API for miners that doesn't run through the operator's network, witnessing every
@@ -418,6 +471,9 @@ class Validator:
             registered=lambda hotkey: hotkey in self.metagraph.hotkeys,
             http=self.http,
             publish_delay_blocks=relay_config.publish_delay_blocks,
+            journal_proofs=lambda since: (
+                self.journal.proofs(since) if self.journal else []
+            ),
         )
         runner = await serve(relay, relay_config.host, relay_config.port)
         custody = await self.api_signer()
@@ -505,19 +561,34 @@ class Validator:
         checker.provider_down = problem
 
     def settled_round(self, round_id: str) -> dict | None:
-        """A closed round's gate and neutral hosts as the task API's signed log settled them; None while it is open."""
+        """A closed round's gate and neutral hosts as the task API's signed log settled them; None while it is open, and while
+        the log is not trusted, when our own checks' view of the round counts instead."""
         journal = getattr(self, "journal", None)
-        return journal.round_view(round_id) if journal else None
+        if journal is None or journal.distrust():
+            return None
+        return journal.round_view(round_id)
 
     async def weights(self) -> np.ndarray | None:
         """Each pool from every miner's logged uploads, judged by this validator's own checks; crawl coverage on each
-        round's gate and neutral hosts as the signed log settled them, our own checks' view while a round is open.
+        round's gate and neutral hosts as the signed log settled them, our own checks' view while a round is open. From our
+        own checks alone, on their own view of each round, while the task API's log does not hold together or is not replayed.
         """
-        journal = getattr(self, "journal", None)
-        rounds = journal.round_views() if journal else None
+        follower = getattr(self, "journal", None)
+        distrust = (
+            follower.distrust()
+            if follower is not None
+            else "the task API's log is not followed yet"
+        )
+        excluded = follower.fraud_spans() if follower is not None else []
+        if distrust:
+            log.warning(f"Weights from this validator's own checks only: {distrust}")
+        own_only = distrust is not None
+        rounds = None if own_only else follower.round_views()
         paid = {
-            CRAWL: self.ledger.crawl_paid(rounds=rounds),
-            EMBED: self.ledger.embed_paid(),
+            CRAWL: self.ledger.crawl_paid(
+                rounds=rounds, own_only=own_only, excluded=excluded
+            ),
+            EMBED: self.ledger.embed_paid(own_only=own_only, excluded=excluded),
         }
         shares = {}
         for kind, found in paid.items():

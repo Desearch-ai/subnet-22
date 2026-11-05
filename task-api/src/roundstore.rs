@@ -42,6 +42,10 @@ pub fn create(conn: &Connection) -> Result<()> {
     if has_commitment == 0 {
         conn.execute_batch("ALTER TABLE rounds ADD COLUMN commitment TEXT")?;
     }
+    let has_recommits: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('rounds') WHERE name = 'recommits'", [], |row| row.get(0))?;
+    if has_recommits == 0 {
+        conn.execute_batch("ALTER TABLE rounds ADD COLUMN recommits INTEGER NOT NULL DEFAULT 0")?;
+    }
     Ok(())
 }
 
@@ -144,8 +148,16 @@ pub fn mark_revealed(conn: &Connection, round: &Round) -> Result<()> {
 
 /// A round committed again to a later seed block, under the manifest hash that names it.
 pub fn recommit(conn: &Connection, round_id: &str, seed_block: i64, manifest_hash: &str) -> Result<()> {
-    conn.execute("UPDATE rounds SET seed_block = ?, manifest_hash = ? WHERE round_id = ? AND seed IS NULL", params![seed_block, manifest_hash, round_id])?;
+    conn.execute(
+        "UPDATE rounds SET seed_block = ?, manifest_hash = ?, recommits = recommits + 1 WHERE round_id = ? AND seed IS NULL",
+        params![seed_block, manifest_hash, round_id],
+    )?;
     Ok(())
+}
+
+/// How many times a round committed again because no anchor reached the chain before its seed block.
+pub fn recommits(conn: &Connection, round_id: &str) -> Result<i64> {
+    Ok(conn.query_row("SELECT recommits FROM rounds WHERE round_id = ?", [round_id], |row| row.get(0)).optional()?.unwrap_or(0))
 }
 
 /// Revealed rounds whose tasks never reached the queue.
