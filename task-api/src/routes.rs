@@ -24,6 +24,7 @@ use crate::http::{json_body, unavailable, Answer, ApiError, Query, CLAIM_PATH};
 use crate::lifecycle::{self, kind_of, signed_manifest, text, EMBED_FIELDS};
 use crate::manifest::REVEAL_AFTER_BLOCKS;
 use crate::models::{self, ClaimBody, CompleteBody, Enqueue};
+use crate::outages;
 use crate::py::round_to;
 use crate::queues::{self, Claim, Refusal, CLAIMS};
 use crate::roundlog::{self, Receipt};
@@ -252,7 +253,8 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     steps.mark("issue");
     let (request, blobs) = signed.logged();
-    let receipts = state.record_logged(receipts, "claim", json!({"request": request, "kind": kind, "budget": budget, "at": at}), blobs).await?;
+    let input = json!({"request": request, "kind": kind, "budget": budget, "at": at, "block": tick.block});
+    let receipts = state.record_logged(receipts, "claim", input, blobs).await?;
     steps.mark("receipts");
     // The time spent signing and recording the claims is ours, not the miner's: the claim starts at the block finalized now.
     let task_ids: Vec<String> = issued.iter().map(|task| text(task, "task_id").to_string()).collect();
@@ -375,19 +377,25 @@ pub async fn complete(
     let arrived = Arrival { wall: now(), tick: state.tick().await? };
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = signed.caller(&state).await?;
-    let report = CompleteBody::parse(&json_body(&body)?)?;
-    let signed = &signed;
+    let logged = signed.logged();
+    let report = match json_body(&body).and_then(|body| Ok(CompleteBody::parse(&body)?)) {
+        Ok(report) => report,
+        Err(error) => return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await,
+    };
     let holds = state.claim_holder(&task_id).await?.as_deref() == Some(who.hotkey.as_str());
     if !holds && completed_by(&state, &task_id, &who.hotkey).await?.is_none() {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        let error = ApiError::status(409, "you do not hold this claim");
+        return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await;
     }
-    let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
-    let logged = signed.logged();
+    let lock = match hold_completion(&state, &task_id, &who.hotkey).await {
+        Ok(lock) => lock,
+        Err(error) => return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await,
+    };
     // Detached so a miner that times out can't cancel it and leave the lock to block its retries.
     let finishing = detach(&state.clone(), async move {
         let outcome = finish_completion(&state, &task_id, &report, &who, arrived, logged.clone()).await;
         if let Err(ApiError::Status { status, detail, .. }) = &outcome {
-            log_refused(&state, "complete", logged, &task_id, (*status, detail), arrived.tick.at, None).await?;
+            log_refused(&state, "complete", logged, &task_id, (*status, detail), arrived.tick, None).await?;
         }
         state.delete(&lock).await?;
         outcome
@@ -406,10 +414,11 @@ async fn log_refused(
     (request, blobs): (Value, Vec<journal::Blob>),
     task_id: &str,
     (status, detail): (u16, &Value),
-    at: f64,
+    tick: Tick,
     wrong: Option<(String, String)>,
 ) -> Result<(), ApiError> {
-    let mut input = json!({"request": request, "task_id": task_id});
+    let at = tick.at;
+    let mut input = json!({"request": request, "task_id": task_id, "block": tick.block});
     if let Some((_, why)) = &wrong {
         input["wrong_report"] = why.clone().into();
     }
@@ -425,6 +434,27 @@ async fn log_refused(
         })
         .await?;
     Ok(())
+}
+
+/// Refuses a miner's signed completion or abandon and logs the refusal, so every answer the API gives a request a validator
+/// relayed is in its log, accepted or not, at the block it was judged at. Past `REFUSALS_LOGGED_PER_MINUTE` refusals of one
+/// hotkey in a minute the rest are answered 429 unlogged, so nobody can grow the log at will.
+async fn refuse_logged<T>(
+    state: &State,
+    kind: &'static str,
+    logged: (Value, Vec<journal::Blob>),
+    task_id: &str,
+    error: ApiError,
+    tick: Tick,
+    hotkey: &str,
+) -> Result<T, ApiError> {
+    if let ApiError::Status { status, detail, .. } = &error {
+        if !state.refusal_to_log(hotkey).await? {
+            return Err(ApiError::retry(429, "too many refused requests this minute; they are no longer logged", "60"));
+        }
+        log_refused(state, kind, logged, task_id, (*status, detail), tick, None).await?;
+    }
+    Err(error)
 }
 
 /// When a completion reached the API: its block and rule time decide whether it was in time, the wall time is compared with storage's own clock.
@@ -524,17 +554,21 @@ async fn verify_completion(
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
-    // Locked for the check window, so not even the bucket's owner can delete the version every reader is sent to;
-    // a store that refuses is logged, and every validator's look at the upload shows whether it is locked.
-    // The completion's log entry says whether the lock held, so a missing lock is on record, not only in this copy's output.
+    // Locked for the check window, so not even the bucket's owner can delete the version every reader is sent to. A store
+    // that refuses fails the completion closed: nothing unlocked is pinned, the miner completes again, and the refusal opens an
+    // `upload_lock` outage, closed by the next lock that holds, so a claim that lapses meanwhile costs its miner nothing.
     let mut lock = Value::Null;
     if let Some(version) = found.version.as_deref().filter(|_| state.settings.upload_lock_s > 0.0) {
         let until = (arrived.wall + state.settings.upload_lock_s).ceil() as i64;
-        let locked = state.storage.lock_version(&report.key, version, until).await;
-        if let Err(error) = &locked {
-            eprintln!("could not lock {} version {version}: {error}", report.key);
+        let tick = arrived.tick;
+        if let Err(error) = state.storage.lock_version(&report.key, version, until).await {
+            let detail = format!("could not lock {} version {version}: {error}", report.key);
+            eprintln!("{detail}");
+            state.db.run(move |conn| outages::begin_logged(conn, outages::UPLOAD_LOCK, tick.at, tick.block, &detail)).await?;
+            return Err(ApiError::retry(503, "object storage would not lock your upload; complete again", "10"));
         }
-        lock = json!({"version": version, "until": until, "locked": locked.is_ok()});
+        state.db.run(move |conn| outages::end_logged(conn, outages::UPLOAD_LOCK, tick.at, tick.block)).await?;
+        lock = json!({"version": version, "until": until, "locked": true});
     }
     state
         .storage
@@ -605,14 +639,15 @@ async fn verify_completion(
         request: Some(who.request.clone()),
         ..Receipt::default()
     };
-    let input = json!({"request": request, "task_id": task_id, "job": kept, "lock": lock});
+    let input = json!({"request": request, "task_id": task_id, "job": kept, "lock": lock, "block": arrived.tick.block});
     let receipt = state.record_logged(vec![receipt], "complete", input, blobs).await;
     steps.mark("receipt");
     if let Some(slow) = steps.slow() {
         eprintln!("completing {task_id} took {slow}");
     }
-    receipt?;
-    Ok(json!({"task_id": task_id, "status": "open_for_validation"}))
+    // The signed receipt goes back with the answer, so a relay that carried the completion holds the API to it.
+    let receipt = receipt?.into_iter().next().unwrap_or(Value::Null);
+    Ok(json!({"task_id": task_id, "status": "open_for_validation", "receipt": receipt}))
 }
 
 pub async fn abandon(
@@ -625,20 +660,25 @@ pub async fn abandon(
 ) -> Answer {
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = signed.caller(&state).await?;
+    let tick = state.tick().await?;
+    let at = tick.at;
     let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
     let kind = kind_of(&payload).to_string();
+    let not_held = || ApiError::status(409, "you do not hold this claim");
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, not_held(), tick, &who.hotkey).await;
     }
-    let at = state.rule_now().await?;
     let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
     let forgiving = lifecycle::forgiving(&state, state.tasks(&kind).claim_ttl).await?;
     // A completion still running decides first; a finished one leaves nothing to abandon.
-    let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
+    let lock = match hold_completion(&state, &task_id, &who.hotkey).await {
+        Ok(lock) => lock,
+        Err(error) => return refuse_logged(&state, "abandon", signed.logged(), &task_id, error, tick, &who.hotkey).await,
+    };
     let seq = state.tasks(&kind).abandon(&state.redis, &task_id, &who.hotkey).await;
     state.delete(&lock).await?;
     let Some(seq) = seq? else {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, not_held(), tick, &who.hotkey).await;
     };
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
     let receipt = Receipt {
@@ -653,7 +693,7 @@ pub async fn abandon(
     };
     let (request, blobs) = signed.logged();
     let (hotkey, task, lapsed, key) = (who.hotkey.clone(), task_id.clone(), payload, state.key.clone());
-    let budget = state
+    let (budget, receipts) = state
         .db
         .run(move |conn| {
             // Decided here, on the outages the log holds up to this entry, so a replay decides it alike.
@@ -673,12 +713,13 @@ pub async fn abandon(
                 "expiry": expiry,
                 "forgiving": forgiving.logged(),
                 "forgiven": forgiven,
+                "block": tick.block,
             });
-            journal::append(conn, journal::Record::new("abandon", at, input, json!({"receipts": receipts, "budget": budget})).with_blobs(blobs))?;
-            Ok(budget)
+            journal::append(conn, journal::Record::new("abandon", at, input, json!({"receipts": receipts.clone(), "budget": budget})).with_blobs(blobs))?;
+            Ok((budget, receipts))
         })
         .await?;
-    Ok(Json(json!({"task_id": task_id, "budget": budget})))
+    Ok(Json(json!({"task_id": task_id, "budget": budget, "receipts": receipts})))
 }
 
 /// An upload storage lost is void; nothing else is anyone's to hand back.
@@ -732,11 +773,12 @@ pub async fn score(
     if !state.set_once(&lock, &who.hotkey, lifecycle::FINALIZE_LOCK_S).await? {
         return Err(ApiError::retry(503, "a verdict for this upload is already being recorded", "2"));
     }
-    let at = state.rule_now().await?;
+    let tick = state.tick().await?;
+    let at = tick.at;
     let mut wrong = None;
     let outcome = record_verdict(&state, &task_id, result, &who, signed.logged(), at, &mut wrong).await;
     if let Err(ApiError::Status { status, detail, .. }) = &outcome {
-        log_refused(&state, "report", signed.logged(), &task_id, (*status, detail), at, wrong).await?;
+        log_refused(&state, "report", signed.logged(), &task_id, (*status, detail), tick, wrong).await?;
     }
     state.delete(&lock).await?;
     outcome.map(Json)
@@ -899,6 +941,93 @@ pub async fn storage_probes(Shared(state): Shared<Arc<State>>, QueryParams(query
     Ok(Json(report))
 }
 
+/// Seconds a validator's storage probe link lasts, and links one validator gets a minute.
+const PROBE_LINK_S: u64 = 120;
+const PROBE_LINKS_PER_MINUTE: i64 = 4;
+/// Storage witnesses one validator may log a minute; one is enough for the rules, the rest are answered 429.
+const WITNESSES_PER_MINUTE: i64 = 2;
+
+/// A presigned PUT, GET and DELETE of a fresh key named and shaped like a miner's upload, so a validator probes storage the
+/// way miners use it, from where it stands; storage can't tell the probe from an upload.
+pub async fn storage_probe_link(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
+    if !state.per_minute("probe_links", &who.hotkey, PROBE_LINKS_PER_MINUTE).await? {
+        return Err(ApiError::retry(429, "too many probe links this minute", "60"));
+    }
+    let key = format!("uploads/{}.parquet", upload_name());
+    let at = now();
+    let since = Duration::from_secs_f64(at);
+    Ok(Json(json!({
+        "key": key,
+        "content_type": PARQUET,
+        "put_url": state.storage.presign("PUT", &key, PROBE_LINK_S, Some(PARQUET), since),
+        "get_url": state.storage.presign("GET", &key, PROBE_LINK_S, None, since),
+        "delete_url": state.storage.presign("DELETE", &key, PROBE_LINK_S, None, since),
+        "expires_at": at + PROBE_LINK_S as f64,
+    })))
+}
+
+/// What a validator's witness says failed, or None when it reports storage working: its own probe (`probe`, `ok` false) or its
+/// look at a completed upload (`storage`) that storage did not answer or answered with a server error.
+fn witnessed_failure(record: &Value) -> Option<String> {
+    let failed = match record["kind"].as_str() {
+        Some("probe") => record["ok"] == false,
+        Some("storage") => record["status"].as_i64().is_none_or(|status| status >= 500),
+        _ => false,
+    };
+    if !failed {
+        return None;
+    }
+    let what = match record["kind"].as_str() {
+        Some("probe") => format!("probe {}: {}", text(record, "step"), text(record, "detail")),
+        _ => format!("HEAD {}: {}", text(record, "key"), record["status"].as_i64().map_or_else(|| text(record, "error").to_string(), |s| format!("HTTP {s}"))),
+    };
+    Some(what.chars().take(200).collect())
+}
+
+/// A validator's signed report that storage failed it, logged at the block it arrived at. Wherever enough validators report
+/// failures close together, a claim alive then lapses at no cost, whatever the API's own probes saw (`outages::witnessed`).
+/// A refused report is logged too, so the validator's own record of sending it finds an answer in the log.
+pub async fn storage_witness(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
+    let tick = state.tick().await?;
+    let record = json_body(&body)?.get("record").cloned().unwrap_or(Value::Null);
+    let failure = witnessed_failure(&record).filter(|_| record["witness"] == who.hotkey.as_str());
+    let Some(detail) = failure else {
+        let error = ApiError::status(422, "a storage witness must be the caller's own and report a failure");
+        return refuse_logged(&state, "witness", signed.logged(), "", error, tick, &who.hotkey).await;
+    };
+    if !state.per_minute("witnesses", &who.hotkey, WITNESSES_PER_MINUTE).await? {
+        return Err(ApiError::retry(429, "too many storage witnesses this minute", "60"));
+    }
+    let (request, blobs) = signed.logged();
+    let validator = who.hotkey.clone();
+    let input = json!({"request": request, "witness": validator, "kind": record["kind"], "detail": detail, "at": tick.at, "block": tick.block});
+    let seq = state
+        .db
+        .run(move |conn| {
+            outages::note_witness(conn, &validator, tick.at, tick.block, &detail)?;
+            let (seq, _) = journal::append(conn, journal::Record::new("witness", tick.at, input, Value::Null).with_blobs(blobs))?;
+            Ok(seq)
+        })
+        .await?;
+    Ok(Json(json!({"accepted": true, "seq": seq, "block": tick.block})))
+}
+
 /// Every setting this copy runs with, secrets left out; the attestation binds its hash.
 pub async fn config(Shared(state): Shared<Arc<State>>) -> Answer {
     Ok(Json(state.settings.public()))
@@ -992,9 +1121,22 @@ pub async fn round_view(Shared(state): Shared<Arc<State>>, Path(round_id): Path<
 
 /// Storage outages and finality stalls the API saw in the last week: claims alive in them lapsed at no cost.
 pub async fn outages(Shared(state): Shared<Arc<State>>) -> Answer {
-    let since = state.rule_now().await? - crate::outages::KEEP_DAYS * 86_400.0;
-    let found = state.lookups.read(move |conn| crate::outages::recent(conn, since, 200)).await?;
-    Ok(Json(json!({"outages": found})))
+    let at = state.rule_now().await?;
+    let since = at - crate::outages::KEEP_DAYS * 86_400.0;
+    let (window, quorum) = (state.settings.storage_witness_window, state.settings.storage_witness_quorum);
+    let (found, witnessed) = state
+        .lookups
+        .read(move |conn| Ok((crate::outages::recent(conn, since, 200)?, crate::outages::witnessed(conn, since, at, window, quorum)?)))
+        .await?;
+    // Storage outages validators' witnesses make, beside the ones the API's own probes opened.
+    let witnessed: Vec<Value> = witnessed
+        .iter()
+        .map(|span| {
+            json!({"cause": crate::outages::WITNESSED, "start": span.start, "end": span.end, "start_block": span.start_block,
+                   "end_block": span.end_block, "validators": span.validators})
+        })
+        .collect();
+    Ok(Json(json!({"outages": found, "witnessed": witnessed, "witness_quorum": quorum, "witness_window_s": window})))
 }
 
 pub async fn round_log(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {

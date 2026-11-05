@@ -585,21 +585,37 @@ pub struct Forgiving {
     pub started_at: f64,
     pub claim_ttl: f64,
     pub block_seconds: f64,
+    /// Validators whose failed storage witnesses make an outage, and the seconds they must fall within (`outages::witnessed`).
+    pub witness_quorum: i64,
+    pub witness_window: f64,
 }
 
 impl Forgiving {
     pub fn logged(&self) -> Value {
-        json!({"started_at": Some(self.started_at).filter(|at| at.is_finite()), "claim_ttl": self.claim_ttl, "block_seconds": self.block_seconds})
+        json!({
+            "started_at": Some(self.started_at).filter(|at| at.is_finite()),
+            "claim_ttl": self.claim_ttl,
+            "block_seconds": self.block_seconds,
+            "witness_quorum": self.witness_quorum,
+            "witness_window": self.witness_window,
+        })
     }
 }
 
 pub async fn forgiving(state: &State, claim_ttl: f64) -> Result<Forgiving> {
-    Ok(Forgiving { started_at: state.started_at(), claim_ttl, block_seconds: state.clock().await?.block_seconds })
+    Ok(Forgiving {
+        started_at: state.started_at(),
+        claim_ttl,
+        block_seconds: state.clock().await?.block_seconds,
+        witness_quorum: state.settings.storage_witness_quorum,
+        witness_window: state.settings.storage_witness_window,
+    })
 }
 
 /// Why a claim that ended without an upload costs its miner nothing, if it does: it was held through a restart of the API
-/// (`restart`), or alive while storage failed its probe or finality fell behind (`storage_outage`, `finality_outage`). Read in
-/// the transaction that logs the lapse.
+/// (`restart`), alive while storage failed its probe or finality fell behind (`storage_outage`, `finality_outage`), or alive
+/// while a quorum of validators reported storage failing them (`storage_witnessed_outage`), whatever the API's own probes saw.
+/// Read in the transaction that logs the lapse.
 pub fn forgiven_in(conn: &Connection, forgiving: &Forgiving, expiry: Option<f64>) -> Result<Option<String>> {
     let Some(expiry) = expiry else { return Ok(None) };
     // Claimed before this process started: the miner may have tried to finish while we were down.
@@ -608,7 +624,16 @@ pub fn forgiven_in(conn: &Connection, forgiving: &Forgiving, expiry: Option<f64>
     }
     // A claim lasts its time plus a block for the one it was read in; one more block keeps a span's edge on the miner's side.
     let from = expiry - forgiving.claim_ttl - 2.0 * forgiving.block_seconds;
-    Ok(outages::during(conn, from, expiry)?.map(|cause| format!("{cause}_outage")))
+    if let Some(cause) = outages::during(conn, from, expiry)? {
+        return Ok(Some(format!("{cause}_outage")));
+    }
+    Ok(witnessed_outage(conn, forgiving, from, expiry)?)
+}
+
+/// `storage_witnessed_outage` when validators' failed storage witnesses cover any of `from..=expiry`.
+pub fn witnessed_outage(conn: &Connection, forgiving: &Forgiving, from: f64, expiry: f64) -> Result<Option<String>> {
+    let spans = outages::witnessed(conn, from, expiry, forgiving.witness_window, forgiving.witness_quorum)?;
+    Ok((!spans.is_empty()).then(|| format!("{}_outage", outages::WITNESSED)))
 }
 
 pub fn short(hotkey: &str) -> &str {

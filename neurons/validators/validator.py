@@ -13,7 +13,7 @@ import numpy as np
 import wandb
 
 import desearch
-from desearch import attestation, env
+from desearch import attestation, env, witness
 from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
@@ -43,6 +43,8 @@ from neurons.validators.weights import set_weights, weights_from_shares
 from neurons.validators.witness import (
     CensorshipCheck,
     ChainHead,
+    OutcomeLog,
+    StorageProbe,
     StorageWitness,
     WitnessStore,
 )
@@ -92,6 +94,8 @@ class Validator:
         self.journal = None
         self.custody: Custody | None = None
         self.custody_ready = asyncio.Lock()
+        # This validator's own probes of storage, and its reports to the API of storage failing; set up with the chain.
+        self.storage_probe: StorageProbe | None = None
 
     async def initialize(self) -> None:
         network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
@@ -109,6 +113,14 @@ class Validator:
         self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
         self.head = ChainHead(self.subtensor.block)
         await self.head.refresh()
+        self.storage_probe = StorageProbe(
+            self.http,
+            self.config.neuron.task_api_url,
+            self.wallet.hotkey,
+            self.witnesses,
+            self.head,
+            every_s=self.config.witness_probe_every_s or 60.0,
+        )
 
     async def run(self) -> None:
         await self.initialize()
@@ -124,7 +136,10 @@ class Validator:
             asyncio.create_task(self.follow_journal()),
             asyncio.create_task(self.head.follow(self.stopping)),
             asyncio.create_task(self.serve_relay()),
+            asyncio.create_task(self.check_witnesses()),
         ]
+        if self.config.witness_probe_every_s:
+            background.append(asyncio.create_task(self.storage_probe.follow(self.stopping)))
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
         finally:
@@ -404,14 +419,13 @@ class Validator:
 
     async def serve_relay(self) -> None:
         """A path to the task API for miners that doesn't run through the operator's network, witnessing every
-        request it forwards and proving any the API's log then lacks."""
+        request it forwards."""
         relay_config = self.config.relay
         if not relay_config.port:
             return
-        api = self.config.neuron.task_api_url
         relay = Relay(
             self.wallet.hotkey,
-            api,
+            self.config.neuron.task_api_url,
             self.witnesses,
             self.head,
             registered=lambda hotkey: hotkey in self.metagraph.hotkeys,
@@ -419,6 +433,16 @@ class Validator:
             publish_delay_blocks=relay_config.publish_delay_blocks,
         )
         runner = await serve(relay, relay_config.host, relay_config.port)
+        try:
+            await self.stopping.wait()
+        finally:
+            await runner.cleanup()
+
+    async def check_witnesses(self) -> None:
+        """Holds the task API to the answer it gave every request this validator witnessed (relayed for a miner, or its own
+        storage reports): a proof when the anchored log lacks, contradicts or delayed it, or never saw it arrive."""
+        relay_config = self.config.relay
+        api = self.config.neuron.task_api_url
         custody = await self.api_signer()
         signer = relay_config.signer or custody.current or custody.fallback
         check = CensorshipCheck(
@@ -432,11 +456,19 @@ class Validator:
             ),
             after_blocks=relay_config.check_after_blocks,
             source=api,
+            outcomes=OutcomeLog(lambda: self.journal),
+            signers=lambda: [relay_config.signer] if relay_config.signer else custody.every(),
+            late_blocks=relay_config.late_blocks,
+            keypair=self.wallet.hotkey,
         )
-        try:
-            await check.follow(self.stopping)
-        finally:
-            await runner.cleanup()
+        await check.follow(self.stopping)
+
+    def upload_log_problem(self, problem: dict) -> None:
+        """A fork or withheld file of the upload log: kept, signed, with this validator's proofs."""
+        if problem["severity"] != "fraud":
+            return
+        proof = witness.seal(self.wallet.hotkey, {**problem, "storage_url": self.config.neuron.storage_url})
+        self.witnesses.add_proof(proof, f"upload_log:{problem['seq']}")
 
     async def follow_upload_log(self) -> None:
         """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""
@@ -447,6 +479,7 @@ class Validator:
                 self.wallet.hotkey,
                 self.witnesses,
                 self.head,
+                on_failure=self.storage_probe.noticed if self.config.witness_probe_every_s else None,
             )
             if self.config.witness_storage
             else None
@@ -457,6 +490,7 @@ class Validator:
             await self.api_signer(),
             self.ledger,
             observer,
+            on_problem=self.upload_log_problem,
         )
         pruned_at = 0.0
         while not self.stopping.is_set():

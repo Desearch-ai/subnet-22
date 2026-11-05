@@ -255,7 +255,7 @@ async fn every_completed_upload_is_logged_signed_for_validators() {
     let again = uploadlog::flush(&h.state, &h.state.storage).await.unwrap();
     let written = h.json_object(&upload_log_key(1)).unwrap();
     let later = uploadlog::flush(&h.state, &h.state.storage).await.unwrap();
-    assert_eq!(h.json_object(UPLOAD_LOG_LATEST), Some(json!({"seq": 2})));
+    assert_eq!(h.json_object(UPLOAD_LOG_LATEST).unwrap()["seq"], 2);
     let signature: Vec<u8> = (0..128).step_by(2).map(|i| u8::from_str_radix(&written["signature"].as_str().unwrap()[i..i + 2], 16).unwrap()).collect();
     assert!(desearch::hotkey::verify(&desearch::hotkey::public_of(&h.state.signer()).unwrap(), &log_payload(written.as_object().unwrap()), &signature));
     let entries: Vec<Value> = written["entries"].as_array().unwrap().iter().map(|e| e["task_id"].clone()).collect();

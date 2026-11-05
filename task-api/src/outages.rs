@@ -3,6 +3,10 @@
 //!
 //! Each outage is a span of rule time from the last probe that worked to the first one that worked again, so a claim that
 //! lapsed anywhere near it is forgiven. Spans are public at `GET /v1/outages`.
+//!
+//! Validators' failed storage witnesses make outages too, whatever the API's own probes say: wherever `quorum` distinct
+//! validators reported storage failing within `window` seconds of each other, storage was down for miners. Those spans are
+//! not opened or closed by the API; they are a function of the witnesses the log holds, so a replay finds the same ones.
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -13,8 +17,12 @@ use crate::state::State;
 
 pub const STORAGE: &str = "storage";
 pub const FINALITY: &str = "finality";
+/// Object storage refused to lock a completed upload's version, so the completion was refused.
+pub const UPLOAD_LOCK: &str = "upload_lock";
 /// Where the storage probe writes; it is overwritten every probe.
 pub const PROBE_KEY: &str = "probe/storage.json";
+/// The cause a lapse forgiven on validators' witnesses names.
+pub const WITNESSED: &str = "storage_witnessed";
 pub const KEEP_DAYS: f64 = 7.0;
 const DAY: f64 = 86_400.0;
 
@@ -31,6 +39,14 @@ pub fn create(conn: &Connection) -> Result<()> {
             detail      TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS outages_span ON outages (start, end);
+        CREATE TABLE IF NOT EXISTS storage_witnesses (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            validator TEXT NOT NULL,
+            at        REAL NOT NULL,
+            block     INTEGER NOT NULL,
+            detail    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS storage_witnesses_at ON storage_witnesses (at);
         ",
     )?;
     Ok(())
@@ -83,6 +99,54 @@ pub fn during(conn: &Connection, from: f64, to: f64) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// A validator's report that storage failed it, at the rule time it reached the API.
+pub fn note_witness(conn: &Connection, validator: &str, at: f64, block: i64, detail: &str) -> Result<()> {
+    conn.execute("INSERT INTO storage_witnesses (validator, at, block, detail) VALUES (?, ?, ?, ?)", params![validator, at, block, detail])?;
+    Ok(())
+}
+
+/// One stretch validators saw storage down: from the first report of a quorum to `window` after the last, with how many
+/// distinct validators reported in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Witnessed {
+    pub start: f64,
+    pub end: f64,
+    pub start_block: i64,
+    pub end_block: i64,
+    pub validators: usize,
+}
+
+/// The stretches of `from..=to` that `quorum` distinct validators' failed storage witnesses cover: each report closes a window
+/// of `window` seconds back, and wherever one holds reports from `quorum` validators, storage was down from the first of them
+/// to `window` after the last. Overlapping stretches are one.
+pub fn witnessed(conn: &Connection, from: f64, to: f64, window: f64, quorum: i64) -> Result<Vec<Witnessed>> {
+    if quorum <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare("SELECT validator, at, block FROM storage_witnesses WHERE at >= ? AND at <= ? ORDER BY at, id")?;
+    let reports: Vec<(String, f64, i64)> =
+        statement.query_map(params![from - 2.0 * window, to], |row| Ok((row.get(0)?, crate::db::real(row, 1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut spans: Vec<Witnessed> = Vec::new();
+    for (i, (_, at, block)) in reports.iter().enumerate() {
+        let within: Vec<&(String, f64, i64)> = reports[..=i].iter().filter(|(_, then, _)| *then >= at - window).collect();
+        let validators = within.iter().map(|(validator, _, _)| validator.as_str()).collect::<std::collections::BTreeSet<_>>().len();
+        if (validators as i64) < quorum {
+            continue;
+        }
+        let (start, start_block) = (within[0].1, within[0].2);
+        let span = Witnessed { start, end: at + window, start_block, end_block: block + (window / 12.0).ceil() as i64, validators };
+        match spans.last_mut() {
+            Some(last) if last.end >= span.start => {
+                last.end = last.end.max(span.end);
+                last.end_block = last.end_block.max(span.end_block);
+                last.validators = last.validators.max(span.validators);
+            }
+            _ => spans.push(span),
+        }
+    }
+    Ok(spans.into_iter().filter(|span| span.start <= to && span.end >= from).collect())
+}
+
 pub fn recent(conn: &Connection, since: f64, limit: i64) -> Result<Vec<Value>> {
     let mut statement =
         conn.prepare("SELECT cause, start, end, start_block, end_block, detail FROM outages WHERE end IS NULL OR end >= ? ORDER BY start DESC LIMIT ?")?;
@@ -101,6 +165,7 @@ pub fn recent(conn: &Connection, since: f64, limit: i64) -> Result<Vec<Value>> {
 
 pub fn prune(conn: &Connection, now: f64) -> Result<()> {
     conn.execute("DELETE FROM outages WHERE end IS NOT NULL AND end < ?", [now - KEEP_DAYS * DAY])?;
+    conn.execute("DELETE FROM storage_witnesses WHERE at < ?", [now - KEEP_DAYS * DAY])?;
     Ok(())
 }
 
@@ -135,5 +200,22 @@ mod tests {
         let listed = recent(&conn, 0.0, 10).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!((listed[1]["cause"].clone(), listed[1]["end_block"].clone()), (json!(STORAGE), json!(15)));
+    }
+
+    #[test]
+    fn validators_witnesses_make_an_outage_where_a_quorum_of_them_saw_storage_fail() {
+        let conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        note_witness(&conn, "v1", 1_000.0, 10, "probe put: HTTP 503").unwrap();
+        note_witness(&conn, "v1", 1_060.0, 15, "probe put: HTTP 503").unwrap();
+        assert_eq!(witnessed(&conn, 0.0, 5_000.0, 300.0, 2).unwrap(), vec![], "one validator alone is not a quorum");
+        note_witness(&conn, "v2", 1_200.0, 27, "HEAD uploads/x: timed out").unwrap();
+        let spans = witnessed(&conn, 0.0, 5_000.0, 300.0, 2).unwrap();
+        assert_eq!(spans, vec![Witnessed { start: 1_000.0, end: 1_500.0, start_block: 10, end_block: 52, validators: 2 }]);
+        assert_eq!(witnessed(&conn, 1_400.0, 1_600.0, 300.0, 2).unwrap().len(), 1, "a claim alive at its tail");
+        assert!(witnessed(&conn, 1_501.0, 2_000.0, 300.0, 2).unwrap().is_empty(), "a claim made after it");
+        note_witness(&conn, "v2", 2_000.0, 90, "probe get: HTTP 500").unwrap();
+        assert_eq!(witnessed(&conn, 0.0, 5_000.0, 300.0, 2).unwrap().len(), 1, "a lone report later opens nothing");
+        assert!(witnessed(&conn, 0.0, 5_000.0, 300.0, 0).unwrap().is_empty(), "quorum 0 turns it off");
     }
 }

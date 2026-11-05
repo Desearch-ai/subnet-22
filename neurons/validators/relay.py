@@ -3,15 +3,15 @@ completions and abandons here, the validator forwards each one unchanged and sig
 
 The relay checks the miner's signature before forwarding, so it never vouches for, or passes on, a request the
 miner did not sign; it adds no header of its own, so the API sees the miner's request byte for byte. The witness
-goes back to the miner in the `X-Witness` header and is published here once a few blocks have passed, so nobody
-learns in real time which relay a miner is using.
+keeps the receipts the API signed in its answer, or the refusal it gave, so the API is held to the outcome it
+answered with, not only to having been asked. It goes back to the miner in the `X-Witness` header and is published
+here once a few blocks have passed, so nobody learns in real time which relay a miner is using.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 import time
@@ -61,19 +61,6 @@ class Bucket:
 
 def refused(status: int, detail: str) -> web.Response:
     return web.json_response({"detail": detail}, status=status)
-
-
-def carried_receipts(status: int | None, raw: bytes) -> int:
-    """How many signed receipts the API's answer carries; each names the request and must be in its log."""
-    if status != 200:
-        return 0
-    try:
-        answer = json.loads(raw)
-    except ValueError:
-        return 0
-    if not isinstance(answer, dict):
-        return 0
-    return len([r for r in answer.get("receipts") or [answer.get("receipt")] if r])
 
 
 class Relay:
@@ -182,19 +169,9 @@ class Relay:
                 }
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             error = type(exc).__name__
-        record = witness.sign(
+        record = witness.request_record(
             self.keypair,
             {
-                "kind": REQUEST,
-                "request": witness.request_hash(
-                    request.method,
-                    request.path,
-                    digest,
-                    hotkey,
-                    timestamp,
-                    nonce,
-                    signature,
-                ),
                 "miner": hotkey,
                 "method": request.method,
                 "path": request.path,
@@ -202,20 +179,13 @@ class Relay:
                 "timestamp": timestamp,
                 "nonce": nonce,
                 "signature": signature,
-                "block": block,
-                "forwarded_at": forwarded_at,
-                "status": status,
-                "response_sha256": (
-                    hashlib.sha256(raw).hexdigest() if status is not None else None
-                ),
-                "promised": carried_receipts(status, raw),
-                "answered_ms": (
-                    int((time.monotonic() - started) * 1000)
-                    if status is not None
-                    else None
-                ),
-                "error": error,
             },
+            block,
+            forwarded_at,
+            status,
+            raw,
+            int((time.monotonic() - started) * 1000) if status is not None else None,
+            error,
         )
         self.store.add(record)
         self.forwarded += 1

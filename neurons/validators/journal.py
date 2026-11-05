@@ -40,6 +40,9 @@ KEEP_FILES = 20
 REPLAY_TIMEOUT_S = 600.0
 # A request the API let in is in a `requests` entry within about this many blocks of arriving.
 LOG_LAG_BLOCKS = 5
+# Entries that answer a signed request, by the request's hash: what a witness relay holds the API's answer against.
+OUTCOME_KINDS = ("claim", "complete", "abandon", "witness")
+OUTCOMES_KEPT_S = 8 * 86400
 
 log = logging.getLogger("validator")
 
@@ -90,6 +93,10 @@ class JournalFollower:
             CREATE TABLE IF NOT EXISTS blocks (block INTEGER PRIMARY KEY, hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS requests (hash TEXT PRIMARY KEY, seq INTEGER NOT NULL, block INTEGER);
             CREATE TABLE IF NOT EXISTS request_entries (seq INTEGER PRIMARY KEY, block INTEGER);
+            CREATE TABLE IF NOT EXISTS outcomes (
+                request TEXT NOT NULL, seq INTEGER NOT NULL, at REAL NOT NULL, entry TEXT NOT NULL,
+                PRIMARY KEY (request, seq)
+            );
             """)
 
     def state(self, name: str):
@@ -116,6 +123,14 @@ class JournalFollower:
             "SELECT seq, block FROM requests WHERE hash = ?", (request,)
         ).fetchone()
         return (row[0], row[1]) if row else None
+
+    def outcomes(self, request: str) -> list[dict]:
+        """The entries answering a signed request, by its hash, that an anchor on chain covers."""
+        rows = self.db.execute(
+            "SELECT entry FROM outcomes WHERE request = ? AND seq <= ? ORDER BY seq",
+            (request, self.anchored_through()),
+        ).fetchall()
+        return [json.loads(entry) for (entry,) in rows]
 
     def anchored_through(self) -> int:
         """The last entry an anchor on chain covers that this log agrees with."""
@@ -226,6 +241,8 @@ class JournalFollower:
         for entry in entries:
             if entry.get("kind") == "requests":
                 self.index_requests(entry)
+            elif entry.get("kind") in OUTCOME_KINDS:
+                self.index_outcome(entry)
         self.db.executemany(
             "INSERT OR REPLACE INTO hashes VALUES (?, ?, ?)",
             [(entry["seq"], hash_of(entry), segment["segment"]) for entry in entries],
@@ -267,6 +284,15 @@ class JournalFollower:
             "INSERT OR REPLACE INTO request_entries VALUES (?, ?)",
             (entry["seq"], given.get("block")),
         )
+
+    def index_outcome(self, entry: dict) -> None:
+        request = (entry.get("input") or {}).get("request")
+        named = request.get("request") if isinstance(request, dict) else None
+        if isinstance(named, str):
+            self.db.execute(
+                "INSERT OR REPLACE INTO outcomes VALUES (?, ?, ?, ?)",
+                (named, entry["seq"], float(entry.get("at") or 0), json.dumps(entry)),
+            )
 
     async def check_blocks(self, entries: list[dict]) -> list[Problem]:
         """Every block hash the API decided on, against our own node."""
@@ -382,6 +408,8 @@ class JournalFollower:
         files = sorted((self.folder / "seq").glob("*.json"))
         for path in files[:-KEEP_FILES]:
             path.unlink(missing_ok=True)
+        self.db.execute("DELETE FROM outcomes WHERE at < ?", (time.time() - OUTCOMES_KEPT_S,))
+        self.db.commit()
 
     def write_proof(self, problem: Problem) -> None:
         if problem.severity != "fraud":

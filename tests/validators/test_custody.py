@@ -425,7 +425,7 @@ def test_the_upload_log_takes_each_file_from_the_signer_of_its_turn(tmp_path):
             custody.snapshots = chain(f"sn22tee:{H1},{H2}")
             await custody.poll()
             reader = UploadLog(http, base, custody, Ledger(":memory:"))
-            return [len((await reader.read(seq))["entries"]) for seq in (1, 2, 3)]
+            return [len((await reader.read(seq))[0]["entries"]) for seq in (1, 2, 3)]
 
     assert asyncio.run(scenario()) == [
         1,

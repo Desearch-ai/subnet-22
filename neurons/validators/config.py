@@ -81,7 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--relay.check_after_blocks",
         type=int,
         default=50,
-        help="Blocks after which a relayed request missing from the task API's log is a censorship proof.",
+        help="Blocks after which a witnessed request whose outcome the task API's anchored log lacks or contradicts is a censorship proof.",
+    )
+    parser.add_argument(
+        "--relay.late_blocks",
+        type=int,
+        default=10,
+        help="Blocks after it was forwarded within which the task API must have judged a witnessed request; later is a censorship proof.",
     )
     parser.add_argument(
         "--relay.signer",
@@ -95,6 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not look at every completed upload in storage.",
     )
     parser.set_defaults(witness_storage=True)
+    parser.add_argument(
+        "--witness.probe_every_s",
+        type=float,
+        default=60.0,
+        dest="witness_probe_every_s",
+        help="Seconds between this validator's own probes of storage through a link the task API hands validators; failures are reported to it. 0 probes nothing.",
+    )
     parser.add_argument(
         "--neuron.archive_network",
         type=str,

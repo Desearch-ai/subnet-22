@@ -321,6 +321,8 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/admin/enqueue", post(routes::enqueue))
         .route("/v1/key", get(routes::key))
         .route("/v1/storage/probes", get(routes::storage_probes))
+        .route("/v1/storage/probe-link", post(routes::storage_probe_link))
+        .route("/v1/storage/witness", post(routes::storage_witness))
         .route("/v1/config", get(routes::config))
         .route("/v1/attestation", get(routes::attestation))
         .route("/v1/custody", get(routes::custody))

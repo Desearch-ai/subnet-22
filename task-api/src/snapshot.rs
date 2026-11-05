@@ -15,7 +15,7 @@ use crate::py::canonical;
 
 /// Each table, the columns decisions read, and which rows: every row of a table the API prunes itself (prunes are logged and
 /// replayed), and of verdicts only those a take-back, a strike or a lockout can still reach.
-const TABLES: [(&str, &str, &str); 12] = [
+const TABLES: [(&str, &str, &str); 13] = [
     ("miners", "hotkey, pool, budget, verified", "1"),
     ("credits", "pool, hotkey, hour, amount", "1"),
     ("coverage", "hotkey, hour, assigned, returned", "1"),
@@ -28,6 +28,8 @@ const TABLES: [(&str, &str, &str); 12] = [
     // Outages a lapse's forgiveness reads, and the wrong reports that exclude a validator.
     ("outages", "cause, start, end, start_block, end_block, detail", "1"),
     ("wrong_reports", "validator, task_id, why, at", "1"),
+    // Validators' storage witnesses, which forgive lapses wherever a quorum of them saw storage fail.
+    ("storage_witnesses", "validator, at, block, detail", "1"),
     (
         "validations",
         "task_id, kind, round_id, miner, validator, verdict, credited, completed_at, scored_at, upload_key",

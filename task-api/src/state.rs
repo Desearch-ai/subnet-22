@@ -120,6 +120,9 @@ pub async fn redis_from(url: &str) -> Result<Redis> {
     Ok(redis::aio::ConnectionManager::new_with_config(client, config).await?)
 }
 
+/// Refused completions and abandons of one hotkey logged per minute; more are answered 429 and not logged.
+pub const REFUSALS_LOGGED_PER_MINUTE: i64 = 30;
+
 /// Log pages queued at once before more are turned away.
 const LOG_READS_WAITING: usize = 32;
 const LOG_THREADS: usize = 2;
@@ -405,6 +408,23 @@ impl State {
         let key = format!("refused:{hotkey}:{code}:{}", (now() / MINUTE).floor() as i64);
         let set: Option<String> = redis::cmd("SET").arg(&key).arg("1").arg("NX").arg("EX").arg(2 * MINUTE as i64).query_async(&mut self.redis.clone()).await?;
         Ok(set.is_some())
+    }
+
+    /// Whether one more refusal of this hotkey's completions or abandons this minute is logged: the first
+    /// `REFUSALS_LOGGED_PER_MINUTE` are, so a relay's witness of any of them finds it in the log.
+    pub async fn refusal_to_log(&self, hotkey: &str) -> Result<bool> {
+        self.per_minute("refusals", hotkey, REFUSALS_LOGGED_PER_MINUTE).await
+    }
+
+    /// Counts one more `name` for this hotkey this minute; false once it is past `limit`.
+    pub async fn per_minute(&self, name: &str, hotkey: &str, limit: i64) -> Result<bool> {
+        let key = format!("{name}:{hotkey}:{}", (now() / MINUTE).floor() as i64);
+        let mut redis = self.redis.clone();
+        let count: i64 = redis.incr(&key, 1).await?;
+        if count == 1 {
+            let _: bool = redis.expire(&key, 2 * MINUTE as i64).await?;
+        }
+        Ok(count <= limit)
     }
 
     /// Log reads have a budget of their own, so a dashboard cannot use up the rest.

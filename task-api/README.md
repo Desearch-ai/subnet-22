@@ -73,7 +73,10 @@ are:
 
 **Upload log.** Every completed crawl upload, with the counts its miner reported, is written every
 30 seconds to a numbered file signed by the API, `log/uploads/seq/<n>.json` in the uploads bucket,
-with the newest number in `log/uploads/latest.json`. Validators count each miner's work from it and
+with the newest number and its hash in `log/uploads/latest.json`, signed too. Each file names the SHA-256 of
+the previous file's bytes (`prev`) and when it was written (`prev_written_at`), and a failed write is retried
+with the same bytes, so a validator tells a forked or withheld file from one the bucket let go after its day
+([witness relays](../docs/witness-relays.md#upload-log-chain)). Validators count each miner's work from it and
 set their weights themselves.
 
 **Checks.** A drawn upload is listed in `validation/open.json` in the same public bucket, so
@@ -135,7 +138,10 @@ attempt and a withdrawn page are reported dropped, so the bot sends them again.
 
 **Signed log.** Every claim, refusal and completion is signed by the API, and names the hash of the
 miner's signed request it answers (`request`), so a validator that relayed the request can show whether the
-log holds it. `tools/verify_round.py` checks a closed round end to end, reading the seed block's hash from
+log holds it. A completion's answer carries its signed receipt (`receipt`) and an abandon's its receipts, as a
+claim's does, and every completion or abandon the API turns down is logged with why and the block it was judged
+at (past 30 refusals of one hotkey in a minute, the rest are answered 429 unlogged): a relay holds the API to the
+outcome it answered with. `tools/verify_round.py` checks a closed round end to end, reading the seed block's hash from
 your own node; given the round's URLs (`--urls`, the `rounds/<round_id>` file in the pages bucket), it also
 cuts its tasks again from the seed. `tools/check_witnesses.py` turns relayed requests the log lacks into
 censorship proofs.
@@ -148,6 +154,13 @@ link and reads it back through another; failures are public at `/v1/storage/prob
 probe does ([Rules](../docs/rules.md#outages)), and a claim alive during one costs its miner nothing. Each
 outage's start and end is an `outage` entry; a lapse's entry says which copy decided (its rule start time),
 the claim's time and the block length, and a replay decides it again from the logged outages.
+
+**Validators' storage witnesses.** The canary is the API's own word, so validators probe storage too: `POST
+/v1/storage/probe-link` (validators only) hands one a presigned PUT, GET and DELETE of a fresh key shaped like an
+upload, and `POST /v1/storage/witness` takes its signed report of storage failing it (its probe, or a look at a
+completed upload). Each report is a `witness` entry; wherever `TASK_API_STORAGE_WITNESS_QUORUM` validators'
+reports fall within `TASK_API_STORAGE_WITNESS_WINDOW_S` of each other, claims alive then lapse at no cost, and a
+replay decides the same from the logged reports ([Rules](../docs/rules.md#outages)).
 
 ## Verifiable log
 
@@ -168,8 +181,9 @@ dropped, reordered or forked without every later hash changing.
 | `started`, `clock` | the rule time a copy's start was lowered to at its first block; the anchor every rule time is counted from | — |
 | `snapshot` | when | the digest of the accounts, and the accounts in a blob named by it (one at the first start, then every `TASK_API_SNAPSHOT_EVERY_S`) |
 | `requests` | the hash of every authenticated request since the last, and the block | — |
-| `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body; a completion's Object Lock (version, until, whether it held); a report its task could not have produced (`wrong_report`) | the receipts (each naming the request's hash), the job, the vote, the budget (as the incentive caps it), the round's commitment, or why it was refused |
-| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`) |
+| `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body; the block it was judged at; a completion's Object Lock (version, until); a report its task could not have produced (`wrong_report`) | the receipts (each naming the request's hash), the job, the vote, the budget (as the incentive caps it), the round's commitment, or why it was refused |
+| `witness` | a validator's signed report that storage failed it (its probe, or a look at an upload), the block it arrived at | — (a refused one: why) |
+| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`, `upload_lock_outage`, `storage_witnessed_outage`) |
 | `probe`, `outage` | the storage canary's probe: when, the block, whether it passed and the step that failed; an outage's start or end, its cause and block | — |
 | `reveal`, `close`, `embed_round`, `recommit` | the round, its seed block and that block's hash; a later seed block for a commitment not anchored in time | the seed, the serve order, the batches the seed cut, the round log's Merkle root, the new commitment |
 | `metagraph` | the neurons and their stakes, when who may vote changed | the validators |
@@ -491,7 +505,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
 | `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
 | `TASK_API_CANARY_EVERY_S` | 60 | seconds between storage canary probes; 0 turns the canary off; a failed one opens a storage outage |
-| `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on |
+| `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on. A lock storage refuses fails the completion (503) and opens an `upload_lock` outage |
+| `TASK_API_STORAGE_WITNESS_QUORUM` | 3 | distinct validators whose storage witnesses within the window make a storage outage, whatever the API's probes saw; 0 turns it off |
+| `TASK_API_STORAGE_WITNESS_WINDOW_S` | 300 | seconds those witnesses must fall within of each other |
 | `TASK_API_STORAGE_PROBE_S` | 30 | seconds between storage probes; a failed one opens an outage that forgives the claims alive in it |
 | `TASK_API_FINALITY_STALL_BLOCKS` | 10 | blocks finality may fall behind the best block before the claims alive then are forgiven |
 | `TASK_API_OBJECTIVE_QUORUM` | 1 | reports with the same facts a fail on the file needs before it charges the miner |
@@ -535,7 +551,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them. Every answer 
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads; validators follow the custody chain (or the key their release pins) and never take it from here |
 | `GET /v1/clock` | the finalized block every deadline is measured on, and the anchor that turns blocks into the rule times the API stores |
-| `GET /v1/outages` | storage outages and finality stalls of the last week; claims alive in them lapsed at no cost |
+| `GET /v1/outages` | storage outages, upload lock refusals and finality stalls of the last week, and under `witnessed` the storage outages validators' witnesses make; claims alive in them lapsed at no cost |
 | `GET /v1/storage/probes` | the storage canary's probes since `since` (the last hour), newest first, and the outages they show |
 | `GET /v1/config` | every setting the API runs with, by variable name, secrets left out |
 | `GET /v1/attestation` | in a TEE: the TDX quote, its event log and app compose, and the document it binds (the signer, the handover key, the hash of `/v1/config`, the TLS key); `?nonce=` for a fresh one ([format](../docs/tee.md#get-v1attestation)) |

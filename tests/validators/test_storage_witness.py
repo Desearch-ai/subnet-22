@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from contextlib import AsyncExitStack
 
 import aiohttp
@@ -19,7 +20,7 @@ from bittensor.wallets import Keypair
 
 from desearch import witness
 from desearch.manifest import payload, verify
-from desearch.witness import STORAGE
+from desearch.witness import PROBE, STORAGE
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.tasks import (
     DownloadFailed,
@@ -28,7 +29,7 @@ from neurons.validators.tasks import (
     upload_url,
 )
 from neurons.validators.upload_log import UploadLog
-from neurons.validators.witness import ChainHead, StorageWitness, WitnessStore
+from neurons.validators.witness import ChainHead, StorageProbe, StorageWitness, WitnessStore
 from tests.validators.test_worklist import API_KEY, SIGNER, manifest
 
 VALIDATOR = Keypair.create_from_uri("//storage-witness-validator")
@@ -295,3 +296,110 @@ async def test_the_upload_log_hands_every_new_upload_to_the_storage_witness():
         )
         assert await upload_log.poll() == 1
     assert watching.seen == [{"key": KEY, "task_id": "t"}]
+
+
+class ProbeWorld:
+    """The task API's probe links and storage witness endpoint, and a bucket the links point at."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.fail_put = False
+        self.reports: list[dict] = []
+        self.base = ""
+
+    def app(self) -> web.Application:
+        app = web.Application(client_max_size=1024 * 1024)
+        app.router.add_post("/v1/storage/probe-link", self.link)
+        app.router.add_post("/v1/storage/witness", self.witness)
+        app.router.add_route("*", "/bucket/{key:.*}", self.bucket)
+        return app
+
+    async def link(self, request: web.Request) -> web.Response:
+        assert request.headers["X-Hotkey"] == VALIDATOR.ss58_address
+        key = "uploads/0123456789abcdef0123456789abcdef.parquet"
+        url = f"{self.base}/bucket/{key}"
+        return web.json_response({"key": key, "put_url": url, "get_url": url, "delete_url": url, "content_type": "application/vnd.apache.parquet"})
+
+    async def witness(self, request: web.Request) -> web.Response:
+        body = await request.read()
+        signed = {
+            "method": "POST",
+            "path": request.path,
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "timestamp": request.headers["X-Timestamp"],
+            "nonce": request.headers["X-Nonce"],
+            "signature": request.headers["X-Signature"],
+            "miner": request.headers["X-Hotkey"],
+        }
+        assert witness.miner_signed(signed), "the report is signed by the validator"
+        self.reports.append(json.loads(body))
+        return web.json_response({"accepted": True, "seq": 7, "block": 42})
+
+    async def bucket(self, request: web.Request) -> web.Response:
+        key = request.match_info["key"]
+        if request.method == "PUT":
+            if self.fail_put:
+                return web.Response(status=503)
+            self.objects[key] = await request.read()
+            return web.Response()
+        if request.method == "DELETE":
+            self.objects.pop(key, None)
+            return web.Response(status=204)
+        if key not in self.objects:
+            return web.Response(status=404)
+        return web.Response(body=self.objects[key])
+
+
+async def probing(stack: AsyncExitStack, tmp_path, world: ProbeWorld):
+    server = TestServer(world.app(), host="127.0.0.1")
+    await server.start_server()
+    stack.push_async_callback(server.close)
+    world.base = str(server.make_url("")).rstrip("/")
+    http = await stack.enter_async_context(aiohttp.ClientSession())
+    store = WitnessStore(str(tmp_path / "witness.db"))
+    stack.callback(store.close)
+    head = ChainHead(lambda: asyncio.sleep(0, 42))
+    await head.refresh()
+    return StorageProbe(http, world.base, VALIDATOR, store, head), store
+
+
+async def test_a_validator_probes_storage_the_way_miners_use_it_and_reports_only_failures(tmp_path):
+    world = ProbeWorld()
+    async with AsyncExitStack() as stack:
+        probe, store = await probing(stack, tmp_path, world)
+        record = await probe.probe()
+        assert witness.verify(record) and record["kind"] == PROBE and record["ok"] is True
+        assert world.objects == {}, "the probe deletes what it wrote"
+        assert await probe.report() is None, "storage worked: nothing to report"
+
+        world.fail_put = True
+        failed = await probe.probe()
+        assert (failed["ok"], failed["step"], failed["detail"]) == (False, "put", "HTTP 503")
+        assert await probe.report() == 200
+        assert world.reports == [{"record": failed}]
+        assert await probe.report() is None, "at most one report a minute"
+
+        # The report is witnessed like a relayed request, so the API's log owes it an entry.
+        (sent,) = store.records(witness.REQUEST)
+        assert witness.verify(sent) and sent["path"] == "/v1/storage/witness" and sent["miner"] == VALIDATOR.ss58_address
+        assert witness.owes_outcome(sent) and sent["status"] == 200
+
+
+async def test_a_look_at_an_upload_storage_fails_is_reported_like_a_failed_probe(tmp_path):
+    world = ProbeWorld()
+    async with AsyncExitStack() as stack:
+        probe, store = await probing(stack, tmp_path, world)
+        failing = web.Application()
+
+        async def down(_: web.Request) -> web.Response:
+            return web.Response(status=503)
+
+        failing.router.add_route("*", "/{key:.*}", down)
+        server = TestServer(failing, host="127.0.0.1")
+        await server.start_server()
+        stack.push_async_callback(server.close)
+        looking = StorageWitness(probe.http, str(server.make_url("")).rstrip("/"), VALIDATOR, store, probe.head, on_failure=probe.noticed)
+        await looking.observe([{"task_id": "t", "miner": "m", "key": KEY, "etag": '"e"'}])
+        assert probe.failed["status"] == 503
+        assert await probe.report() == 200
+        assert world.reports[0]["record"]["kind"] == STORAGE

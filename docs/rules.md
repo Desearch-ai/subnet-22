@@ -36,10 +36,19 @@ held, when it was alive during an outage the API saw on its own side:
   bucket and reads it back; at once, too, when storage fails a miner's completion. A failed probe opens
   an outage dated from the last probe that worked; the next probe that works closes it.
 - **finality**: the finalized block more than `TASK_API_FINALITY_STALL_BLOCKS` (10) behind the best one.
+- **upload lock**: storage refused to put a completed upload's version under Object Lock, so the completion
+  was refused (`TASK_API_UPLOAD_LOCK_S` set); the next lock that holds closes it.
+
+Validators' own word opens one too, whatever the API's probes saw: each validator probes storage the way
+miners use it and looks at every completed upload, and reports each failure to the API (signed, logged as a
+`witness` entry at the block it arrived). Wherever `TASK_API_STORAGE_WITNESS_QUORUM` (3) distinct validators
+reported failures within `TASK_API_STORAGE_WITNESS_WINDOW_S` (300 s) of each other, storage was down from the
+first of them to the window's length after the last (`storage_witnessed`). This span is not opened or closed
+by the API: it follows from the logged witnesses alone, so a replay finds the same one.
 
 A claim is forgiven when any part of it, from its start to its last block, falls in an outage. Its
-receipt names the cause (`restart`, `storage_outage`, `finality_outage`). Outages are listed at
-`GET /v1/outages`.
+receipt names the cause (`restart`, `storage_outage`, `finality_outage`, `upload_lock_outage`,
+`storage_witnessed_outage`). Outages are listed at `GET /v1/outages`, validators' under `witnessed`.
 
 ## Rounds
 
