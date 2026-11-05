@@ -3599,6 +3599,47 @@ async fn the_passage_lane_plans_all_passages_of_reference_bulk_pages_planned_pag
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_passage_lane_reads_only_saved_bulk_files_and_reads_one_again_when_a_page_of_it_is_planned_page_first_again() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("passage-lane-saved");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let long = (0..6).map(|i| format!("## Section {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n");
+    let mut wiki = v2(record("https://en.wikipedia.org/wiki/Long", &long, "article", "en"));
+    (wiki.domain, wiki.task_id, wiki.miner) = ("en.wikipedia.org".into(), "bulk-run-000001-000001".into(), String::new());
+    bulk_file(&pages, 1, vec![wiki.clone()]).await;
+    log(&pages, 1, vec![v2(record("https://news.example/story/1", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia", "type": "reference"}]}).to_string()).unwrap();
+    let mut lane = settings(dir.join("state"), 0.0, 0);
+    (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start, lane.page_first) = (Some(set.clone()), None, 3600.0, Duration::from_secs(120), true);
+    (lane.passage_texts_per_hour, lane.pages_per_input) = (3_600_000.0, 100);
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.page_only, planner.counts.passage_files, planner.counts.passage_passed), (1, 0, 0), "the page planned page first is not saved yet");
+    planner.flush().await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.passage_files, planner.counts.passages, planner.counts.passage_texts), (1, 1, 6));
+
+    let parts = planner.state.pending().unwrap().into_iter().map(|(_, entry)| serde_json::from_str::<Value>(&entry).unwrap()).find(|entry| entry["texts"] == 6).unwrap();
+    let _: i64 = redis.rpush(EMBED_DROPPED, json!({"input_key": parts["input_key"], "pages": parts["pages"]}).to_string()).await.unwrap();
+    assert_eq!(planner.forget_dropped().await.unwrap(), 1);
+    for _ in 0..3 {
+        planner.pass().await.unwrap();
+        planner.flush().await.unwrap();
+    }
+    assert_eq!((planner.counts.page_only, planner.counts.passages), (2, 2), "the bulk lane plans the page given back page first again, and the lane goes back for its passages");
+    let version = planner.state.planned_version(RECIPE_V2, &page_key(&wiki.url).unwrap()).unwrap().unwrap();
+    assert!(!version.page_only);
+    assert_eq!(planner.state.passage_cursor().unwrap(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_input_is_cut_at_its_text_cap() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");

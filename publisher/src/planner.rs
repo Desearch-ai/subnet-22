@@ -59,6 +59,10 @@ const MAX_PASSAGES_V1: usize = 16;
 const MAX_PASSAGES_V2: usize = 32;
 /// Passages a page of a reference site gets at most while the passage lane is on, so a long article is covered to its end.
 const MAX_PASSAGES_REFERENCE: usize = 1_024;
+/// Passages a page the passage lane plans has, for its hand-over pace: fewer than the ~14 a Wikipedia article has, so the pace never holds the lane back.
+const PASSAGES_A_PAGE: f64 = 8.0;
+/// Failed reads of one bulk file in a row after which the passage lane goes on to the next.
+const PASSAGE_FILE_TRIES: u32 = 3;
 /// The page type the bulk lane gives papers, whose parts stop at `MAX_PASSAGES_PAPER`.
 pub const PAPER: &str = "paper";
 const MAX_PASSAGES_PAPER: usize = 12;
@@ -1423,8 +1427,10 @@ impl State {
         Ok(matches!(fields.len(), 4 | 5).then(|| (fields[0], [fields[1], fields[2], fields[3], fields.get(4).copied().unwrap_or(f64::NAN)])))
     }
 
+    /// Keeps the budgets; with no passage budget, as a planner from before it read them.
     pub fn keep_budgets(&self, at: f64, tokens: [f64; 4]) -> Result<()> {
-        Ok(self.db.put(BUDGETS, format!("{at}\t{}\t{}\t{}\t{}", tokens[0], tokens[1], tokens[2], tokens[3]))?)
+        let passages = if tokens[3].is_nan() { String::new() } else { format!("\t{}", tokens[3]) };
+        Ok(self.db.put(BUDGETS, format!("{at}\t{}\t{}\t{}{passages}", tokens[0], tokens[1], tokens[2]))?)
     }
 
     fn keep_cursor(&self, seq: i64) -> Result<()> {
@@ -1877,6 +1883,8 @@ pub struct Planner {
     kept_passage_cursor: i64,
     passage_budget: Budget,
     passage_file: Option<(i64, VecDeque<PageRow>)>,
+    /// The bulk file the passage lane last failed to read, and how many times in a row.
+    passage_failing: (i64, u32),
     /// Tasks taken back, with the change file that took each back.
     withdrawn: HashMap<String, i64>,
     /// The hour and the pages each site put in the fresh lane in it.
@@ -1923,7 +1931,10 @@ impl Planner {
         let resume = |at: usize, per_hour: f64| Budget::resumed(per_hour, held, kept.map(|(when, tokens)| (when, tokens[at])));
         // Fresh pages read again after a restart stay fresh.
         let (budget, fresh_budget) = (resume(0, settings.pages_per_hour), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
-        let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour) + settings.bulk_pages_per_hour;
+        let pace = settings.pages_per_hour
+            + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour)
+            + settings.bulk_pages_per_hour
+            + settings.passage_texts_per_hour / PASSAGES_A_PAGE;
         let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, resume(1, settings.bulk_pages_per_hour), state.bulk_hole()?);
         let handing = (pace > 0.0).then(|| resume(2, pace));
         let (passage_read_through, passage_budget) = (state.passage_cursor()?, resume(3, settings.passage_texts_per_hour));
@@ -1980,6 +1991,7 @@ impl Planner {
             kept_passage_cursor: passage_read_through,
             passage_budget,
             passage_file: None,
+            passage_failing: (0, 0),
             withdrawn,
             fresh_sites: (0, HashMap::new()),
         };
@@ -2077,7 +2089,8 @@ impl Planner {
 
     fn keep_budgets(&mut self) -> Result<()> {
         let handing = self.handing.as_mut().map_or(0.0, Budget::banked);
-        let tokens = [self.budget.banked(), self.bulk_budget.banked(), handing, self.passage_budget.banked()];
+        let passages = if self.settings.passage_texts_per_hour > 0.0 { self.passage_budget.banked() } else { f64::NAN };
+        let tokens = [self.budget.banked(), self.bulk_budget.banked(), handing, passages];
         self.state.keep_budgets(now_us() as f64 / 1e6, tokens)
     }
 
@@ -2517,18 +2530,24 @@ impl Planner {
         Ok(took)
     }
 
-    /// Reads the next bulk file the bulk lane read into `passage_file`, empty for one no longer numbered; false while there is none, or it cannot be read.
+    /// Reads into `passage_file` the next bulk file whose pages the bulk lane planned and saved, empty for one no longer numbered or failing to be read `PASSAGE_FILE_TRIES` times in a row; false while there is none, or it cannot be read yet.
     async fn open_passage_file(&mut self) -> Result<bool> {
         let seq = self.passage_read_through + 1;
-        if seq > self.bulk_read_through {
+        if seq > self.kept_bulk_cursor {
             return Ok(false);
         }
         match self.bulk_rows(seq).await? {
             Ok(pages) => self.passage_file = Some((seq, pages)),
             Err(Unread::NotNumbered) => self.passage_file = Some((seq, VecDeque::new())),
             Err(Unread::Failed(why)) => {
-                eprintln!("{why}; the passage lane reads it again next pass");
-                return Ok(false);
+                let failures = if self.passage_failing.0 == seq { self.passage_failing.1 + 1 } else { 1 };
+                self.passage_failing = (seq, failures);
+                if failures < PASSAGE_FILE_TRIES {
+                    eprintln!("{why}; the passage lane reads it again next pass");
+                    return Ok(false);
+                }
+                eprintln!("THE PASSAGE LANE SKIPS BULK FILE {seq} after {failures} failed reads in a row: {why}");
+                self.passage_file = Some((seq, VecDeque::new()));
             }
         }
         Ok(true)
@@ -2857,6 +2876,17 @@ impl Planner {
         self.held(saving).filter_map(|buffer| buffer.bulk.keys().next().copied()).min().map_or(self.bulk_read_through, |first| (first - 1).min(self.bulk_read_through))
     }
 
+    /// The place the passage lane goes back to, before the first bulk file it read past whose reference page the input being saved plans with its page text alone, as when the bulk lane plans a page given back again.
+    fn passage_rewind(&self) -> Option<i64> {
+        if self.settings.passage_texts_per_hour <= 0.0 {
+            return None;
+        }
+        let set = self.set.as_ref()?;
+        let writing = self.writing.front()?;
+        let first = writing.buffer.pages.iter().filter(|page| page.page_only && page.seq < 0 && set.reference(&page.host)).map(|page| page.seq - BULK_ORDER).min()?;
+        (first <= self.passage_read_through).then_some(first - 1)
+    }
+
     /// Where a restart may start the passage lane, given the pages it took buffered or in inputs not yet saved.
     fn passage_cursor_after(&self, saving: bool) -> i64 {
         self.held(saving).filter_map(|buffer| buffer.passages.keys().next().copied()).min().map_or(self.passage_read_through, |first| (first - 1).min(self.passage_read_through))
@@ -2949,7 +2979,7 @@ impl Planner {
         // The passage lane takes only reference pages planned with their page text alone at this version, and held nowhere yet.
         let passage = matches!(from, Source::Passages(_));
         if passage {
-            let reference = self.set.as_ref().is_none_or(|set| set.reference(&record.domain));
+            let reference = self.set.as_ref().is_some_and(|set| set.reference(&record.domain));
             let page_only = already.as_ref().is_some_and(|planned| planned.page_only && planned.content_sha1 == record.content_sha1);
             if !reference || !page_only || buffered.is_some() {
                 self.counts.passage_passed += 1;
@@ -3262,7 +3292,8 @@ impl Planner {
     fn save_first(&mut self) -> Result<()> {
         let cursor = Some(self.cursor_after(true)).filter(|&cursor| cursor > self.kept_cursor);
         let bulk_cursor = Some(self.bulk_cursor_after(true)).filter(|&cursor| cursor > self.kept_bulk_cursor);
-        let passage_cursor = Some(self.passage_cursor_after(true)).filter(|&cursor| cursor > self.kept_passage_cursor);
+        let rewind = self.passage_rewind();
+        let passage_cursor = rewind.or_else(|| Some(self.passage_cursor_after(true)).filter(|&cursor| cursor > self.kept_passage_cursor));
         let settled = self.late_settled(true);
         let writing = self.writing.front().expect("an input cut");
         let backfill = writing.backfill.as_ref().map(|(shard, last)| (*shard, last.as_deref()));
@@ -3272,6 +3303,10 @@ impl Planner {
         self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
         self.kept_bulk_cursor = bulk_cursor.unwrap_or(self.kept_bulk_cursor);
         self.kept_passage_cursor = passage_cursor.unwrap_or(self.kept_passage_cursor);
+        if let Some(rewind) = rewind {
+            self.passage_read_through = rewind;
+            self.passage_file = self.passage_file.take().filter(|(seq, _)| *seq <= rewind);
+        }
         self.settled.retain(|seq| !settled.contains(seq));
         let lane = self.writing.pop_front().expect("an input cut").lane;
         self.pending[lane as usize] += 1;

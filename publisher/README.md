@@ -139,13 +139,16 @@ on input writes and writing its state.
   backfill plans bulk-feed versions on its own budget, and plans again the bulk pages inputs give back.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
-- **Passage lane** (`PLANNER_PASSAGE_TEXTS_PER_HOUR`, 0 by default, which leaves it off): reads the bulk files the
-  bulk lane read, from the first, up to 4 a pass, and plans the passages alone of each page of a set site of type
-  `reference` whose version was planned with its page text alone, while its own hourly budget, counted in texts,
-  holds a text and the rest lane holds under half of `PLANNER_MAX_PENDING` inputs. A page takes all its texts at
-  once, so the budget can go below nothing and is paid back as it refills. It takes nothing from
-  `PLANNER_PAGES_PER_HOUR`, and keeps its place on disk once the inputs holding a file's pages are saved. While it
-  is on, a reference site's page gets up to 1,024 passages, not 32.
+- **Passage lane** (`PLANNER_PASSAGE_TEXTS_PER_HOUR`, 0 by default, which leaves it off): reads the bulk files
+  whose pages the bulk lane planned and saved, from the first, up to 4 a pass, and plans the passages alone of each
+  page of a set site of type `reference` whose version was planned with its page text alone, while its own hourly
+  budget, counted in texts, holds a text and the rest lane holds under half of `PLANNER_MAX_PENDING` inputs. A page
+  takes all its texts at once, so the budget can go below nothing and is paid back as it refills. It takes nothing
+  from `PLANNER_PAGES_PER_HOUR`, adds a page for every 8 texts to the hand-over pace, and keeps its place on disk
+  once the inputs holding a file's pages are saved. An input saved with a reference page planned with its page text
+  alone from a file the lane read past, as the bulk lane plans a page given back, sends the lane back to that file.
+  A file that fails to be read three times in a row is passed by. While the lane is on, a reference site's page gets
+  up to 1,024 passages, not 32, in every lane.
 - **Texts in an input** (`PLANNER_TEXTS_PER_INPUT`, 0 by default for no cap): an input is cut once its pages hold
   this many texts, beside `PLANNER_PAGES_PER_INPUT` and `PLANNER_CHARS_PER_INPUT`; a page is never split.
 
