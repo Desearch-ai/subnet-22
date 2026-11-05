@@ -164,7 +164,7 @@ dropped, reordered or forked without every later hash changing.
 
 | Kind | Input | Output |
 | --- | --- | --- |
-| `start` | the version, the signer, the knobs that shape decisions and the rules' parameters | — |
+| `start` | the version, the signer, the knobs a replay reads, the rules' parameters, and under `env` every setting by its variable (all `/v1/config` shows; a secret only by name in `secrets_set`, a secret URI as the address it makes, an endpoint without its user, password or query) | — |
 | `started`, `clock` | the rule time a copy's start was lowered to at its first block; the anchor every rule time is counted from | — |
 | `snapshot` | when | the digest of the accounts, and the accounts in a blob named by it (one at the first start, then every `TASK_API_SNAPSHOT_EVERY_S`) |
 | `requests` | the hash of every authenticated request since the last, and the block | — |
@@ -172,7 +172,7 @@ dropped, reordered or forked without every later hash changing.
 | `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`) |
 | `probe`, `outage` | the storage canary's probe: when, the block, whether it passed and the step that failed; an outage's start or end, its cause and block | — |
 | `reveal`, `close`, `embed_round`, `recommit` | the round, its seed block and that block's hash; a later seed block for a commitment not anchored in time | the seed, the serve order, the batches the seed cut, the round log's Merkle root, the new commitment |
-| `metagraph` | the neurons and their stakes, when who may vote changed | the validators |
+| `metagraph` | the neurons, their coldkeys, permits, stakes and incentives, and the block they were read at, when any of them changed | the validators |
 | `prune`, `shares`, `anchor`, `receipt` | | the shares as served, an anchor the chain confirmed, receipts signed elsewhere |
 
 A request body over 2 kB, a job's URLs, a manifest and a snapshot are kept in blobs the entry names by
@@ -182,23 +182,29 @@ its completion.
 
 **Files.** Every `TASK_API_JOURNAL_EVERY_S` the janitor writes the entries not yet published into
 `log/journal/seq/<n>.json` in the uploads bucket, after the blobs they name (`log/journal/blobs/<sha256>`),
-and points `log/journal/latest.json` at it. Each file holds `first`, `last`, `prev` (the hash before its
+and points `log/journal/latest.json` at it, naming the file that holds the newest `snapshot` (`snapshot`),
+where a validator that starts begins its replay. Each file holds `first`, `last`, `prev` (the hash before its
 first entry), `head` (its last entry's hash), the entries, the signer and a signature over the rest. Two
-files with one number and different heads, both signed, prove a fork on their own.
+files with one number and different heads, both signed, prove a fork on their own. A file is kept a day by
+the bucket's lifecycle rule; one gone sooner, whose entries an anchor covers, was taken down (see Replay).
 
 **Anchors.** With `TASK_API_ANCHOR_NETWORK` set, the API commits the head to the chain with
 `Commitments.set_commitment(netuid, [Raw("sn22j1:<seq>"), Sha256(<hash of entry seq>)])`, signed by
 `TASK_API_ANCHOR_KEY_URI` (the log's key unless set). Commitments are free, live in chain state
 (`Commitments.CommitmentOf(netuid, hotkey)`) where any node answers, and a hotkey may make 31 per epoch
 (3,100 bytes, each call counted as 100), so the API anchors every `TASK_API_ANCHOR_EVERY_BLOCKS` and, once a
-round opened, after `TASK_API_ANCHOR_MIN_BLOCKS`, at most `TASK_API_ANCHOR_PER_EPOCH` per 361 blocks. A
+round opened, after `TASK_API_ANCHOR_MIN_BLOCKS`, at most `TASK_API_ANCHOR_PER_EPOCH` per 361 blocks, of
+which the periodic anchors leave 6 to rounds. A
 `System.remark` would need no registration but a funded account and an indexer to find it again. The
 anchoring hotkey must be registered on the subnet (and kept from being pruned, e.g. as an owner-immune
 uid) and hold the existential deposit. Each confirmed anchor is logged as an `anchor` entry, with the block
 the chain registered it in. With anchoring on, a round is revealed only once an anchor at or past the entry
 holding its commitment was registered in a block before its seed block, so the API cannot have read the seed
 before the chain held what it committed to. A commitment that missed its seed block is committed again to a
-later one (`recommit`), and the round waits for that.
+later one (`recommit`), and the round waits for that. Each miss gives the next anchor more room: the new seed
+block is 30, 70, 150, 310 blocks ahead (twice the 20-block inclusion window more each time), then an epoch,
+by when the commitment budget is whole again, so a congested chain delays a reveal by about twice its
+inclusion delay and never stops it.
 
 **Replay.** [`src/replay.rs`](src/replay.rs) rebuilds the accounts from the log with the API's own rule
 functions on an SQLite of its own, from the first `snapshot`:
@@ -212,14 +218,41 @@ functions on an SQLite of its own, from the first `snapshot`:
 - whether a seeded upload is checked is drawn again from the seed block's hash, the counters and the
   re-check state; budgets, strikes, lockouts, take-backs, full penalties and forgiven lapses follow from the
   same rules;
-- shares and every later snapshot's digest must equal the replay's own.
+- shares and every later snapshot's digest must equal the replay's own; a snapshot holds the final
+  verdicts of the last day too (`final_verdicts`, which a late vote and `/v1/tasks` read back), so one
+  edited in place shows at the next snapshot.
 
 A difference the API decided inside one transaction is `fraud`. A check the API makes on reads outside the
 transaction that logs it (a claim against the budget or a lockout) is only `suspect`. The order of entries,
 the times they state and the Redis counters they quote are the API's to choose and are taken as given. The
-replay ships as `task-api-replay --dir <folder> --state <file> --signer <ss58> [--join]`, reading the
-bucket's layout (`seq/`, `blobs/`) from a folder and going on from its saved state; it prints each
-difference as a JSON line.
+replay ships as `task-api-replay --dir <folder> --state <file> --signer <ss58> [--join] [--anchors <file>]`,
+reading the bucket's layout (`seq/`, `blobs/`) from a folder and going on from its saved state; it prints
+each difference as a JSON line and a summary (`last`, `started`, and `since`, the snapshot it started
+from). `--anchors` takes the anchors a validator's own node shows (`[{"seq", "head", "block"}]`): a round
+whose commitment one of them covered before its seed block, and that was committed again anyway, chose
+among seeds, even when the log left that anchor out. `task-api-replay --version` prints the version of the
+rules it replays with.
+
+**What a validator checks.** Every validator follows the log ([`neurons/validators/journal.py`](../neurons/validators/journal.py))
+and checks against its own node, reading blocks by number (`chain_getBlockHash`, `chain_getBlock`), which a
+pruned node answers for any block:
+- every file's signature and links, and every block hash an entry decided on;
+- every anchor the anchoring hotkey ever sent, read from the blocks themselves over the last day and then
+  block by block: the anchored entry never goes back, one entry is never anchored with two heads, and each
+  anchored head is the log's own hash at that entry, so a copy that rolled its log back shows to a validator
+  that started after it did;
+- a file gone while later ones are published, whose entries an anchor covers and that was written (after
+  the anchor before it) less than the bucket's day ago, was taken down: fraud;
+- each `metagraph` entry against the metagraph its node has at the logged block (the coldkeys, permits,
+  stakes and incentives the rules count voters and cap budgets by), through an archive node for blocks a
+  pruned node no longer holds state for;
+- the replay, with those anchors.
+
+Whatever fails is a fraud proof, written beside the validator (the signed file holding the entry included),
+published by its relay at `/v1/journal/proofs` and in its Weights & Biases run. From then until the replay,
+started again at a snapshot past the fraud, has held through an anchor on chain, and whenever the replay
+cannot run or keep up, the validator sets weights from its own checks only: the API's upload log, budgets,
+verdicts and shares reach no weight, and uploads logged while the log showed fraud are never paid.
 
 **Signed reads.** Every answered `GET` carries `X-Desearch-Signer`, `X-Desearch-Signed-At` and
 `X-Desearch-Signature`, a signature over the canonical JSON

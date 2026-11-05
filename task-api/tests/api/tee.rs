@@ -32,8 +32,23 @@ async fn the_config_lists_every_setting_and_no_secret() {
     assert_eq!(settings["TASK_API_CHAIN_QUORUM"], 1);
     let shown = config.to_string();
     assert!(!shown.contains("\"test\""), "the storage keys are not shown: {shown}");
-    assert_eq!(config["secrets_set"], serde_json::json!(["CF_R2_ACCESS_KEY_ID", "CF_R2_SECRET_ACCESS_KEY"]));
+    assert!(!shown.contains(crate::harness::ADMIN), "the admin keys' secret URIs are not shown: {shown}");
+    let admin = desearch::hotkey::Hotkey::from_uri(crate::harness::ADMIN).unwrap().ss58();
+    assert_eq!(settings["TASK_API_ADMIN_URIS"], serde_json::json!([admin]), "only the address they make");
+    assert_eq!(config["secrets_set"], serde_json::json!(["CF_R2_ACCESS_KEY_ID", "CF_R2_SECRET_ACCESS_KEY", "TASK_API_ADMIN_URIS"]));
     assert_eq!(h.public("/v1/attestation").await.0, 404, "not in a TEE");
+
+    // Every start writes all of them into the log, and no secret.
+    let start = h
+        .state
+        .db
+        .run(|conn| Ok(conn.query_row("SELECT entry FROM journal WHERE kind = 'start' ORDER BY seq LIMIT 1", [], |row| row.get::<_, String>(0))?))
+        .await
+        .unwrap();
+    let start: serde_json::Value = serde_json::from_str(&start).unwrap();
+    assert_eq!(start["input"]["settings"]["env"], config["settings"], "the log holds every setting /v1/config shows");
+    assert_eq!(start["input"]["secrets_set"], config["secrets_set"]);
+    assert!(!start.to_string().contains(crate::harness::ADMIN) && !start.to_string().contains("\"test\""), "{start}");
 }
 
 #[tokio::test]

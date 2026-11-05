@@ -418,14 +418,22 @@ pub async fn publish(state: &State) -> Result<Option<i64>> {
             Ok(found.map_or((1, 0, GENESIS.to_string()), |(segment, last, head)| (segment + 1, last, head)))
         })
         .await?;
-    let (entries, blobs) = state
+    let (entries, blobs, snapshot) = state
         .db
         .run(move |conn| {
             let entries = entries_after(conn, last, SEGMENT_ENTRIES)?;
             let until = entries.last().and_then(|(entry, _)| entry["seq"].as_i64()).unwrap_or(last);
             let mut statement = conn.prepare("SELECT sha256, body FROM journal_blobs WHERE published = 0 AND seq <= ?")?;
             let blobs = statement.query_map([until], |row| Ok(Blob { sha256: row.get(0)?, body: row.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((entries, blobs))
+            // The file holding the newest snapshot, where a validator that joins starts its replay.
+            let newest: Option<i64> =
+                conn.query_row("SELECT MAX(seq) FROM journal WHERE kind = 'snapshot' AND seq <= ?", [until], |row| row.get(0)).optional()?.flatten();
+            let snapshot = match newest {
+                Some(seq) if seq > last => Some(segment),
+                Some(seq) => conn.query_row("SELECT segment FROM journal_segments WHERE first <= ?1 AND last >= ?1", [seq], |row| row.get(0)).optional()?,
+                None => None,
+            };
+            Ok((entries, blobs, snapshot))
         })
         .await?;
     let Some((last_entry, head)) = entries.last().cloned() else { return Ok(None) };
@@ -450,6 +458,7 @@ pub async fn publish(state: &State) -> Result<Option<i64>> {
     latest.insert("segment".into(), segment.into());
     latest.insert("last".into(), until.into());
     latest.insert("head".into(), head.clone().into());
+    latest.insert("snapshot".into(), snapshot.into());
     latest.insert("signer".into(), state.signer().into());
     let signature = state.sign(&signed_payload(&Value::Object(latest.clone())));
     latest.insert("signature".into(), signature.into());

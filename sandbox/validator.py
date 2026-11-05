@@ -80,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         "--netuid",
         "22",
         "--wandb.off",
+        # The sandbox's own API is not replayed: weights come from the validator's own checks, and say so.
+        "--neuron.no_replay",
         "--neuron.task_api_url",
         ports.api_url,
         "--neuron.storage_url",

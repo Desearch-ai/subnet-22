@@ -138,8 +138,32 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
+# Validators replay the task API's log with its own rules; the replay tool is built from this release's source, again after every
+# update. A validator that sets weights does not start without it, unless run with --neuron.no_replay.
+build_replay() {
+    if [[ " $old_args " == *" --neuron.no_replay "* || " $old_args " == *" --neuron.disable_set_weights "* ]]; then
+        return 0
+    fi
+    if ! command -v cargo &> /dev/null && [ -x "$HOME/.cargo/bin/cargo" ]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+    if ! command -v cargo &> /dev/null; then
+        echo "cargo could not be found: the validator replays the task API's log with task-api-replay, built from this repository."
+        echo "Install Rust (https://rustup.rs) and a C compiler (sudo apt install -y build-essential), then run this script again,"
+        echo "or pass --neuron.no_replay to set weights from your own checks only."
+        exit 1
+    fi
+    echo "Building the task API's replay tool..."
+    if ! (cd task-api && cargo build --release --locked --bin task-api-replay); then
+        echo "task-api-replay did not build; the validator is not started."
+        exit 1
+    fi
+}
+
 branch=$(git branch --show-current)
 echo watching branch: $branch
+
+build_replay
 
 current_version=$(read_version_value)
 

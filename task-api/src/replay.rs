@@ -143,6 +143,21 @@ impl Replay {
         Ok(self.start()?["settings"]["anchored"] == true)
     }
 
+    /// An anchor of entry `seq` registered in `block`, as the log names it or as a validator's own node shows it: a round's
+    /// commitment counts as anchored in time by the earliest. The log cannot leave one out to excuse committing a round again.
+    pub fn note_anchor(&self, seq: i64, block: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO replay_anchors (seq, block) VALUES (?, ?) ON CONFLICT (seq) DO UPDATE SET block = MIN(block, excluded.block)",
+            params![seq, block],
+        )?;
+        Ok(())
+    }
+
+    /// The entry of the snapshot the replay started from; what it checked since then holds.
+    pub fn since(&self) -> Result<Option<i64>> {
+        Ok(self.meta("since")?.and_then(|v| v.as_i64()))
+    }
+
     /// Whether a snapshot was loaded; entries before the first are only checked for their links and signatures.
     pub fn started(&self) -> Result<bool> {
         Ok(self.meta("started")?.and_then(|v| v.as_bool()).unwrap_or(false))
@@ -221,10 +236,7 @@ impl Replay {
         } else if kind == "pause" {
             self.set_meta("paused", &entry["input"]["paused"])?;
         } else if kind == "anchor" {
-            self.conn.execute(
-                "INSERT OR REPLACE INTO replay_anchors (seq, block) VALUES (?, ?)",
-                params![int(&entry["input"]["seq"]), int(&entry["input"]["block"])],
-            )?;
+            self.note_anchor(int(&entry["input"]["seq"]), int(&entry["input"]["block"]))?;
         } else if kind == "enqueue" || kind == "embed_round" {
             // Rounds are followed from the first entry, so a reveal is checked against the commitment and its anchor.
             self.round(entry, blobs)?;
@@ -290,6 +302,7 @@ impl Replay {
             return Ok(());
         }
         snapshot::load(&self.conn, &found)?;
+        self.set_meta("since", &entry["seq"])?;
         self.set_meta("started", &true.into())
     }
 

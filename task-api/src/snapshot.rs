@@ -14,8 +14,9 @@ use crate::proofs::sha256;
 use crate::py::canonical;
 
 /// Each table, the columns decisions read, and which rows: every row of a table the API prunes itself (prunes are logged and
-/// replayed), and of verdicts only those a take-back, a strike or a lockout can still reach.
-const TABLES: [(&str, &str, &str); 12] = [
+/// replayed), of verdicts only those a take-back, a strike or a lockout can still reach, and of final verdicts those of the last
+/// day, which a validation still open can read back and `/v1/tasks` serves.
+const TABLES: [(&str, &str, &str); 13] = [
     ("miners", "hotkey, pool, budget, verified", "1"),
     ("credits", "pool, hotkey, hour, amount", "1"),
     ("coverage", "hotkey, hour, assigned, returned", "1"),
@@ -33,6 +34,8 @@ const TABLES: [(&str, &str, &str); 12] = [
         "task_id, kind, round_id, miner, validator, verdict, credited, completed_at, scored_at, upload_key",
         "verdict != 'void' AND (scored_at >= ?1 OR (verdict = 'pass' AND scored_at > COALESCE((SELECT c.last_pass_at FROM check_states c WHERE c.hotkey = validations.miner AND c.kind = validations.kind), 0)))",
     ),
+    // The verdict an upload was finalized with; the publish copy the janitor clears is left out.
+    ("final_verdicts", "task_id, upload_key, verdict, credited, finalized_at", "finalized_at >= ?1"),
 ];
 
 /// What crawl rounds' checked uploads built up, as the rules judge the next upload of the round.
@@ -78,7 +81,6 @@ pub fn clear(conn: &Connection) -> Result<()> {
     for (table, _, _) in TABLES.iter().chain(&ROUNDS) {
         conn.execute(&format!("DELETE FROM {table}"), [])?;
     }
-    conn.execute("DELETE FROM final_verdicts", [])?;
     Ok(())
 }
 
@@ -143,6 +145,8 @@ mod tests {
         budgets::strike(&conn, "m", "coverage", "t2", 3, CRAWL, NOW - 5.0).unwrap();
         budgets::lock_out(&conn, "n", CRAWL, 1.0, "coverage", NOW).unwrap();
         checks::record(&conn, "m", CRAWL, "t3", true, NOW - 100.0, 2, 1, NOW - 50.0).unwrap();
+        validations::finalize(&conn, "new", "k-new", "pass", 7, Some(&json!({"urls": ["u"]})), NOW - 60.0).unwrap();
+        validations::finalize(&conn, "old", "k-old", "pass", 7, None, NOW - 200_000.0).unwrap();
         for (task, at, verdict, validator) in [("old", NOW - 200_000.0, "pass", ""), ("new", NOW - 60.0, "pass", ""), ("checked", NOW - 1000.0, "fail", "v")] {
             let job = json!({"round_id": "r", "miner": "m", "key": format!("k-{task}"), "completed_at": at});
             let result = json!({"verdict": verdict, "reason": "ok", "credited": 7});
@@ -158,11 +162,17 @@ mod tests {
         let rows = |table: &str| taken["tables"][table].as_array().unwrap().len();
         assert_eq!((rows("miners"), rows("strikes"), rows("lockouts"), rows("checks")), (1, 1, 1, 1));
         assert_eq!(rows("validations"), 2, "a pass from before the last passed check and outside the day is out of reach");
+        assert_eq!(rows("final_verdicts"), 1, "a final verdict of more than a day ago is out of reach");
         let copy = Connection::open_in_memory().unwrap();
         create(&copy).unwrap();
         load(&copy, &taken).unwrap();
         assert_eq!(digest(&take(&copy, NOW).unwrap()), digest(&taken));
         budgets::reward(&copy, "m", "t9", 1, false, CRAWL, NOW).unwrap();
         assert_ne!(digest(&take(&copy, NOW).unwrap()), digest(&taken), "one credited row shows");
+        let edited = Connection::open_in_memory().unwrap();
+        create(&edited).unwrap();
+        load(&edited, &taken).unwrap();
+        edited.execute("UPDATE final_verdicts SET verdict = 'fail' WHERE task_id = 'new'", []).unwrap();
+        assert_ne!(digest(&take(&edited, NOW).unwrap()), digest(&taken), "a final verdict edited in place shows");
     }
 }

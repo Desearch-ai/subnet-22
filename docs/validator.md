@@ -38,13 +38,24 @@ jobs:
    - The task API signs with a key this release pins (`desearch/trust.py`); the validator never takes the
      key from the API's own `/v1/key`, only compares it and logs a mismatch.
    - It follows the API's hash-chained log in the uploads bucket: every file must be signed by the pinned
-     key and follow on from the last, every block hash an entry decided on must be the one your own node
-     has, and the head the API anchored on chain (`Commitments.CommitmentOf` of its hotkey on the subnet,
-     read from your node) must be the log's hash at that entry.
-   - With `--neuron.replay_bin`, it also replays the log with the API's own rules and reports every
-     budget, verdict, take-back or share the rules do not give.
-   - Whatever does not hold is logged as an error and written as a fraud proof (the files, entries and
-     chain reads that show it) under `~/.bittensor/miners/<wallet>/<hotkey>/netuid22/validator/journal/fraud/`.
+     key and follow on from the last, and every block hash an entry decided on must be the one your own node
+     has.
+   - It reads every anchor the API's hotkey sent from the blocks on your own node: the anchored entry must
+     never go back and each anchored head must be the log's own hash, so a rolled-back or forked log shows
+     even if it happened before your validator started. A log file taken down within the bucket's day,
+     whose entries an anchor covers, is fraud too.
+   - It checks every metagraph the API logged (coldkeys, permits, stakes, incentives) against your node at
+     the block it names.
+   - It replays the log with the API's own rules (`task-api-replay`, which `run.sh` builds) and reports
+     every budget, verdict, take-back or share the rules do not give, and a round committed again although
+     its commitment was anchored in time.
+   - Whatever does not hold is logged as an error and written as a fraud proof (the signed file, entries and
+     chain reads that show it) under `~/.bittensor/miners/<wallet>/<hotkey>/netuid22/validator/journal/fraud/`,
+     published by your relay at `/v1/journal/proofs` and in your Weights & Biases run.
+   - From a fraud until the log holds together again (the replay, started again at a snapshot past it,
+     holds through an anchor on chain), and whenever the replay cannot run or keep up, the validator sets
+     weights from its own checks only: the API's upload log, budgets, verdicts and shares reach no weight,
+     and uploads logged while the log showed fraud are never paid.
      See [Verifiable log](../task-api/README.md#verifiable-log).
 
 **Healthy checking:** weights are set only while the validator is checking. It sets none, and logs why,
@@ -94,6 +105,8 @@ python3 tools/approve_version.py --version <running> --next <new> --commit --net
 ### Requirements
 
 - Python 3.10 or newer, [PM2](https://pm2.io/docs/runtime/guide/installation/) and `jq`
+- [Rust](https://rustup.rs) and a C compiler (`build-essential`): `run.sh` builds the task API's replay
+  tool from the release, and a validator that sets weights does not start without it
 - A hotkey on netuid 22 (netuid 41 on testnet) with a validator permit, at least 10,000 total stake
   and at least 20 alpha; the task API only accepts check results from such hotkeys
 - A [ScrapingDog](https://www.scrapingdog.com/) API key: the validator fetches each sample itself
@@ -109,8 +122,12 @@ git clone https://github.com/Desearch-ai/subnet-22.git
 cd subnet-22
 python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
-sudo apt update && sudo apt install -y jq npm && sudo npm install -g pm2
+sudo apt update && sudo apt install -y jq npm build-essential && sudo npm install -g pm2
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ```
+
+`run.sh` builds `task-api/target/release/task-api-replay` before it starts the validator, and again after
+every update, so the replay always has the release's own rules.
 
 ### 2. Register a hotkey
 
@@ -172,8 +189,9 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--neuron.disable_set_weights` | check tasks without setting weights |
 | `--neuron.task_api_signer` | the key the task API signs with; pinned in each release, change it only with a release |
 | `--neuron.task_api_anchor` | the hotkey whose commitment anchors the task API's log; the signer by default |
-| `--neuron.replay_bin` | the `task-api-replay` binary (`cargo build --release --bin task-api-replay` in `task-api/`, or `TASK_API_REPLAY_BIN`); without it the log is checked but not replayed |
-| `--neuron.archive_network` | a chain endpoint with old state, for approvals at old custody records; the subtensor's archive fallback when empty |
+| `--neuron.replay_bin` | the replay tool, `task-api/target/release/task-api-replay` by default (or `TASK_API_REPLAY_BIN`), as `run.sh` builds it (`cargo build --release --locked --bin task-api-replay` in `task-api/`); it must be this release's version |
+| `--neuron.no_replay` | run without the replay: logged at start and at every weight setting, and the API's inputs then never reach the weights, which come from your own checks only |
+| `--neuron.archive_network` | a chain endpoint with old state, for approvals at old custody records and for metagraphs the API logged longer ago than your node keeps state; the subtensor's archive fallback when empty |
 | `--neuron.tee_allow_any_os`, `--neuron.tee_simulated` | testnets only: accept any OS image, or the dstack simulator's quotes; ignored on finney |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |

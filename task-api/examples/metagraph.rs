@@ -8,8 +8,8 @@ async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let network = args.next().unwrap_or_else(|| "finney".into());
     let netuid: u16 = args.next().map_or(Ok(22), |n| n.parse())?;
-    let neurons = Chain::new(&network)?.metagraph(netuid).await?;
-    println!("{} neurons", neurons.len());
+    let (block, neurons) = Chain::new(&network)?.metagraph(netuid).await?;
+    println!("{} neurons at block {block}", neurons.len());
     for neuron in neurons.iter().filter(|n| is_validator(n)) {
         println!("validator uid={} {} total={} alpha={}", neuron.uid, neuron.hotkey, neuron.total_stake_rao, neuron.alpha_stake_rao);
     }

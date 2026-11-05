@@ -84,14 +84,16 @@ pub struct State {
     pub detached: AtomicUsize,
 }
 
-/// What a `start` entry holds: when this copy started, its version and key, the knobs a replay reads and every setting it runs with.
+/// What a `start` entry holds: when this copy started, its version and key, and every setting it runs with (secrets only by name).
 pub fn start_input(settings: &Settings, signer: &str, started_at: f64) -> Value {
+    let public = settings.public();
     json!({
         "started_at": started_at,
         "version": env!("CARGO_PKG_VERSION"),
+        "commit": public["commit"],
         "signer": signer,
         "settings": settings.journaled(),
-        "config": settings.public(),
+        "secrets_set": public["secrets_set"],
     })
 }
 

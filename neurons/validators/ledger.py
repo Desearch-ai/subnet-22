@@ -170,15 +170,34 @@ class Ledger:
         self.db.execute("INSERT OR REPLACE INTO state VALUES (?, ?)", (name, value))
         self.db.commit()
 
-    def crawl_paid(self, now: float | None = None) -> dict[str, Paid]:
-        """Each miner's rows of the scoring window as this validator's own checks judge them."""
-        return self._paid(CRAWL, CRAWL_RETURNED, now)
+    def crawl_paid(
+        self,
+        now: float | None = None,
+        own_only: bool = False,
+        excluded: list[tuple[float, float]] = (),
+    ) -> dict[str, Paid]:
+        """Each miner's rows of the scoring window as this validator's own checks judge them. With `own_only`, the uploads the
+        task API logged count for nothing, only those this validator checked; uploads logged within `excluded` never count."""
+        return self._paid(CRAWL, CRAWL_RETURNED, now, own_only, excluded)
 
-    def embed_paid(self, now: float | None = None) -> dict[str, Paid]:
-        """Each miner's characters of the scoring window as this validator's own checks judge them."""
-        return self._paid(EMBED, EMBED_RETURNED, now)
+    def embed_paid(
+        self,
+        now: float | None = None,
+        own_only: bool = False,
+        excluded: list[tuple[float, float]] = (),
+    ) -> dict[str, Paid]:
+        """Each miner's characters of the scoring window as this validator's own checks judge them; `own_only` and `excluded` as
+        for `crawl_paid`."""
+        return self._paid(EMBED, EMBED_RETURNED, now, own_only, excluded)
 
-    def _paid(self, kind: str, returned_of: str, now: float | None) -> dict[str, Paid]:
+    def _paid(
+        self,
+        kind: str,
+        returned_of: str,
+        now: float | None,
+        own_only: bool = False,
+        excluded: list[tuple[float, float]] = (),
+    ) -> dict[str, Paid]:
         now = now or time.time()
         since = now - SHARE_WINDOW_H * 3600
         found = self.db.execute(
@@ -228,6 +247,9 @@ class Ledger:
             " WHERE completed_at >= ? AND kind = ?",
             (since, kind),
         ):
+            # The task API's log is all that says these uploads happened; while it cannot be trusted, they count for nothing.
+            if own_only or any(start <= completed_at <= end for start, end in excluded):
+                continue
             neutral_share = rounds.get(round_id, (set(), 0.0))[1]
             uploads[miner].append((key, completed_at, returned * (1.0 - neutral_share)))
         return {

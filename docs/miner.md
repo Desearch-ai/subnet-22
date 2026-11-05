@@ -217,9 +217,11 @@ budget, verdict or take-back the rules do not give is reported as a fraud proof.
 yourself, with the seed block read from your own node:
 
 ```bash
-python3 task-api/tools/verify_round.py --round <round_id> --node finney \
-  --signer 5CD6xo6ZmkFxWEwPbPaUh9cdznuk67EN48d6E5PuXFLyJ4so --receipts <your receipts file>
+python3 task-api/tools/verify_round.py --round <round_id> --node finney --receipts <your receipts file>
 ```
+
+It checks every signature against the key this release pins (`desearch/trust.py`) and the anchor against
+the pinned anchoring hotkey; pass `--signer` after a custody handover to name the current holder.
 
 Every page the API serves is signed (`X-Desearch-Signature`), so a screenshot of one can be checked
 against its signature. See [Verifiable log](../task-api/README.md#verifiable-log).

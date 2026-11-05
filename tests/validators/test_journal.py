@@ -493,3 +493,392 @@ async def test_a_follower_reads_a_handed_over_log_under_each_holder_in_turn(tmp_
         assert (
             "not signed" in problems[0].what
         ), "the old holder signs nothing past its turn"
+
+
+ANCHORER = Keypair.create_from_uri("//task-api-anchor-test")
+
+
+def compact(n: int) -> bytes:
+    return bytes([n << 2]) if n < 64 else ((n << 2) | 1).to_bytes(2, "little")
+
+
+def anchor_extrinsic(seq: int, head: str, key: Keypair = ANCHORER) -> bytes:
+    """A signed `Commitments.set_commitment` of `sn22j1:<seq>` and a head, as the chain keeps it in the block."""
+    tag = f"sn22j1:{seq}".encode()
+    fields = b"\x08" + bytes([len(tag) + 1]) + tag + b"\x83" + bytes.fromhex(head)
+    body = (
+        b"\x84\x00"
+        + key.public_key
+        + b"\x01"
+        + bytes(64)
+        + b"\x00\x04\x00"
+        + b"\x10\x05"
+        + b"\x16\x00"
+        + fields
+    )
+    return compact(len(body)) + body
+
+
+class Chain:
+    """Our own node: its finalized head and the extrinsics of each block up to it."""
+
+    def __init__(self, head: int, anchors: dict[int, list[tuple[int, str]]]):
+        self.head = head
+        self.blocks = {
+            block: [anchor_extrinsic(seq, h) for seq, h in sent]
+            for block, sent in anchors.items()
+        }
+
+    async def finalized(self) -> int:
+        return self.head
+
+    async def extrinsics(self, block: int):
+        return None if block > self.head else self.blocks.get(block, [b"\x04\x00"])
+
+
+def follower_on(http, url, folder, chain: Chain, **more) -> JournalFollower:
+    return JournalFollower(
+        http,
+        url,
+        API.ss58_address,
+        folder,
+        node({}),
+        anchored([]),
+        chain_head=chain.finalized,
+        block_extrinsics=chain.extrinsics,
+        anchor_hotkey=ANCHORER.ss58_address,
+        **more,
+    )
+
+
+def test_an_anchor_is_read_from_the_block_its_hotkey_sent_it_in():
+    from desearch.journal import anchors_in_extrinsic
+
+    head = "ab" * 32
+    sent = anchor_extrinsic(1234, head)
+    assert anchors_in_extrinsic(sent, ANCHORER.public_key) == [(1234, head)]
+    assert anchors_in_extrinsic(sent, MALLORY.public_key) == [], "another key's"
+    assert anchors_in_extrinsic(b"\x10\x04\x00\x00\x00", ANCHORER.public_key) == []
+
+
+async def test_a_follower_that_started_after_a_rollback_sees_it_in_the_anchors_on_chain(
+    tmp_path,
+):
+    import aiohttp
+
+    bucket = Bucket()
+    old = chained(6)
+    new = chained(4, prev=GENESIS, branch=True)
+    # The API anchored entry 6 of its log, then restarted from a copy of entry 2 and went on from there.
+    bucket.put(segment_key(1), segment(1, new, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, new))
+    chain = Chain(200, {100: [(6, hash_of(old[-1]))], 150: [(4, hash_of(new[-1]))]})
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        follower = follower_on(http, url, tmp_path, chain)
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["fraud"], problems
+        assert "went back from entry 6 (block 100) to 4 (block 150)" in problems[0].what
+        assert follower.distrust().startswith(
+            "the task API's log shows fraud at entry 6"
+        )
+        assert await follower.poll() == [], "a proof is written once"
+
+
+async def test_a_log_file_taken_down_inside_the_buckets_retention_is_fraud(tmp_path):
+    import aiohttp
+
+    bucket = Bucket()
+    first = chained(2)
+    second = chained(2, start=2, prev=hash_of(first[-1]))
+    third = chained(2, start=4, prev=hash_of(second[-1]))
+    bucket.put(segment_key(1), segment(1, first, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, first))
+    anchors = {1_000: [(2, hash_of(first[-1]))], 1_010: [(4, hash_of(second[-1]))]}
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        chain = Chain(1_020, anchors)
+        follower = follower_on(http, url, tmp_path / "recent", chain)
+        assert await follower.poll() == []
+        assert follower.anchored_through() == 2
+        # File 2 was published, anchored at block 1010, and is gone four minutes later while file 3 is there.
+        bucket.put(segment_key(3), segment(3, third, hash_of(second[-1])))
+        bucket.put(LATEST_KEY, latest(3, third))
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["fraud"]
+        assert "took it down" in problems[0].what and problems[0].seq == 3
+        assert problems[0].evidence["anchor"]["block"] == 1_010
+        assert "shows fraud at entry 3" in follower.distrust()
+        proof = json.loads(
+            next((tmp_path / "recent" / "fraud").glob("*.json")).read_text()
+        )
+        assert proof["problem"]["evidence"]["written_after_block"] == 1_000
+
+        # Read a day of blocks later, the same gap may be the bucket's own lifecycle: the follower reads on.
+        bucket.put(segment_key(2), segment(2, second, hash_of(first[-1])))
+        bucket.put(LATEST_KEY, latest(2, second))
+        later = Chain(1_000 + 7_100, anchors)
+        follower = follower_on(http, url, tmp_path / "late", later)
+        assert await follower.poll() == []
+        del bucket.objects[segment_key(2)]
+        bucket.put(segment_key(1), segment(1, first, GENESIS))
+        bucket.put(LATEST_KEY, latest(3, third))
+        follower.set_state("segment", 2)
+        follower.set_state("last", 2)
+        follower.set_state("head", hash_of(first[-1]))
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["suspect"]
+        assert "older than the bucket's retention" in problems[0].what
+
+
+async def test_a_gone_file_no_anchor_covers_yet_waits_for_one(tmp_path):
+    import aiohttp
+
+    bucket = Bucket()
+    first = chained(2)
+    second = chained(2, start=2, prev=hash_of(first[-1]))
+    third = chained(2, start=4, prev=hash_of(second[-1]))
+    bucket.put(segment_key(1), segment(1, first, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, first))
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        chain = Chain(1_020, {1_000: [(2, hash_of(first[-1]))]})
+        follower = follower_on(http, url, tmp_path, chain)
+        assert await follower.poll() == []
+        bucket.put(segment_key(3), segment(3, third, hash_of(second[-1])))
+        bucket.put(LATEST_KEY, latest(3, third))
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["suspect"]
+        assert "waiting for an anchor" in problems[0].what
+        assert follower.state("segment") == 2, "it does not read past the gap yet"
+        chain.head = 1_030
+        chain.blocks[1_025] = [anchor_extrinsic(5, hash_of(third[0]))]
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["fraud"]
+
+
+async def test_a_metagraph_the_api_logged_is_checked_against_our_node_at_its_block(
+    tmp_path,
+):
+    import aiohttp
+
+    listed = [
+        [0, "5Owner", "5OwnerCold", True, "20000000000000", "30000000000", 0.25],
+        [1, "5Miner", "5MinerCold", False, "0", "0", 0.75],
+    ]
+    blob = json.dumps(listed, separators=(",", ":")).encode()
+    entry = {
+        "v": 1,
+        "seq": 1,
+        "prev": GENESIS,
+        "at": 1.0,
+        "kind": "metagraph",
+        "input": {
+            "netuid": 22,
+            "block": 500,
+            "neurons": {"blob": sha256(blob), "bytes": len(blob)},
+        },
+        "output": {},
+    }
+    ours = [
+        [0, "5Owner", "5OwnerCold", True, 20000000000000, 30000000000, 16384],
+        [1, "5Miner", "5MinerCold", False, 0, 0, 49151],
+    ]
+    asked = []
+
+    async def metagraph_at(netuid, block):
+        asked.append((netuid, block))
+        return ours
+
+    bucket = Bucket()
+    bucket.put(segment_key(1), segment(1, [entry], GENESIS))
+    bucket.put(LATEST_KEY, latest(1, [entry]))
+    bucket.put(blob_key(sha256(blob)), blob)
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+
+        def follower(folder):
+            return JournalFollower(
+                http,
+                url,
+                API.ss58_address,
+                tmp_path / folder,
+                node({}),
+                anchored([]),
+                metagraph_at=metagraph_at,
+            )
+
+        assert await follower("same").poll() == []
+        assert asked == [(22, 500)]
+
+        # A second coldkey for the miner: one validator would count as two.
+        ours[1] = [1, "5Miner", "5OwnerCold2", False, 0, 0, 49151]
+        problems = await follower("other").poll()
+        assert [p.severity for p in problems] == ["fraud"]
+        assert "our node does not have" in problems[0].what
+        assert problems[0].evidence["node"] == [ours[1]]
+
+        async def pruned(netuid, block):
+            raise RuntimeError("State discarded")
+
+        unread = JournalFollower(
+            http,
+            url,
+            API.ss58_address,
+            tmp_path / "pruned",
+            node({}),
+            anchored([]),
+            metagraph_at=pruned,
+        )
+        problems = await unread.poll()
+        assert [p.severity for p in problems] == ["suspect"]
+
+
+def fake_replay(folder, lines: list[dict], version: str = "0.1.0"):
+    """A replay tool that answers `--version` and prints `lines` (read from a file the test rewrites) for any log."""
+    import os
+    import sys
+
+    out = folder / "replay-out.jsonl"
+    out.write_text("\n".join(json.dumps(line) for line in lines))
+    script = folder / "task-api-replay"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, pathlib\n"
+        f"if sys.argv[1:] == ['--version']:\n    print('task-api-replay {version}'); sys.exit(0)\n"
+        "pathlib.Path(sys.argv[0]).with_name('replay-args.json').write_text(__import__('json').dumps(sys.argv[1:]))\n"
+        f"print(pathlib.Path({str(out)!r}).read_text())\n"
+    )
+    os.chmod(script, 0o755)
+    return script, out
+
+
+async def test_a_fraud_keeps_the_apis_inputs_out_until_the_log_holds_again(tmp_path):
+    import aiohttp
+
+    bucket = Bucket()
+    first = chained(3)
+    second = chained(3, start=3, prev=hash_of(first[-1]))
+    bucket.put(segment_key(1), segment(1, first, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, first))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    honest = {"replayed_files": 1, "last": 3, "head": "h", "fraud": 0}
+    replay, out = fake_replay(tools, [{**honest, "started": True, "since": 1}])
+    anchor = []
+    clock = [1_000.0]
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        follower = JournalFollower(
+            http,
+            url,
+            API.ss58_address,
+            tmp_path / "v",
+            node({}),
+            anchored(anchor),
+            str(replay),
+            clock=lambda: clock[0],
+        )
+        assert await follower.poll() == []
+        assert follower.distrust() is None
+        assert "--anchors" in json.loads((tools / "replay-args.json").read_text())
+
+        # The replay finds the API's shares are not what its rules give, at entry 2.
+        out.write_text(
+            json.dumps(
+                {"severity": "fraud", "seq": 2, "kind": "shares", "what": "the shares"}
+            )
+            + "\n"
+            + json.dumps({**honest, "started": True, "since": 1})
+        )
+        problems = await follower.poll()
+        assert [p.what for p in problems] == ["the shares"]
+        assert (
+            follower.distrust()
+            == "the task API's log shows fraud at entry 2: the shares"
+        )
+        assert follower.fraud_spans() == [(first[1]["at"], 1_000.0)]
+        assert not (tmp_path / "v" / "replay.db").exists()
+
+        # Started again from a snapshot past the fraud, the replay holds; trust returns once an anchor covers it.
+        bucket.put(segment_key(2), segment(2, second, hash_of(first[-1])))
+        bucket.put(LATEST_KEY, latest(2, second))
+        out.write_text(json.dumps({**honest, "last": 6, "started": True, "since": 4}))
+        clock[0] = 1_060.0
+        assert await follower.poll() == []
+        assert "shows fraud" in follower.distrust(), "no anchor covers entry 4 yet"
+        anchor.append(
+            {
+                "block": 70,
+                "info": {
+                    "fields": [
+                        {"Raw8": "0x" + b"sn22j1:5".hex()},
+                        {"Sha256": "0x" + hash_of(second[1])},
+                    ]
+                },
+            }
+        )
+        clock[0] = 1_120.0
+        assert await follower.poll() == []
+        assert follower.distrust() is None
+        assert follower.fraud_spans() == [(first[1]["at"], 1_120.0)]
+
+        # A replay that stops keeping up takes the trust away again, without a fraud.
+        clock[0] = 1_120.0 + 3_600
+        assert "not been read and replayed lately" in follower.distrust()
+
+
+async def test_without_the_replay_or_before_a_snapshot_the_log_is_not_trusted(tmp_path):
+    import aiohttp
+
+    bucket = Bucket()
+    entries = chained(3)
+    bucket.put(segment_key(1), segment(1, entries, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, entries))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    replay, _ = fake_replay(
+        tools,
+        [
+            {
+                "replayed_files": 1,
+                "last": 3,
+                "head": "h",
+                "fraud": 0,
+                "started": False,
+                "since": None,
+            }
+        ],
+    )
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        unreplayed = JournalFollower(
+            http, url, API.ss58_address, tmp_path / "a", node({}), anchored([])
+        )
+        await unreplayed.poll()
+        assert "not replayed" in unreplayed.distrust()
+        waiting = JournalFollower(
+            http,
+            url,
+            API.ss58_address,
+            tmp_path / "b",
+            node({}),
+            anchored([]),
+            str(replay),
+        )
+        await waiting.poll()
+        assert "waits for a snapshot" in waiting.distrust()
+
+
+def test_a_replay_tool_must_run_and_be_this_releases_version(tmp_path):
+    from neurons.validators.journal import crate_version, replay_problem
+
+    toml = tmp_path / "Cargo.toml"
+    toml.write_text(
+        '[package]\nname = "task-api"\nversion = "0.1.0"\n\n[dependencies]\nversion = "9"\n'
+    )
+    assert crate_version(toml) == "0.1.0"
+    replay, _ = fake_replay(tmp_path, [], version="0.1.0")
+    assert replay_problem(str(replay), toml) is None
+    assert "does not run" in replay_problem(str(tmp_path / "missing"), toml)
+    assert "no replay tool" in replay_problem("", toml)
+    old, _ = fake_replay(tmp_path, [], version="0.0.9")
+    assert "build it again" in replay_problem(str(old), toml)
+    other = tmp_path / "other"
+    other.write_text("#!/bin/sh\necho hello\n")
+    other.chmod(0o755)
+    assert "is not the task API's replay tool" in replay_problem(str(other), toml)

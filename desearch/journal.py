@@ -15,6 +15,12 @@ GENESIS = "0" * 64
 LATEST_KEY = "log/journal/latest.json"
 # The commitment field that names an anchor, followed by the entry number; the head is a Sha256 field beside it.
 ANCHOR_TAG = "sn22j1:"
+BLOCK_SECONDS = 12
+# The uploads bucket lets objects go a day after they are written (`task-api/README.md`), and a lifecycle rule never sooner: a log
+# file younger than this that is gone was taken down.
+RETENTION_S = 86_400
+# Slack for a lifecycle rule run late and for block times drifting from 12 seconds.
+RETENTION_MARGIN_S = 3_600
 
 
 def segment_key(segment: int) -> str:
@@ -267,3 +273,44 @@ def check_anchor(
             f"the log read has {found}: the log was rewritten or forked"
         )
     return None
+
+
+def _compact(data: bytes, at: int) -> tuple[int, int]:
+    """A SCALE compact integer at `at`: its value and the offset after it."""
+    mode = data[at] & 3
+    if mode == 0:
+        return data[at] >> 2, at + 1
+    if mode == 1:
+        return int.from_bytes(data[at : at + 2], "little") >> 2, at + 2
+    if mode == 2:
+        return int.from_bytes(data[at : at + 4], "little") >> 2, at + 4
+    size = (data[at] >> 2) + 4
+    return int.from_bytes(data[at + 1 : at + 1 + size], "little"), at + 1 + size
+
+
+def anchors_in_extrinsic(extrinsic: bytes, public_key: bytes) -> list[tuple[int, str]]:
+    """The anchors a signed extrinsic of `public_key` commits, as `(seq, head)`: `sn22j1:<seq>` in a Raw field and the head in the
+    32 bytes of the Sha256 field after it. Read from the block's own bytes, which every node keeps, so a node that keeps no old
+    state still shows every anchor ever sent, whatever the log says of them."""
+    try:
+        _, at = _compact(extrinsic, 0)
+    except IndexError:
+        return []
+    # A signed v4 extrinsic names its signer first: an `Id` address and the 32 bytes of its key.
+    if (
+        extrinsic[at : at + 2] != b"\x84\x00"
+        or extrinsic[at + 2 : at + 34] != public_key
+    ):
+        return []
+    found = []
+    tag = ANCHOR_TAG.encode()
+    start = extrinsic.find(tag, at + 34)
+    while start >= 0:
+        end = start + len(tag)
+        while end < len(extrinsic) and 0x30 <= extrinsic[end] <= 0x39:
+            end += 1
+        head = extrinsic[end + 1 : end + 33]
+        if end > start + len(tag) and len(head) == 32:
+            found.append((int(extrinsic[start + len(tag) : end]), head.hex()))
+        start = extrinsic.find(tag, end)
+    return found

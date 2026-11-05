@@ -88,6 +88,7 @@ class Relay:
         publish_delay_blocks: int = PUBLISH_DELAY_BLOCKS,
         rate: Bucket | None = None,
         timeout: float | None = None,
+        journal_proofs: Callable[[float], list[dict]] | None = None,
     ):
         self.keypair = keypair
         self.api_url = api_url.rstrip("/")
@@ -101,6 +102,8 @@ class Relay:
             aiohttp.ClientTimeout(total=timeout) if timeout else FORWARD_TIMEOUT
         )
         self.forwarded = 0
+        # The fraud proofs this validator's check of the task API's log wrote, published beside its censorship proofs.
+        self.journal_proofs = journal_proofs
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
@@ -112,6 +115,7 @@ class Relay:
         app.router.add_get("/v1/witness/requests/{request}", self.one_request)
         app.router.add_get("/v1/witness/storage", self.storage)
         app.router.add_get("/v1/witness/proofs", self.proofs)
+        app.router.add_get("/v1/journal/proofs", self.log_proofs)
         return app
 
     async def about(self, _: web.Request) -> web.Response:
@@ -263,6 +267,13 @@ class Relay:
         since = float(request.query.get("since", 0) or 0)
         return web.json_response(
             {"witness": self.keypair.ss58_address, "proofs": self.store.proofs(since)}
+        )
+
+    async def log_proofs(self, request: web.Request) -> web.Response:
+        since = float(request.query.get("since", 0) or 0)
+        found = self.journal_proofs(since) if self.journal_proofs else []
+        return web.json_response(
+            {"validator": self.keypair.ss58_address, "proofs": found}
         )
 
 

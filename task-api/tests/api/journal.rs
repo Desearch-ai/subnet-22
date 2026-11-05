@@ -147,7 +147,20 @@ async fn a_replay_of_the_published_log_reaches_the_api_accounts() {
         }
     }
     let replay = Replay::open(Some(&state)).unwrap();
-    assert_eq!(replay.position().unwrap(), (last, head));
+    assert_eq!(replay.position().unwrap(), (last, head.clone()));
+
+    // The tool a validator runs, from scratch over the same folder, with the anchors its own node shows.
+    let first_snapshot = all.iter().find(|e| e["kind"] == "snapshot").unwrap()["seq"].as_i64().unwrap();
+    std::fs::write(dir.join("anchors.json"), json!([{"seq": last, "head": head, "block": 10}]).to_string()).unwrap();
+    let ran = std::process::Command::new(env!("CARGO_BIN_EXE_task-api-replay"))
+        .args(["--dir", dir.to_str().unwrap(), "--state", dir.join("fresh.db").to_str().unwrap(), "--signer", &h.state.signer()])
+        .args(["--anchors", dir.join("anchors.json").to_str().unwrap(), "--join"])
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let lines: Vec<Value> = String::from_utf8_lossy(&ran.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(lines.len(), 1, "no divergence, only the summary: {lines:?}");
+    assert_eq!((lines[0]["last"].as_i64(), lines[0]["started"].as_bool(), lines[0]["since"].as_i64()), (Some(last), Some(true), Some(first_snapshot)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -278,6 +291,22 @@ async fn expired_at(h: &Harness, task_id: &str, expiry: f64) {
 }
 
 #[tokio::test]
+async fn a_final_verdict_edited_in_place_shows_at_the_next_snapshot() {
+    let h = Harness::start().await;
+    h.enqueue(urls(6)).await;
+    settled(&h, &h.miner, &h.validator, "pass").await;
+    h.state.db.run(|conn| snapshot::record(conn, desearch::time::now())).await.unwrap();
+    let (replay, _) = replayed(&h, &published(&h).await);
+    assert_eq!(replay.divergences, [], "the replay finalizes the upload as the API did");
+
+    // The operator turns the stored verdict, which `/v1/tasks` and a late vote read back, into a fail.
+    h.state.db.run(|conn| Ok(conn.execute("UPDATE final_verdicts SET verdict = 'fail'", [])?)).await.unwrap();
+    h.state.db.run(|conn| snapshot::record(conn, desearch::time::now())).await.unwrap();
+    let (replay, _) = replayed(&h, &published(&h).await);
+    assert!(replay.fraud().any(|d| d.kind == "snapshot" && d.what.contains("final_verdicts")), "{:?}", replay.divergences);
+}
+
+#[tokio::test]
 async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_outages() {
     use task_api::canary;
     let h = Harness::start().await;
@@ -399,7 +428,12 @@ async fn with_anchoring_on_a_round_is_revealed_only_after_an_anchor_before_its_s
     h.state.db.run(move |conn| Ok(conn.execute("UPDATE log_anchors SET sent_at = ?", [first_seed - 40])?)).await.unwrap();
     lifecycle::reveal_pending(&h.state).await.unwrap();
     let moved = kept_round(&h, &round_id).await;
-    assert!(moved.seed.is_none() && moved.seed_block > first_seed, "{moved:?}");
+    assert!(moved.seed.is_none() && moved.seed_block > first_seed + lifecycle::reveal_lead(1), "a miss leaves the next anchor more room: {moved:?}");
+    assert_eq!(
+        (lifecycle::reveal_lead(0), lifecycle::reveal_lead(1), lifecycle::reveal_lead(2), lifecycle::reveal_lead(3), lifecycle::reveal_lead(60)),
+        (10, 30, 70, 150, 361),
+        "each miss doubles the room past the inclusion window, up to an epoch"
+    );
     assert_ne!(moved.manifest_hash, enqueued["manifest_hash"].as_str().unwrap(), "the new seed block is part of the commitment");
 
     // An anchor of the new commitment registered before the new seed block lets the seed cut it.
@@ -430,6 +464,17 @@ async fn with_anchoring_on_a_round_is_revealed_only_after_an_anchor_before_its_s
     );
     let (replay, _) = replayed(&h, &unanchored);
     assert!(replay.fraud().any(|d| d.kind == "reveal" && d.what.contains("anchored")), "{:?}", replay.divergences);
+
+    // The chain held the first commitment before its seed block, but the log left that anchor out: a validator's own node shows
+    // it, and committing the round again was a re-roll of its seed.
+    let committed = all.iter().find(|e| e["kind"] == "enqueue").unwrap()["seq"].as_i64().unwrap();
+    let mut replay = Replay::open(None).unwrap();
+    replay.note_anchor(committed, first_seed - 1).unwrap();
+    let blobs = |sha: &str| h.object(&journal::blob_key(sha));
+    for file in &files {
+        replay.apply_segment(file, &[h.state.signer()], false, &blobs).unwrap().unwrap();
+    }
+    assert!(replay.fraud().any(|d| d.kind == "recommit" && d.what.contains("anchored before its seed block")), "{:?}", replay.divergences);
 
     // A commitment the request's URLs do not make.
     let other = rechained(&h, &files, |entry| {
