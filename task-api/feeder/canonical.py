@@ -1,3 +1,5 @@
+"""Page URLs canonicalised and keyed as the task API does (`crates/desearch/src/canonical.rs`), for the URLs the feeder has sent."""
+
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +28,3 @@ def domain_of(url: str) -> str:
 
 def url_sha1(url: str) -> str:
     return hashlib.sha1(canonicalize(url).encode()).hexdigest()
-
-
-def article_key(url: str) -> str:
-    return f"articles/{domain_of(url)}/{url_sha1(url)}"

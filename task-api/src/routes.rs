@@ -387,6 +387,10 @@ pub async fn complete(
         let error = ApiError::status(409, "you do not hold this claim");
         return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await;
     }
+    if let Err(refused) = unpaused(&state) {
+        // Turned away for the pause: the log shows it, and the claim lapses at no cost.
+        return refuse_logged(&state, "complete", logged, &task_id, refused, arrived.tick, &who.hotkey).await;
+    }
     let lock = match hold_completion(&state, &task_id, &who.hotkey).await {
         Ok(lock) => lock,
         Err(error) => return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await,
@@ -650,6 +654,15 @@ async fn verify_completion(
     Ok(json!({"task_id": task_id, "status": "open_for_validation", "receipt": receipt}))
 }
 
+/// While paused nothing changes the accounts: no upload is completed, no claim handed back and no report taken; callers come back
+/// once it is resumed.
+fn unpaused(state: &State) -> Result<(), ApiError> {
+    match state.custody.paused() {
+        Some(pause) => Err(ApiError::retry(503, format!("the task API is paused: {}", pause["reason"].as_str().unwrap_or_default()), "60")),
+        None => Ok(()),
+    }
+}
+
 pub async fn abandon(
     Shared(state): Shared<Arc<State>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -667,6 +680,9 @@ pub async fn abandon(
     let not_held = || ApiError::status(409, "you do not hold this claim");
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
         return refuse_logged(&state, "abandon", signed.logged(), &task_id, not_held(), tick, &who.hotkey).await;
+    }
+    if let Err(refused) = unpaused(&state) {
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, refused, tick, &who.hotkey).await;
     }
     let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
     let forgiving = lifecycle::forgiving(&state, state.tasks(&kind).claim_ttl).await?;
@@ -764,6 +780,7 @@ pub async fn score(
 ) -> Answer {
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = validator(&state, &signed).await?;
+    unpaused(&state)?;
     let result = match json_body(&body)? {
         Value::Object(result) => result,
         Value::Null => return Err(models::Invalid::single("missing", &["body"], "Field required").into()),
@@ -1029,8 +1046,11 @@ pub async fn storage_witness(
 }
 
 /// Every setting this copy runs with, secrets left out; the attestation binds its hash.
+/// Every setting, and the pause beside them: the settings are what the attestation binds, the pause is state.
 pub async fn config(Shared(state): Shared<Arc<State>>) -> Answer {
-    Ok(Json(state.settings.public()))
+    let mut config = state.settings.public();
+    config["paused"] = state.custody.paused().unwrap_or(Value::Null);
+    Ok(Json(config))
 }
 
 /// Which key signs the log, every custody record this copy knows, and the pause.
@@ -1060,7 +1080,7 @@ pub async fn handover(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conn
     Ok(Json(crate::custody::hand_over(&state, successor).await?))
 }
 
-/// Stops or resumes handing out tasks, the only emergency power.
+/// Pauses or resumes the accounts, the only emergency power.
 pub async fn pause(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = admin(&state, &signed).await?;
@@ -1070,12 +1090,9 @@ pub async fn pause(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Connect
     if paused && reason.trim().is_empty() {
         return Err(ApiError::status(422, "a pause needs a reason"));
     }
-    let answer = crate::custody::pause(&state, paused, reason, &who.hotkey).await?;
-    // Claims are refused while paused, so the log says when and why, with the admin's signed request.
+    // The log says when and why, with the admin's signed request.
     let (logged, blobs) = signed.logged();
-    let record = journal::Record::new("pause", now(), json!({"request": logged, "paused": paused, "reason": reason}), answer.clone()).with_blobs(blobs);
-    state.db.run(move |conn| journal::append(conn, record)).await?;
-    Ok(Json(answer))
+    Ok(Json(crate::custody::pause(&state, paused, reason, &who.hotkey, logged, blobs).await?))
 }
 
 /// The CVM's TDX quote and what it binds: the signer, the handover key, the settings and the TLS key.

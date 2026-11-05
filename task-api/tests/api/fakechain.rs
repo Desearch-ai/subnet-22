@@ -131,6 +131,9 @@ async fn answer(State(chain): State<Arc<FakeChain>>, Json(request): Json<Value>)
             Some(block) => json!(format!("0x{}", desearch::canonical::hex(&chain.block_time_ms(block).to_le_bytes()))),
             None => Value::Null,
         },
+        "system_accountNextIndex" => json!(if lying { 9_999 } else { 7 }),
+        "state_getRuntimeVersion" => json!({"specVersion": if lying { 999 } else { 300 }, "transactionVersion": 1}),
+        "author_submitExtrinsic" => json!(format!("0x{}", "ee".repeat(32))),
         _ => return Json(json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "not here"}})).into_response(),
     };
     Json(json!({"jsonrpc": "2.0", "id": 1, "result": result})).into_response()

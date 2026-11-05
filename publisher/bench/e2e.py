@@ -1,8 +1,8 @@
-"""`publisher serve` end to end against S3-compatible storage and Redis, fed and checked with the task API's own code: e2e.py BINARY SAMPLE_DIR WORK_DIR."""
+"""`publisher serve` end to end against S3-compatible storage and Redis, fed and checked the way the task API's Redis keys are laid out (`task-api/src/queues.rs`): e2e.py BINARY SAMPLE_DIR WORK_DIR."""
 
 from __future__ import annotations
 
-import asyncio
+import base64
 import io
 import json
 import os
@@ -10,14 +10,13 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
+import zlib
 from pathlib import Path
 
 import boto3
 import pyarrow.parquet as pq
 import redis
-import redis.asyncio as aioredis
-
-from app.queues import PublishQueue, pack_job
 
 ENDPOINT = os.environ.get("E2E_ENDPOINT", "http://127.0.0.1:19100")
 REDIS_URL = os.environ.get("E2E_REDIS", "redis://127.0.0.1:6379/13")
@@ -71,17 +70,29 @@ def enqueue(db: redis.Redis, jobs: list[dict]) -> None:
         db.zadd("publish:pending", {job["task_id"]: job["completed_at"]})
 
 
+def pack_job(job: dict) -> str:
+    """A publish job as the task API keeps it in Redis: `z:` and its JSON, compressed, in base64 (`queues::pack`)."""
+    return "z:" + base64.b64encode(zlib.compress(json.dumps(job).encode())).decode()
+
+
 def queue(call: str, *args):
-    """One PublishQueue call on its own event loop, as the task API makes it."""
-
-    async def run():
-        client = aioredis.from_url(REDIS_URL, decode_responses=True)
-        try:
-            return await getattr(PublishQueue(client), call)(*args)
-        finally:
-            await client.aclose()
-
-    return asyncio.run(run())
+    """What the task API reads of the publish queue, or the withdrawal it asks for, on its own connection."""
+    db = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    if call == "depth":
+        return db.llen("publish:ready")
+    if call == "waiting":
+        return db.zcard("publish:pending")
+    if call == "finished":
+        return int(db.get("publish:acked") or 0)
+    if call == "withdraw":
+        task_ids, reason = args
+        job_id = f"withdraw:{uuid.uuid4().hex[:16]}"
+        job = {"task_id": job_id, "kind": "withdraw", "task_ids": task_ids, "reason": reason}
+        db.set(f"pjob:{job_id}", json.dumps(job))
+        db.rpush("publish:ready", job_id)
+        db.zadd("publish:pending", {job_id: time.time()})
+        return job_id
+    raise ValueError(call)
 
 
 def json_object(client, bucket: str, key: str):

@@ -6,9 +6,8 @@ import sqlite3
 import sys
 import time
 
-from app.canonical import url_sha1
-
 from desearch.client import TaskApiClient, TaskApiError
+from feeder.canonical import url_sha1
 
 ENQUEUE_URLS = 10_000
 # Counted in tasks, as the API reports its queue depth.

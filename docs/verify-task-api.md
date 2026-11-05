@@ -46,7 +46,10 @@ python3 task-api/deploy/dstack/app_compose.py --image-digest sha256:<digest>
 
 It writes the `app-compose.json` for this checkout and prints its compose hash. Read the compose
 itself: every setting is written in it, every image is pinned by digest, and `allowed_envs` lists only
-the storage credentials, the only values the deployer may set.
+the storage credentials and the anchor hotkey's secret, the only values the deployer may set. Check that it
+reads the chain through endpoints of two operators that must agree, anchors the log
+(`TASK_API_ANCHOR_NETWORK`) and locks uploads for a day (`TASK_API_UPLOAD_LOCK_S: "86400"`): the API
+refuses to start in a CVM without them, and validators refuse the compose.
 
 ## 3. The attestation
 
@@ -61,7 +64,8 @@ It fetches `/v1/attestation` with a random nonce, so the quote is made for you n
 - the event log replays to RTMR3, and the compose hash in it is that of the `app_compose` returned;
 - the compose passes the same policy validators apply: no build, no privileged container, no host
   network, no docker socket, no `pre_launch_script`, only credentials in `allowed_envs`, the
-  governance settings validators pin;
+  governance settings validators pin, and the minimums they require (two endpoints agreeing on chain
+  reads and anchors, anchoring on, a day's Object Lock, three coldkeys to approve a version);
 - the key provider is dstack's KMS, and the quote's report data binds the document with the signer;
 - `/v1/config` hashes to the `config_sha256` the quote binds;
 - the TLS certificate the API serves has the key the quote binds (`tls_spki_sha256`), so you are

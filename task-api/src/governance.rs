@@ -2,9 +2,11 @@
 //!
 //! A validator commits `sn22tee:<compose hash>`, `sn22tee:<hash>,<hash>` or `sn22tee:<hash>@<signer>`. A version is approved
 //! once the independent validators whose commitment names it, made at least the timelock ago, hold more than the threshold of
-//! the independent validators' stake. See docs/tee.md.
+//! the independent validators' stake and number at least the minimum of distinct coldkeys. Independent: a permit, not the
+//! owner's coldkey or hotkey, and no stake inherited from an owner's hotkey; the stake the owner's coldkey delegated to a
+//! validator does not count for it. See docs/tee.md.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Context, Result};
 use blake2::digest::consts::{U16, U32};
@@ -17,6 +19,7 @@ use crate::chain::{self, Chain, Neuron};
 
 pub const PREFIX: &str = "sn22tee:";
 const PPM: u128 = 1_000_000;
+const ROOT: u128 = 0;
 
 /// What one validator's commitment says: the versions it approves, and the signer it appoints for the first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,16 +48,17 @@ pub fn parse(text: &str) -> Option<Commitment> {
     Some(Commitment { versions, appoint })
 }
 
-/// The share of stake and the timelock a version needs.
+/// The share of stake, the distinct coldkeys and the timelock a version needs.
 #[derive(Clone, Copy, Debug)]
 pub struct Rule {
     threshold_ppm: u128,
     pub timelock: i64,
+    pub min_coldkeys: usize,
 }
 
 impl Rule {
-    pub fn new(threshold: f64, timelock: i64) -> Rule {
-        Rule { threshold_ppm: (threshold * PPM as f64).round() as u128, timelock }
+    pub fn new(threshold: f64, timelock: i64, min_coldkeys: usize) -> Rule {
+        Rule { threshold_ppm: (threshold * PPM as f64).round() as u128, timelock, min_coldkeys }
     }
 }
 
@@ -67,52 +71,72 @@ pub struct Snapshot {
     pub owner_hotkey: String,
     /// Each hotkey's latest commitment: the block it was made at and its text.
     pub commitments: HashMap<String, (i64, String)>,
+    /// The stake the owner's coldkey holds on each hotkey, as the metagraph weighs it: its alpha on the subnet and its root TAO
+    /// at the TAO weight.
+    pub owner_stake: HashMap<String, u128>,
+    /// Hotkeys whose stake a hotkey of the owner's coldkey passes down to as a parent.
+    pub owner_children: HashSet<String>,
 }
 
 impl Snapshot {
-    /// Validators with a permit that the subnet owner does not hold.
+    /// Validators with a permit that the subnet owner neither holds nor passes stake down to.
     fn independent(&self) -> impl Iterator<Item = &Neuron> {
-        self.neurons.iter().filter(|n| n.validator_permit && n.coldkey != self.owner_coldkey && n.hotkey != self.owner_hotkey)
+        self.neurons
+            .iter()
+            .filter(|n| n.validator_permit && n.coldkey != self.owner_coldkey && n.hotkey != self.owner_hotkey && !self.owner_children.contains(&n.hotkey))
+    }
+
+    /// A validator's stake without what the owner's coldkey delegated to it.
+    fn weight(&self, neuron: &Neuron) -> u128 {
+        neuron.total_stake_rao.saturating_sub(self.owner_stake.get(&neuron.hotkey).copied().unwrap_or(0))
     }
 
     pub fn total(&self) -> u128 {
-        self.independent().map(|n| n.total_stake_rao).sum()
+        self.independent().map(|n| self.weight(n)).sum()
     }
 
-    /// The independent stake whose commitment names `version` (appointing `signer`, when given) and is at least `age` blocks old.
+    /// The independent validators whose commitment names `version` (appointing `signer`, when given) and is at least `age` blocks old.
+    fn supporters<'a>(&'a self, version: &'a str, age: i64, signer: Option<&'a str>) -> impl Iterator<Item = &'a Neuron> {
+        self.independent().filter(move |n| {
+            let Some((made, text)) = self.commitments.get(&n.hotkey) else { return false };
+            let Some(commitment) = parse(text) else { return false };
+            let named = match signer {
+                Some(signer) => commitment.appoint.as_deref() == Some(signer) && commitment.versions[0] == version,
+                None => commitment.versions.iter().any(|v| v == version),
+            };
+            named && self.block - made >= age
+        })
+    }
+
+    /// Their stake.
     pub fn support(&self, version: &str, age: i64, signer: Option<&str>) -> u128 {
-        self.independent()
-            .filter(|n| {
-                let Some((made, text)) = self.commitments.get(&n.hotkey) else { return false };
-                let Some(commitment) = parse(text) else { return false };
-                let named = match signer {
-                    Some(signer) => commitment.appoint.as_deref() == Some(signer) && commitment.versions[0] == version,
-                    None => commitment.versions.iter().any(|v| v == version),
-                };
-                named && self.block - made >= age
-            })
-            .map(|n| n.total_stake_rao)
-            .sum()
+        self.supporters(version, age, signer).map(|n| self.weight(n)).sum()
     }
 
-    fn passes(&self, rule: Rule, support: u128) -> bool {
+    /// Their distinct coldkeys.
+    pub fn coldkeys(&self, version: &str, age: i64, signer: Option<&str>) -> usize {
+        self.supporters(version, age, signer).map(|n| n.coldkey.as_str()).collect::<HashSet<_>>().len()
+    }
+
+    fn passes(&self, rule: Rule, version: &str, age: i64, signer: Option<&str>) -> bool {
         let total = self.total();
-        total > 0 && support.saturating_mul(PPM) > rule.threshold_ppm.saturating_mul(total)
+        let support = self.support(version, age, signer);
+        total > 0 && support.saturating_mul(PPM) > rule.threshold_ppm.saturating_mul(total) && self.coldkeys(version, age, signer) >= rule.min_coldkeys
     }
 
     /// The version may take over: approved for at least the timelock.
     pub fn approved(&self, rule: Rule, version: &str) -> bool {
-        self.passes(rule, self.support(version, rule.timelock, None))
+        self.passes(rule, version, rule.timelock, None)
     }
 
     /// This CVM of the version may take the log without a handover: appointed for at least the timelock.
     pub fn appointed(&self, rule: Rule, version: &str, signer: &str) -> bool {
-        self.passes(rule, self.support(version, rule.timelock, Some(signer)))
+        self.passes(rule, version, rule.timelock, Some(signer))
     }
 
     /// The running version is still wanted: approved now, however recently, so adding a successor keeps it endorsed.
     pub fn endorsed(&self, rule: Rule, version: &str) -> bool {
-        self.passes(rule, self.support(version, 0, None))
+        self.passes(rule, version, 0, None)
     }
 }
 
@@ -237,7 +261,107 @@ pub async fn read(chain: &Chain, netuid: u16) -> Result<Snapshot> {
     }
     let neurons = chain.metagraph_at(netuid, Some(&at)).await?;
     let [owner_coldkey, owner_hotkey]: [String; 2] = owners.try_into().map_err(|_| anyhow!("two owners"))?;
-    Ok(Snapshot { block, neurons, owner_coldkey, owner_hotkey, commitments })
+    let owner_stake = if owner_coldkey.is_empty() { HashMap::new() } else { owner_stake(chain, &metadata, &at, netuid, &owner_coldkey).await? };
+    let validators: Vec<&str> = neurons.iter().filter(|n| n.validator_permit).map(|n| n.hotkey.as_str()).collect();
+    let owner_children = owner_children(chain, &metadata, &at, netuid, &validators, &owner_coldkey, &owner_hotkey).await?;
+    Ok(Snapshot { block, neurons, owner_coldkey, owner_hotkey, commitments, owner_stake, owner_children })
+}
+
+/// A runtime API call at a block, its arguments encoded and its answer decoded as the metadata says.
+async fn runtime_call(chain: &Chain, metadata: &RuntimeMetadataV15, api: &str, name: &str, args: &[Value<()>], at: &str) -> Result<Value<u32>> {
+    let method = metadata
+        .apis
+        .iter()
+        .filter(|a| a.name == api)
+        .flat_map(|a| &a.methods)
+        .find(|m| m.name == name)
+        .ok_or_else(|| anyhow!("the runtime has no {api}.{name}"))?;
+    let mut input = Vec::new();
+    for (arg, ty) in args.iter().zip(&method.inputs) {
+        scale_value::scale::encode_as_type(arg, ty.ty.id, &metadata.types, &mut input).map_err(|e| anyhow!("encoding {api}.{name}: {e}"))?;
+    }
+    let output = chain.state_call_at(&format!("{api}_{name}"), &input, Some(at)).await?;
+    scale_value::scale::decode_as_type(&mut output.as_slice(), method.output.id, &metadata.types).map_err(|e| anyhow!("decoding {api}.{name}: {e}"))
+}
+
+fn account_key(ss58: &str) -> Result<[u8; 32]> {
+    desearch::hotkey::public_of(ss58).ok_or_else(|| anyhow!("{ss58} is not an ss58 address"))
+}
+
+/// What the owner's coldkey holds on each hotkey, as the metagraph's total stake counts it: alpha on the subnet, plus root TAO
+/// times the TAO weight.
+async fn owner_stake(chain: &Chain, metadata: &RuntimeMetadataV15, at: &str, netuid: u16, coldkey: &str) -> Result<HashMap<String, u128>> {
+    let found = runtime_call(chain, metadata, "StakeInfoRuntimeApi", "get_stake_info_for_coldkey", &[Value::from_bytes(account_key(coldkey)?)], at).await?;
+    let weight = match chain.storage(&entry(metadata, "SubtensorModule", "TaoWeight")?.prefix, at).await? {
+        Some(raw) => chain::number(&decode(metadata, entry(metadata, "SubtensorModule", "TaoWeight")?.value, &raw)?).unwrap_or(0),
+        None => 0,
+    };
+    Ok(stake_by_hotkey(&found, netuid, weight))
+}
+
+/// The positions of `get_stake_info_for_coldkey`, summed per hotkey: alpha on `netuid`, and root TAO at `tao_weight` of `u64::MAX`.
+pub fn stake_by_hotkey(positions: &Value<u32>, netuid: u16, tao_weight: u128) -> HashMap<String, u128> {
+    let mut stake: HashMap<String, u128> = HashMap::new();
+    for position in chain::items(positions) {
+        let (Some(hotkey), Some(on), Some(amount)) = (
+            chain::field(position, "hotkey").and_then(chain::account),
+            chain::field(position, "netuid").and_then(chain::number),
+            chain::field(position, "stake").and_then(chain::number),
+        ) else {
+            continue;
+        };
+        let counted = match on {
+            on if on == u128::from(netuid) => amount,
+            ROOT => amount.saturating_mul(tao_weight) / u128::from(u64::MAX),
+            _ => continue,
+        };
+        *stake.entry(desearch::hotkey::ss58(&hotkey)).or_default() += counted;
+    }
+    stake
+}
+
+/// The validators that inherit stake on the subnet from a parent hotkey of the owner: its own hotkey or one its coldkey owns.
+async fn owner_children(
+    chain: &Chain,
+    metadata: &RuntimeMetadataV15,
+    at: &str,
+    netuid: u16,
+    validators: &[&str],
+    owner_coldkey: &str,
+    owner_hotkey: &str,
+) -> Result<HashSet<String>> {
+    let parent_keys = entry(metadata, "SubtensorModule", "ParentKeys")?;
+    let [by_hotkey, by_netuid] = parent_keys.hashers.as_slice() else { bail!("SubtensorModule.ParentKeys is not a double map") };
+    let mut keyed = HashMap::new();
+    for hotkey in validators {
+        let key = [parent_keys.prefix.clone(), hashed(by_hotkey, &account_key(hotkey)?), hashed(by_netuid, &netuid.to_le_bytes())].concat();
+        keyed.insert(key, hotkey.to_string());
+    }
+    let mut parents_of: HashMap<String, Vec<String>> = HashMap::new();
+    for (key, raw) in chain.storage_many(&keyed.keys().cloned().collect::<Vec<_>>(), at).await? {
+        let Some(child) = keyed.get(&key) else { continue };
+        for pair in chain::items(&decode(metadata, parent_keys.value, &raw)?) {
+            if let Some(parent) = chain::items(pair).last().and_then(|p| chain::account(p)) {
+                parents_of.entry(child.clone()).or_default().push(desearch::hotkey::ss58(&parent));
+            }
+        }
+    }
+    let owner_of = entry(metadata, "SubtensorModule", "Owner")?;
+    let by_parent = owner_of.hashers.first().context("SubtensorModule.Owner is not a map")?;
+    let parents: HashSet<&String> = parents_of.values().flatten().collect();
+    let mut coldkey_of = HashMap::new();
+    let keys: Vec<(Vec<u8>, &String)> =
+        parents.iter().map(|p| Ok(([owner_of.prefix.clone(), hashed(by_parent, &account_key(p)?)].concat(), *p))).collect::<Result<_>>()?;
+    let found = chain.storage_many(&keys.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(), at).await?;
+    for (key, parent) in &keys {
+        if let Some(raw) = found.get(key) {
+            if let Some(coldkey) = chain::account(&decode(metadata, owner_of.value, raw)?) {
+                coldkey_of.insert(parent.to_string(), desearch::hotkey::ss58(&coldkey));
+            }
+        }
+    }
+    let owners = |parent: &String| parent == owner_hotkey || coldkey_of.get(parent).is_some_and(|c| !owner_coldkey.is_empty() && c == owner_coldkey);
+    Ok(parents_of.into_iter().filter(|(_, parents)| parents.iter().any(owners)).map(|(child, _)| child).collect())
 }
 
 #[cfg(test)]
@@ -261,7 +385,7 @@ mod tests {
             Neuron { validator_permit: false, ..neuron(4, "d", 500) },
         ];
         let commitments = commitments.iter().map(|(uid, block, text)| (neurons[*uid].hotkey.clone(), (*block, text.clone()))).collect();
-        Snapshot { block: at, neurons, owner_coldkey: "owner".into(), owner_hotkey: String::new(), commitments }
+        Snapshot { block: at, neurons, owner_coldkey: "owner".into(), commitments, ..Default::default() }
     }
 
     #[test]
@@ -279,7 +403,7 @@ mod tests {
 
     #[test]
     fn approval_needs_more_than_half_the_independent_stake_for_the_timelock() {
-        let rule = Rule::new(0.5, 100);
+        let rule = Rule::new(0.5, 100, 1);
         let one = format!("sn22tee:{H1}");
         // The owner's 1000 never counts: 30 + 30 of 100 independent is a majority.
         let s = snapshot(1_000, &[(0, 0, one.clone()), (1, 850, one.clone()), (2, 900, one.clone())]);
@@ -299,13 +423,60 @@ mod tests {
 
     #[test]
     fn an_appointment_names_the_signer_too() {
-        let rule = Rule::new(0.5, 10);
+        let rule = Rule::new(0.5, 10, 1);
         let alice = desearch::hotkey::Hotkey::from_uri("//Alice").unwrap().ss58();
         let bob = desearch::hotkey::Hotkey::from_uri("//Bob").unwrap().ss58();
         let s = snapshot(100, &[(1, 0, format!("sn22tee:{H1}@{alice}")), (3, 0, format!("sn22tee:{H1}@{alice}")), (2, 0, format!("sn22tee:{H1}@{bob}"))]);
         assert!(s.appointed(rule, H1, &alice));
         assert!(!s.appointed(rule, H1, &bob));
         assert!(s.approved(rule, H1), "an appointment approves its version too");
+    }
+
+    #[test]
+    fn approval_needs_enough_distinct_coldkeys_too() {
+        let one = format!("sn22tee:{H1}");
+        let mut s = snapshot(1_000, &[(1, 0, one.clone()), (3, 0, one.clone())]);
+        assert!(s.approved(Rule::new(0.5, 100, 2), H1), "70 of 100 from coldkeys a and c");
+        assert!(!s.approved(Rule::new(0.5, 100, 3), H1), "two coldkeys are not three");
+        // One coldkey behind both hotkeys counts once, however much stake it holds.
+        s.neurons[3].coldkey = "a".into();
+        assert_eq!(s.coldkeys(H1, 100, None), 1);
+        assert!(!s.approved(Rule::new(0.5, 100, 2), H1));
+    }
+
+    #[test]
+    fn the_owners_delegated_stake_and_its_children_do_not_count() {
+        let rule = Rule::new(0.5, 100, 1);
+        let one = format!("sn22tee:{H1}");
+        let mut s = snapshot(1_000, &[(3, 0, one.clone())]);
+        assert!(!s.approved(rule, H1), "40 of 100 is not a majority");
+        // The owner delegates 50 to validator c: c's 40 + 50 would carry it, but the owner's 50 is left out of both sides.
+        s.neurons[3].total_stake_rao = 90;
+        assert!(s.approved(rule, H1), "90 of 150 is a majority while the owner's stake counts");
+        s.owner_stake.insert(s.neurons[3].hotkey.clone(), 50);
+        assert_eq!((s.total(), s.support(H1, 100, None)), (100, 40));
+        assert!(!s.approved(rule, H1));
+        // A validator the owner's hotkey passes stake down to is not independent at all.
+        let mut s = snapshot(1_000, &[(1, 0, one.clone()), (2, 0, one.clone())]);
+        assert!(s.approved(rule, H1));
+        s.owner_children.insert(s.neurons[2].hotkey.clone());
+        assert_eq!((s.total(), s.support(H1, 100, None)), (70, 30));
+        assert!(!s.approved(rule, H1));
+    }
+
+    #[test]
+    fn the_owners_positions_count_its_alpha_here_and_its_root_tao_at_the_weight() {
+        let account = |b: u128| Value::unnamed_composite((0..32).map(|_| Value::u128(b)));
+        let position = |hotkey: u128, netuid: u128, stake: u128| {
+            Value::named_composite([("hotkey", account(hotkey)), ("coldkey", account(9)), ("netuid", Value::u128(netuid)), ("stake", Value::u128(stake))])
+        };
+        let positions =
+            Value::unnamed_composite([position(1, 22, 100), position(1, 0, 1_000), position(2, 7, 5_000), position(2, 22, 3)]).map_context(|_| 0u32);
+        let quarter = u128::from(u64::MAX) / 4;
+        let found = stake_by_hotkey(&positions, 22, quarter);
+        let ss58 = |b: u8| desearch::hotkey::ss58(&[b; 32]);
+        assert_eq!(found.get(&ss58(1)), Some(&(100 + 249)), "alpha here plus a quarter of the root TAO, rounded down");
+        assert_eq!(found.get(&ss58(2)), Some(&3), "stake on another subnet does not count");
     }
 
     /// Reads subnet 22 on finney, read-only: `cargo test --lib governance -- --ignored --nocapture`.
@@ -319,13 +490,15 @@ mod tests {
         let s = read(&chain, netuid).await.unwrap();
         let permits = s.neurons.iter().filter(|n| n.validator_permit).count();
         eprintln!(
-            "block {} owner {} / {}: {} neurons, {permits} permits, independent stake {}, {} commitments",
+            "block {} owner {} / {}: {} neurons, {permits} permits, independent stake {}, {} commitments, owner stake on {:?}, owner's children {:?}",
             s.block,
             s.owner_coldkey,
             s.owner_hotkey,
             s.neurons.len(),
             s.total(),
-            s.commitments.len()
+            s.commitments.len(),
+            s.owner_stake,
+            s.owner_children,
         );
         let mut kept: Vec<_> = s.commitments.iter().collect();
         kept.sort_by_key(|(_, (block, _))| std::cmp::Reverse(*block));

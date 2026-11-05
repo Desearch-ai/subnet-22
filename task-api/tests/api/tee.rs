@@ -6,7 +6,7 @@ use task_api::py::canonical;
 use task_api::settings::KeySource;
 
 use crate::fakedstack::{self, FakeDstack};
-use crate::harness::{Harness, TempDir};
+use crate::harness::{self, Harness, TempDir};
 
 async fn in_cvm() -> (Harness, std::sync::Arc<FakeDstack>, TempDir) {
     // A socket path must fit in 104 bytes, which macOS's temporary directory does not leave room for.
@@ -62,7 +62,8 @@ async fn the_quote_binds_the_signer_the_settings_and_a_fresh_nonce() {
     assert_eq!((document["kind"].as_str(), document["version"].as_i64()), (Some("sn22-task-api-attestation"), Some(1)));
     assert_eq!(document["signer"], signer.as_str());
     assert_eq!(document["handover_key"].as_str().unwrap().len(), 64);
-    let config = h.public("/v1/config").await.1;
+    let mut config = h.public("/v1/config").await.1;
+    assert!(config.as_object_mut().unwrap().remove("paused").is_some_and(|p| p.is_null()), "the pause is shown, and is not a setting");
     assert_eq!(document["config_sha256"].as_str().unwrap(), desearch::canonical::hex(&Sha256::digest(canonical(&config))));
     assert!(document["tls_spki_sha256"].is_null(), "no certificate configured");
 
@@ -96,8 +97,11 @@ async fn the_key_is_kept_across_a_restart_and_never_taken_from_the_environment()
     assert!(error.contains("TASK_API_KEY_URI must not be set"), "{error}");
 }
 
+static ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Runs `f` with these variables set, then unsets them; the tests that read the environment run one at a time.
 fn temp_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    let _one = ENVIRONMENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     for (name, value) in vars {
         std::env::set_var(name, value);
     }
@@ -131,4 +135,82 @@ async fn the_measured_compose_writes_every_setting_the_config_shows() {
     let unknown: Vec<_> = written.iter().filter(|name| !shown.contains(*name) && !credentials.contains(name) && *name != "PAGES_S3_BUCKET").collect();
     assert!(unknown.is_empty(), "settings the API does not read: {unknown:?}");
     assert!(!written.contains("TASK_API_KEY_URI"), "the key is made in the CVM");
+}
+
+/// The `environment:` of the dstack compose's `api` service, names and values, with what the deployer hands in filled.
+fn compose_environment() -> Vec<(String, String)> {
+    let compose = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/dstack/docker-compose.yml")).unwrap();
+    let api = compose.split("\n  redis:").next().unwrap();
+    let environment = api.split("    environment:").nth(1).unwrap().split("\n    volumes:").next().unwrap();
+    let legacy = desearch::hotkey::Hotkey::from_uri("//legacy-signer-test").unwrap().ss58();
+    environment
+        .lines()
+        .filter_map(|line| line.trim().split_once(':'))
+        .filter(|(name, _)| !name.starts_with('#') && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .map(|(name, value)| {
+            let value = value.trim().trim_matches('"').to_string();
+            let value = match value.as_str() {
+                "${TASK_API_ANCHOR_KEY_URI}" => "//sn22-anchor-test".to_string(),
+                v if v.starts_with("${") && v.ends_with(":-}") => String::new(),
+                v if v.starts_with("${") => "a-credential".to_string(),
+                "REPLACE_WITH_LEGACY_SIGNER" => legacy.clone(),
+                v if v.starts_with("REPLACE_WITH_") => legacy.clone(),
+                _ => value,
+            };
+            (name.to_string(), value)
+        })
+        .collect()
+}
+
+fn from_compose(changes: &[(&str, &str)]) -> anyhow::Result<task_api::settings::Settings> {
+    let mut vars = compose_environment();
+    for (name, value) in changes {
+        vars.retain(|(n, _)| n != name);
+        vars.push((name.to_string(), value.to_string()));
+    }
+    let pairs: Vec<(&str, &str)> = vars.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    temp_env(&pairs, task_api::settings::Settings::from_env)
+}
+
+#[test]
+fn the_measured_compose_passes_the_checks_a_cvm_starts_with_and_each_protection_is_required() {
+    let settings = from_compose(&[]).expect("the measured compose starts");
+    assert_eq!((settings.chain.quorum, settings.anchor.as_ref().map(|a| a.quorum), settings.upload_lock_s), (2, Some(2), 86_400.0));
+    let refused = |changes: &[(&str, &str)], why: &str| {
+        let error = format!("{:#}", from_compose(changes).expect_err(why));
+        assert!(error.contains(why), "{error}");
+    };
+    refused(&[("TASK_API_UPLOAD_LOCK_S", "3600")], "TASK_API_UPLOAD_LOCK_S");
+    refused(&[("TASK_API_ANCHOR_NETWORK", "")], "TASK_API_ANCHOR_NETWORK must be set");
+    refused(&[("TASK_API_CHAIN_QUORUM", "1")], "TASK_API_CHAIN_QUORUM=1");
+    refused(&[("TASK_API_CHAIN_FINALIZED", "0")], "TASK_API_CHAIN_FINALIZED=1");
+    refused(&[("TASK_API_CHAIN_COUNT_ON", "1")], "TASK_API_CHAIN_COUNT_ON=0");
+    refused(&[("TASK_API_ANCHOR_QUORUM", "3")], "TASK_API_ANCHOR_QUORUM=3");
+    // Two endpoints of one operator make a quorum of two on their own.
+    refused(&[("TASK_API_NETWORK", "finney,https://lite.chain.opentensor.ai:443,https://bittensor-finney.api.onfinality.io/public")], "opentensor.ai runs");
+    refused(&[("TASK_API_ANCHOR_KEY_URI", "//legacy-signer-test")], "the legacy signer");
+    refused(&[("TASK_API_ANCHOR_KEY_URI", "")], "TASK_API_ANCHOR_KEY_URI must be set");
+}
+
+#[test]
+fn anchors_outside_a_cvm_need_endpoints_for_their_quorum_and_a_key_of_their_own() {
+    let mut s = harness::settings(std::path::PathBuf::from("/tmp/unused"), "http://127.0.0.1:1");
+    s.key_uri = "//signer-test".into();
+    let anchoring = |network: &str, quorum: usize, key: &str| task_api::settings::AnchorSettings {
+        network: network.into(),
+        quorum,
+        netuid: 22,
+        key_uri: key.into(),
+        every_blocks: 12,
+        min_blocks: 3,
+        per_epoch: 30,
+    };
+    s.anchor = Some(anchoring("local", 1, "//anchor-test"));
+    s.check().expect("one endpoint and a key of its own");
+    s.anchor = Some(anchoring("local", 2, "//anchor-test"));
+    assert!(s.check().unwrap_err().to_string().contains("TASK_API_ANCHOR_QUORUM=2"), "a quorum the anchor network cannot give is refused at start");
+    s.anchor = Some(anchoring("local", 1, "//signer-test"));
+    assert!(s.check().unwrap_err().to_string().contains("signing key"), "the signing key may not anchor");
+    s.anchor = Some(anchoring("local", 1, ""));
+    assert!(s.check().is_err(), "nor may anchors fall back to it");
 }

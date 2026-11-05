@@ -28,7 +28,7 @@ pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
 pub const EMBED_PUBLISHED: &str = "embed:published:";
 /// Embed tasks with malformed vectors, for the task API to check their miner's next uploads.
 pub const EMBED_MALFORMED: &str = "embed:malformed";
-/// Byte for byte the text in `app/queues.py`, so both load the script under one SHA.
+/// The claim script `task-api/src/lua/pclaim.lua` runs too.
 pub const PCLAIM: &str = "
 local jobs = {}
 while #jobs < tonumber(ARGV[1]) do

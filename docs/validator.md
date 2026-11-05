@@ -53,10 +53,14 @@ jobs:
    - It follows the API's hash-chained log in the uploads bucket: every file must be signed by the pinned
      key and follow on from the last, and every block hash an entry decided on must be the one your own node
      has.
-   - It reads every anchor the API's hotkey sent from the blocks on your own node: the anchored entry must
-     never go back and each anchored head must be the log's own hash, so a rolled-back or forked log shows
-     even if it happened before your validator started. A log file taken down within the bucket's day,
-     whose entries an anchor covers, is fraud too.
+   - It reads every anchor the API's anchor hotkey sent from the blocks on your own node: the anchored entry
+     must never go back and each anchored head must be the log's own hash, so a rolled-back or forked log
+     shows even if it happened before your validator started. A log file taken down within the bucket's day,
+     whose entries an anchor covers, is fraud too. The anchor hotkey is the one this release pins
+     (`TASK_API_ANCHOR_HOTKEY`, or `--neuron.task_api_anchor`) and is never the log's signer; one naming the
+     signer is ignored. Until one is pinned, anchors are not checked: the validator logs that at every
+     poll, publishes it beside its proofs, and sets weights from its own checks only, since an unanchored
+     log can be rewritten without a trace.
    - It checks every metagraph the API logged (coldkeys, permits, stakes, incentives) against your node at
      the block it names.
    - It replays the log with the API's own rules (`task-api-replay`, which `run.sh` builds) and reports
@@ -88,17 +92,19 @@ The task API runs in a TEE, and the validator follows only a key it has checked 
 - It reads the API's **custody records** from the uploads bucket (`log/custody/`): the chain of keys the
   log has been signed with. It checks each new record's signature and link, that validators' stake had
   approved its version at its block, and the new key's attestation: Intel's signature on the TDX quote,
-  the pinned production OS, the compose (images pinned by digest, only storage credentials set from
-  outside) and the key bound into the quote.
+  the pinned production OS, the compose (images pinned by digest, only credentials set from outside, every
+  protection on) and the key bound into the quote.
 - It takes each upload log file and manifest only from the key whose turn it was, and stops following
   the API when its version loses validators' endorsement or when two valid records claim one place in
   the chain. Accepted records are kept in `custody.json` in the validator's folder.
-- Until the API publishes custody records, it trusts the key the task API names at `/v1/key`, as before,
-  and logs a warning.
+- Until the API publishes custody records, it follows only the signer this release pins
+  (`desearch/trust.py`, or `--neuron.legacy_signer`); with none it follows nothing and logs an error. It
+  never takes the key the task API names at `/v1/key`, which whoever answers the domain could choose.
 
 **Approving a version.** A new version takes effect only once more than half the stake of validators
-other than the subnet owner has listed its compose hash in their commitment for 7 days (50,400
-blocks). Check the version first ([verify](./verify-task-api.md)), then commit it with the validator's
+independent of the subnet owner, from at least three coldkeys, has listed its compose hash in their
+commitment for 7 days (50,400 blocks). The owner's own hotkeys, validators inheriting stake from them, and
+the stake the owner's coldkey delegated to any validator never count ([the rule](./tee.md#approving-a-version)). Check the version first ([verify](./verify-task-api.md)), then commit it with the validator's
 hotkey; the tool prints the commitment and sends nothing without `--commit`:
 
 ```bash
@@ -211,7 +217,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--relay.port` | serve a relay for miners' requests on this port, signing a witness of each; 0 (the default) serves none |
 | `--relay.publish_delay_blocks`, `--relay.check_after_blocks` | blocks before a witness is listed (5), and after which a witnessed request whose outcome the task API's anchored log lacks or contradicts is a censorship proof (50) |
 | `--relay.late_blocks` | blocks after forwarding within which the log must have judged a witnessed request (10) |
-| `--relay.signer` | the key the task API's log must be signed with; its `/v1/key` when empty |
+| `--relay.signer` | the key the task API's log must be signed with; the custody chain's signer (or the pinned one) when empty |
 | `--witness.storage_off` | do not look at, and sign what storage holds for, every completed upload |
 | `--witness.probe_every_s` | seconds between this validator's own probes of storage through a link the task API hands validators (60); failures, and looks at uploads storage failed, are reported to the API, and enough validators' reports forgive the claims alive then; 0 probes nothing |
 

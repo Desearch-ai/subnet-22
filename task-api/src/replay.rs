@@ -113,7 +113,7 @@ impl Replay {
         Ok(Replay { conn, divergences: Vec::new(), blocks: Vec::new() })
     }
 
-    fn meta(&self, name: &str) -> Result<Option<Value>> {
+    pub fn meta(&self, name: &str) -> Result<Option<Value>> {
         let found: Option<String> = self.conn.query_row("SELECT value FROM replay_meta WHERE name = ?", [name], |row| row.get(0)).optional()?;
         Ok(found.and_then(|raw| serde_json::from_str(&raw).ok()))
     }
@@ -208,6 +208,10 @@ impl Replay {
             }
         }
         self.receipts_name_the_request(entry);
+        let accepted = entry["output"].get("refused").is_none();
+        if accepted && matches!(kind.as_str(), "complete" | "abandon" | "report" | "settle" | "finalize") && self.meta("paused")? == Some(true.into()) {
+            self.diverge(entry, SUSPECT, "the accounts changed while the log shows a pause", entry["input"]["task_id"].clone(), Value::Null);
+        }
         if kind == "snapshot" {
             self.snapshot(entry, blobs)?;
         } else if kind == "start" {
@@ -235,6 +239,9 @@ impl Replay {
             self.set_meta("clock", &entry["input"])?;
         } else if kind == "pause" {
             self.set_meta("paused", &entry["input"]["paused"])?;
+            // What a CVM appointed without a handover holds as the pause, should the log stop paused.
+            let pause = json!({"reason": entry["input"]["reason"], "since": entry["at"], "by": entry["input"]["request"]["hotkey"]});
+            self.set_meta("pause", &pause)?;
         } else if kind == "anchor" {
             self.note_anchor(int(&entry["input"]["seq"]), int(&entry["input"]["block"]))?;
         } else if kind == "enqueue" || kind == "embed_round" {
@@ -310,19 +317,18 @@ impl Replay {
         self.set_meta("started", &true.into())
     }
 
-    /// A new holder of the log: signed by whoever must have signed it; one appointed without a handover starts the accounts afresh,
-    /// so the replay waits for the snapshot that follows.
+    /// A new holder of the log: signed by whoever must have signed it. One appointed without a handover rebuilt the accounts by
+    /// replaying the published log, so the accounts go on and the snapshot it logs next is compared, not loaded; the claims, uploads
+    /// and rounds the lost holder had in flight are gone with it.
     fn custody(&mut self, entry: &Value) -> Result<()> {
         let record = &entry["input"]["record"];
         if !crate::custody::signature_holds(record) {
             self.diverge(entry, FRAUD, "a custody record not signed by who it says", record.clone(), Value::Null);
         }
         if record["kind"] == crate::custody::APPOINT {
-            snapshot::clear(&self.conn)?;
             self.conn.execute_batch(
                 "DELETE FROM replay_jobs; DELETE FROM replay_votes; DELETE FROM replay_claims; DELETE FROM replay_rounds; DELETE FROM replay_batches;",
             )?;
-            self.set_meta("started", &false.into())?;
         }
         Ok(())
     }

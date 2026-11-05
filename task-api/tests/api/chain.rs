@@ -174,3 +174,50 @@ async fn every_copy_and_every_restart_keeps_the_first_anchor() {
     assert_eq!(again.clock().await.unwrap(), clock);
     assert!(first.started_at() <= tick.at, "a restart is dated by the first finalized block it read");
 }
+
+#[tokio::test]
+async fn a_lying_endpoint_listed_first_neither_sets_what_an_anchor_signs_nor_keeps_it_off_the_chain() {
+    let (liar, one, two) = (FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await);
+    liar.lie(true);
+    let network = format!("{},{},{}", liar.url, one.url, two.url);
+    let options = ChainOptions { quorum: 2, finalized: true, count_on: false, refresh_s: 6.0 };
+    let chain = Chain::with(&network, &options).unwrap();
+    // The first endpoint that answers is the liar: what anchoring used to sign over.
+    assert_eq!(chain.rpc("chain_getBlockHash", json!([0])).await.unwrap(), json!(crate::fakechain::forged_hash_of(0)));
+    assert_eq!(chain.agreed("chain_getBlockHash", json!([0])).await.unwrap(), json!(hash_of(0)), "the genesis hash two endpoints agree on");
+    assert_eq!(chain.agreed("system_accountNextIndex", json!(["x"])).await.unwrap(), json!(7));
+    assert_eq!(chain.agreed("state_getRuntimeVersion", json!([])).await.unwrap()["specVersion"], 300);
+    chain.broadcast("author_submitExtrinsic", json!(["0x00"])).await.unwrap();
+    assert_eq!(
+        [liar.calls("author_submitExtrinsic"), one.calls("author_submitExtrinsic"), two.calls("author_submitExtrinsic")],
+        [1, 1, 1],
+        "sent to every endpoint"
+    );
+    one.refuse(true);
+    chain.broadcast("author_submitExtrinsic", json!(["0x01"])).await.expect("one endpoint that takes it is enough");
+    two.refuse(true);
+    liar.refuse(true);
+    assert!(chain.broadcast("author_submitExtrinsic", json!(["0x02"])).await.is_err(), "none took it");
+}
+
+#[tokio::test]
+async fn anchors_are_read_through_their_own_quorum_not_the_api_chains() {
+    let (one, two) = (FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await);
+    let anchoring = task_api::settings::AnchorSettings {
+        network: format!("{},{}", one.url, two.url),
+        quorum: 2,
+        netuid: 22,
+        key_uri: "//sn22-anchor-test".into(),
+        every_blocks: 12,
+        min_blocks: 3,
+        per_epoch: 30,
+    };
+    let h = Harness::with(move |s| {
+        s.chain.quorum = 3;
+        s.anchor = Some(anchoring);
+    })
+    .await;
+    let chain = task_api::anchor::chain_of(&h.state).expect("two anchor endpoints are enough for an anchor quorum of two");
+    assert_eq!(chain.endpoints(), 2);
+    assert_eq!(chain.agreed("chain_getBlockHash", json!([0])).await.unwrap(), json!(hash_of(0)));
+}

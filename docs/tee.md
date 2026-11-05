@@ -54,7 +54,19 @@ A test in the API (`the_measured_compose_writes_every_setting_the_config_shows`)
 compose leaves any of these to a default, so the compose alone decides the answer.
 
 `config_sha256 = sha256(canonical(config))` is bound into the attestation, so the answer can be checked
-against the quote.
+against the quote. The answer also has `paused`, the pause or `null` (see [Pause](#pause)); it is state, not
+a setting, so it is left out of what the attestation binds.
+
+**What a CVM refuses to start with.** With `TASK_API_KEY_SOURCE=cvm` the API checks its settings together
+before serving and stops with the setting to fix: the chain read through at least 2 endpoints that must agree
+(`TASK_API_CHAIN_QUORUM`), no one operator running that many of them (an endpoint's operator is the last two
+labels of its host name, or its address and port), finalized heads only and never counted on the clock, the
+log anchored (`TASK_API_ANCHOR_NETWORK`) through its own quorum of at least 2 under the same rule, by
+`TASK_API_ANCHOR_KEY_URI`, a hotkey that is neither the log's signing key nor the legacy signer, each pinned
+upload locked for at least 86,400 s (`TASK_API_UPLOAD_LOCK_S`, the day it can still be checked or taken back
+in), and `TASK_API_GOV_MIN_COLDKEYS` of at least 1. Validators check the same in the compose
+([`MINIMUM_SETTINGS`](../desearch/attestation.py)), so a compose that turns a protection off is never
+approved.
 
 ### `GET /v1/attestation`
 
@@ -155,26 +167,39 @@ The chain of keys the log has been signed with. Each record is a JSON object wit
 
 ## Approving a version
 
-Stake is each validator's `total_stake` in the metagraph at the block in question. The **independent
-validators** are the hotkeys with a validator permit whose coldkey is not the subnet owner's
-(`SubtensorModule.SubnetOwner`) and that are not the owner's hotkey (`SubnetOwnerHotkey`).
+All of it is read at one block. The **independent validators** are the hotkeys with a validator permit
+whose coldkey is not the subnet owner's (`SubtensorModule.SubnetOwner`), that are not the owner's hotkey
+(`SubnetOwnerHotkey`), and none of whose parents (`SubtensorModule.ParentKeys` on the subnet) is the
+owner's hotkey or a hotkey the owner's coldkey owns (`SubtensorModule.Owner`): a child of the owner
+inherits the owner's stake. A validator's **weight** is its `total_stake` in the metagraph less what the
+owner's coldkey holds on it, counted the way the metagraph counts it: its alpha on the subnet plus its root
+TAO times the TAO weight (`StakeInfoRuntimeApi.get_stake_info_for_coldkey(owner)` and
+`SubtensorModule.TaoWeight` as a fraction of `u64::MAX`, rounded down), so stake the owner delegates to an
+independent validator counts for nobody.
 
-- **support(H, N, age)** — the stake of independent validators whose commitment at block N lists H and
-  was made at least `age` blocks before N.
-- **H is approved at N** — `support(H, N, timelock) > threshold × total independent stake`, compared in
-  whole numbers: `support × 1,000,000 > round(threshold × 1,000,000) × total`; at 0.5, `support × 2 > total`.
-  With no independent stake nothing is approved.
+- **support(H, N, age)** — the weight of independent validators whose commitment at block N lists H and
+  was made at least `age` blocks before N; **coldkeys(H, N, age)** — how many distinct coldkeys they have.
+- **H is approved at N** — `support(H, N, timelock) > threshold × total independent weight`, compared in
+  whole numbers: `support × 1,000,000 > round(threshold × 1,000,000) × total`; at 0.5, `support × 2 > total`;
+  and `coldkeys(H, N, timelock) ≥ min_coldkeys`. With no independent stake nothing is approved.
 - **S is appointed for H at N** — the same, counting only commitments `sn22tee:H@S`.
-- **H is still endorsed at N** — `support(H, N, 0) > threshold × total`: no timelock, so moving one's
-  commitment from `H` to `H,H'` keeps the running version endorsed while `H'` waits.
+- **H is still endorsed at N** — the same with no timelock (`age` 0), so moving one's commitment from `H`
+  to `H,H'` keeps the running version endorsed while `H'` waits.
 
-The defaults are `threshold = 0.5` and `timelock = 50400` blocks (7 days). The API reads them from the
-compose (`TASK_API_GOV_THRESHOLD`, `TASK_API_GOV_TIMELOCK_BLOCKS`) and reads the commitments, the
-metagraph and the owner keys itself, at a finalized block its chain quorum agrees on; validators pin the
+The defaults are `threshold = 0.5`, `min_coldkeys = 3` and `timelock = 50400` blocks (7 days). The API
+reads them from the compose (`TASK_API_GOV_THRESHOLD`, `TASK_API_GOV_MIN_COLDKEYS`,
+`TASK_API_GOV_TIMELOCK_BLOCKS`) and reads the commitments, the metagraph, the owner keys, the owner's stake
+and the validators' parents itself, at a finalized block its chain quorum agrees on; validators pin the
 same values in their release and refuse an API whose compose says otherwise (they also pin
 `TASK_API_KEY_SOURCE=cvm`, `TASK_API_CUSTODY=1`, `TASK_API_CHAIN_FINALIZED=1`,
-`TASK_API_CHAIN_COUNT_ON=0` and `TASK_API_TEE_SIMULATED=0`). The subnet owner's stake never counts, and the owner cannot shorten
-the timelock: it is part of the measured compose and of the validators' release.
+`TASK_API_CHAIN_COUNT_ON=0` and `TASK_API_TEE_SIMULATED=0`). The owner cannot shorten the timelock: it is
+part of the measured compose and of the validators' release.
+
+**What this does not stop: the Bittensor baseline.** The owner can buy stake under coldkeys nobody can tie
+to it and run validators with them; those are independent here, as they are to Yuma consensus. The rule
+cannot tell them apart from anyone else's stake, only make the owner put up real stake for each, under at
+least three coldkeys, for the whole timelock, in public. The trust this assumes is the one Bittensor
+already rests on: that most of a subnet's stake is not one party's.
 
 ## Custody: which key validators follow
 
@@ -185,7 +210,23 @@ its version is still endorsed.
   else has. Validators who checked its attestation commit `sn22tee:H@S`. Once S is appointed, the CVM
   writes an `appoint` record (with `prev` the last record, if any) and starts serving. A recovery
   record replaces whatever signer came before, so a CVM that is lost for good can be replaced, but only
-  through the same stake and timelock.
+  through the same stake and timelock. A recovering CVM continues the log rather than starting it again:
+  - it reads the whole custody chain from the bucket, checking every link and signature, so it knows
+    every key that held the log;
+  - it takes the published log head (`log/journal/latest.json`), which must be signed by the last holder
+    and reach at least the entry the chain anchors for the anchor hotkey (read through the anchor quorum):
+    a head behind the anchor means files are missing, and the CVM stays in standby;
+  - it replays the published files with the API's own rules from the newest snapshot before both the head
+    and the anchored entry, every file checked for a holder's signature and its links from the one before,
+    and the anchored entry's hash against the chain; any break leaves it in standby;
+  - it takes the accounts, the rule-time clock and the pause the replay arrives at, adopts the head (its
+    first entry, `custody`, names that head as `prev`, and the record's `journal_seq` is its number),
+    and logs a snapshot of the accounts. A validator's replay goes on through the `custody` entry and
+    compares that snapshot with its own accounts: a recovering CVM cannot hand back budgets, strikes,
+    lockouts or credits the log does not give.
+  The claims, uploads and rounds the lost holder had in flight are lost with it, and the replay drops
+  them too; the claims cost their miners nothing. To keep recovery possible the API anchors only heads it
+  has published.
 - **Handover.** The admin asks the running CVM to hand over to a successor's URL. The running CVM
   - fetches the successor's attestation and checks it as above, from inside the TEE, with its own OS
     measurements (or those its compose allows for a successor) as the pinned ones;
@@ -220,14 +261,30 @@ its version is still endorsed.
 ## Pause
 
 The only emergency power. `POST /v1/admin/pause` with `{"paused": true, "reason": "..."}`, signed by an
-admin hotkey, stops handing out tasks: claims are answered with the refusal `PAUSED` (signed into the
-log like every refusal, once a minute per miner), which costs no miner anything. Uploads already claimed are still taken, validators still report, and the pause is shown
-in `/v1/custody`. `{"paused": false}` ends it. A pause changes no code, setting, key or account.
+admin hotkey, stops the accounts until `{"paused": false}`:
+
+- claims are answered with the refusal `PAUSED` (signed into the log like every refusal, once a minute
+  per miner); completions, abandons and validators' reports with `503` and `Retry-After`, a refused
+  completion of a held claim logged with the miner's signed request; no upload is settled and no verdict
+  finalized, so nobody is paid or penalized while it lasts;
+- the pause is an outage of cause `pause`: every claim alive in it lapses at no cost (`pause_outage`),
+  decided again by a replay from the logged outage;
+- the pause, the outage's start (or end) and the `pause` entry with the admin's signed request are
+  written in one transaction; the pause is kept in SQLite, so every copy and a restart see it, and a CVM
+  appointed without a handover takes it from the replayed log;
+- it is shown at `/v1/config` (`paused`) and `/v1/custody`, and a replay flags (suspect) a completion,
+  abandon, report, settlement or verdict logged while the log shows a pause.
+
+A pause changes no code, setting, key or account.
 
 ## Chain inputs
 
 The API reads the chain from several independent RPC endpoints (`TASK_API_NETWORK`, comma-separated)
-and takes a block height or hash only when `TASK_API_CHAIN_QUORUM` of them agree. With
+and takes a block height or hash only when `TASK_API_CHAIN_QUORUM` of them agree. Anchoring reads and
+writes through its own list and quorum (`TASK_API_ANCHOR_NETWORK`, `TASK_API_ANCHOR_QUORUM`): the genesis
+hash, runtime versions and nonce its signature covers and the anchor it reads back are taken only when that
+many agree, and every anchor is sent to every endpoint, so one endpoint that lies, listed first or not,
+cannot make anchors fail their signature check or keep them off the chain. With
 `TASK_API_CHAIN_FINALIZED=1` it reads the finalized head, not the best block, so a seed never comes from
 a block that can still change. With `TASK_API_CHAIN_COUNT_ON=0` it never counts blocks on its own clock:
 the current block is the last one the quorum agreed on, so a host that delays the network can only make
@@ -237,11 +294,15 @@ inside the CVM, so the host cannot answer for them.
 ## What is left
 
 - A GRANDPA light client inside the CVM, to replace the RPC quorum: it would need no trusted endpoint
-  at all. Two of the three endpoints in the compose are run by the Opentensor Foundation, so the quorum
-  is only as independent as the third.
+  at all. Validators check every block hash the log used against their own node, so it is not needed for
+  them. The compose's quorum is two of two operators (the Opentensor Foundation's endpoint and
+  OnFinality's public one): either one failing stalls the chain reads, which forgives the claims alive then
+  and pays nobody until it is back; a third operator's endpoint would let the quorum ride out one.
 - `TASK_API_TEE_SIMULATED=1` lets the dstack simulator stand in on a testnet: a successor's quote is then
   taken without Intel's signature. Validators refuse any compose with it on.
-- Recovery restores only the custody chain; the accounts come back from the replayed log (block B).
+- Recovery rebuilds the accounts from the published log, so it is only as complete as the bucket: a
+  holder lost with entries it never published loses them (it never anchors them, so the chain cannot
+  disagree).
 - dstack does not stop a host from restoring an old disk of the same CVM. The custody records and their
   on-chain anchors (block B) make such a copy harmless, not impossible.
 - Physical attacks on TDX (TEE.fail, 2025) can forge quotes. That is why the TEE is not the root of

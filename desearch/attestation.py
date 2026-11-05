@@ -31,13 +31,15 @@ DEBUG_BIT = 0x01
 PRODUCTION_OS: tuple["OsMeasurement", ...] = ()
 # sha256(PPID) of the machines allowed to run the API; empty allows any genuine TDX machine.
 ALLOWED_DEVICES: frozenset[str] = frozenset()
-# The only variables the deployer may set outside the measured compose: storage credentials.
+# The only variables the deployer may set outside the measured compose: storage credentials and the
+# hotkey that anchors the log (registered on the subnet, so it cannot be made inside the CVM).
 CREDENTIAL_ENVS: frozenset[str] = frozenset(
     {
         "CF_R2_ACCESS_KEY_ID",
         "CF_R2_SECRET_ACCESS_KEY",
         "PAGES_S3_ACCESS_KEY_ID",
         "PAGES_S3_SECRET_ACCESS_KEY",
+        "TASK_API_ANCHOR_KEY_URI",
     }
 )
 TCB_STATUSES: frozenset[str] = frozenset({"UpToDate"})
@@ -52,7 +54,18 @@ PINNED_SETTINGS = {
     "TASK_API_CHAIN_COUNT_ON": "0",
     "TASK_API_GOV_THRESHOLD": "0.5",
     "TASK_API_GOV_TIMELOCK_BLOCKS": "50400",
+    "TASK_API_GOV_MIN_COLDKEYS": "3",
 }
+# The compose must give these at least this much: two endpoints agreeing on every chain read and anchor, and
+# each upload locked for the day it can still be checked in (the API refuses to start with less too).
+MINIMUM_SETTINGS = {
+    "TASK_API_CHAIN_QUORUM": 2,
+    "TASK_API_ANCHOR_QUORUM": 2,
+    "TASK_API_UPLOAD_LOCK_S": 86400,
+    "TASK_API_GOV_MIN_COLDKEYS": 3,
+}
+# ... and name these, so the log is anchored.
+REQUIRED_SETTINGS = ("TASK_API_ANCHOR_NETWORK",)
 FORBIDDEN_MOUNTS = ("/var/run/docker.sock", "/run/docker.sock")
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -75,6 +88,8 @@ class Policy:
     advisories: frozenset[str] = TCB_ADVISORIES
     ports: frozenset[int] = PUBLISHED_PORTS
     settings: dict = field(default_factory=lambda: dict(PINNED_SETTINGS))
+    minimums: dict = field(default_factory=lambda: dict(MINIMUM_SETTINGS))
+    required: tuple[str, ...] = REQUIRED_SETTINGS
     # Testnets and the dstack simulator only: any OS image passes.
     allow_any_os: bool = False
     # The dstack simulator's quotes carry a patched report data, so their signature cannot verify.
@@ -158,7 +173,8 @@ def document_sha256(document: dict) -> str:
 
 
 def config_sha256(config: dict) -> str:
-    return sha256_hex(canonical(config))
+    """What the quote binds of `/v1/config`: everything but the pause, which is state, not a setting."""
+    return sha256_hex(canonical({k: v for k, v in config.items() if k != "paused"}))
 
 
 def parse_quote(raw: bytes) -> Quote:
@@ -271,6 +287,16 @@ def compose_problems(app_compose: dict, policy: Policy) -> list[str]:
     for key, value in policy.settings.items():
         if not same_setting(pinned.get(key), value):
             problems.append(f"{key} is {pinned.get(key)!r}, the release pins {value!r}")
+    for key, least in policy.minimums.items():
+        try:
+            enough = float(pinned.get(key, "")) >= least
+        except ValueError:
+            enough = False
+        if not enough:
+            problems.append(f"{key} is {pinned.get(key)!r}, the release needs at least {least}")
+    for key in policy.required:
+        if not str(pinned.get(key, "")).strip():
+            problems.append(f"{key} is not set")
     return problems
 
 

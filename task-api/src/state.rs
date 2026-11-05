@@ -73,7 +73,9 @@ pub struct State {
     /// lowered to the rule time of the first finalized block this process reads.
     started_at: AtomicU64,
     /// How a finalized height becomes rule time; fixed once read.
-    pub clock: tokio::sync::OnceCell<Clock>,
+    /// How heights become rule time, read once; a copy handed or appointed to the log forgets its own and reads the log's.
+    clock: std::sync::Mutex<Option<Clock>>,
+    clock_read: tokio::sync::Mutex<()>,
     /// Every hotkey's share of each pool and its first hour of work, read at most once a minute for the incentive cap.
     pub work: Mutex<Option<(std::time::Instant, Arc<budgets::Work>)>>,
     /// Set when storage failed a request, so the janitor probes it without waiting for its turn.
@@ -207,6 +209,8 @@ impl State {
             Ok(())
         })
         .await?;
+        let custody = Custody::open(&settings.data, settings.tee.custody)?;
+        custody.note_pause(db.run(crate::custody::current_pause).await?);
         Ok(State {
             redis,
             db,
@@ -221,7 +225,7 @@ impl State {
             seeds,
             key: Arc::new(key),
             tee,
-            custody: Custody::open(&settings.data, settings.tee.custody)?,
+            custody,
             crawl: TaskQueue::new("crawl", settings.claim_ttl_for(CRAWL) + UPLOAD_GRACE_S),
             embed: TaskQueue::new("embed", settings.claim_ttl_for(EMBED) + UPLOAD_GRACE_S),
             validation: ValidationQueue { active_s: settings.active_s },
@@ -231,7 +235,8 @@ impl State {
             open_manifests: Mutex::default(),
             open_listed: Mutex::default(),
             started_at: AtomicU64::new(started_at.to_bits()),
-            clock: tokio::sync::OnceCell::new(),
+            clock: std::sync::Mutex::default(),
+            clock_read: tokio::sync::Mutex::default(),
             work: Mutex::default(),
             probe_storage: AtomicBool::new(false),
             clock_offset_ms: AtomicI64::new(0),
@@ -259,21 +264,29 @@ impl State {
 
     /// How heights become rule time: from the genesis on a local chain, from the saved anchor on a real one.
     pub async fn clock(&self) -> Result<Clock> {
-        let clock = self
-            .clock
-            .get_or_try_init(|| async {
-                let block_seconds = self.seeds.block_seconds();
-                Ok::<_, anyhow::Error>(match &self.settings.seeds {
-                    SeedsMode::Local { genesis, .. } => Clock { anchor_block: 0, anchor_at: *genesis, block_seconds },
-                    SeedsMode::Chain { .. } => {
-                        let (block, at) = (self.seeds.height().await?, now());
-                        let (anchor_block, anchor_at) = self.db.run(move |conn| clock::anchor(conn, block, at)).await?;
-                        Clock { anchor_block, anchor_at, block_seconds }
-                    }
-                })
-            })
-            .await?;
-        Ok(*clock)
+        if let Some(clock) = *self.clock.lock().expect("clock") {
+            return Ok(clock);
+        }
+        let _one = self.clock_read.lock().await;
+        if let Some(clock) = *self.clock.lock().expect("clock") {
+            return Ok(clock);
+        }
+        let block_seconds = self.seeds.block_seconds();
+        let clock = match &self.settings.seeds {
+            SeedsMode::Local { genesis, .. } => Clock { anchor_block: 0, anchor_at: *genesis, block_seconds },
+            SeedsMode::Chain { .. } => {
+                let (block, at) = (self.seeds.height().await?, now());
+                let (anchor_block, anchor_at) = self.db.run(move |conn| clock::anchor(conn, block, at)).await?;
+                Clock { anchor_block, anchor_at, block_seconds }
+            }
+        };
+        *self.clock.lock().expect("clock") = Some(clock);
+        Ok(clock)
+    }
+
+    /// Reads the clock's anchor from SQLite again: after a handover or an appointment it is the log's, not the one this copy saw first.
+    pub fn forget_clock(&self) {
+        *self.clock.lock().expect("clock") = None;
     }
 
     /// The finalized height now and its rule time, which every deadline, window and lockout is measured on.

@@ -38,7 +38,8 @@ use crate::storage::put_json;
 use crate::{journal, uploadlog, verify as attest};
 
 pub const LATEST: &str = "log/custody/latest.json";
-pub const PAUSE_KEY: &str = "custody:pause";
+/// The outage a pause is: every claim alive in it lapses at no cost.
+pub const PAUSE_CAUSE: &str = "pause";
 pub const APPOINT: &str = "appoint";
 pub const HANDOVER: &str = "handover";
 pub const RECEIVE_PATH: &str = "/v1/custody/receive";
@@ -154,7 +155,26 @@ impl Custody {
 }
 
 pub fn create(conn: &Connection) -> Result<()> {
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS custody (seq INTEGER PRIMARY KEY, record TEXT NOT NULL)")?;
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS custody (seq INTEGER PRIMARY KEY, record TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pause (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        ",
+    )?;
+    Ok(())
+}
+
+/// The pause SQLite holds, which every copy of the API reads; None when the API runs.
+pub fn current_pause(conn: &Connection) -> Result<Option<Value>> {
+    let raw: Option<String> = conn.query_row("SELECT value FROM pause WHERE name = 'pause'", [], |row| row.get(0)).optional()?;
+    raw.map(|raw| Ok(serde_json::from_str(&raw)?)).transpose()
+}
+
+fn set_pause(conn: &Connection, pause: Option<&Value>) -> Result<()> {
+    match pause {
+        Some(pause) => conn.execute("INSERT OR REPLACE INTO pause (name, value) VALUES ('pause', ?)", [pause.to_string()])?,
+        None => conn.execute("DELETE FROM pause", [])?,
+    };
     Ok(())
 }
 
@@ -240,7 +260,7 @@ async fn publish(state: &State, record: &Value, attestation: &Value) -> Result<(
 }
 
 fn rule(state: &State) -> Rule {
-    Rule::new(state.settings.tee.gov_threshold, state.settings.tee.gov_timelock_blocks)
+    Rule::new(state.settings.tee.gov_threshold, state.settings.tee.gov_timelock_blocks, state.settings.tee.gov_min_coldkeys)
 }
 
 async fn snapshot(state: &State) -> Result<Snapshot> {
@@ -312,11 +332,15 @@ async fn activate_received(state: &State, record: Value) -> Result<()> {
         })
         .await?;
     state.custody.keep(Status::Active, None)?;
+    state.forget_clock();
+    refresh_pause(state).await?;
     eprintln!("custody: handed the log, signing as {}", state.signer());
     Ok(())
 }
 
-/// Takes the log without a handover once validators' stake appointed this CVM: genesis, or recovery after a lost CVM.
+/// Takes the log without a handover once validators' stake appointed this CVM: genesis, or recovery after a lost CVM. The log goes
+/// on from the head the last holder published, which must reach the entry the chain anchors, and the accounts are what replaying
+/// that log with the API's own rules gives, so nothing a holder did is undone by losing it.
 async fn appoint(state: &State) -> Result<()> {
     let tee = state.tee.as_ref().context("custody needs the CVM's key")?;
     let version = compose_hash(state).await?;
@@ -330,22 +354,31 @@ async fn appoint(state: &State) -> Result<()> {
         if head["signer"] == signer.as_str() {
             bail!("the published record already names this CVM, but its own disk does not hold the log");
         }
-        if !signature_holds(head) {
-            bail!("the published custody record {} is not signed by who it says", head["seq"]);
-        }
     }
+    let holders = holders(state, head.as_ref()).await?;
     // A CVM starting afresh continues the upload log's numbering rather than writing over it.
     let written = read_json(state, UPLOAD_LOG_LATEST).await?.and_then(|l| l["seq"].as_i64()).unwrap_or(0);
     let local = upload_log_seq(state).await?;
     if written > local {
         let _: () = state.redis.clone().set(uploadlog::NEXT, written + 1).await?;
     }
-    // The log goes on from the head the last holder published, signed by it; nothing this copy logged while waiting was published.
+    // Nothing this copy logged while waiting was published; the log goes on from the published head, signed by its holder.
     let journal_head = read_json(state, journal::LATEST_KEY).await?;
     if let Some(journal_head) = &journal_head {
-        let holder = head.as_ref().and_then(|h| h["signer"].as_str()).unwrap_or(&state.settings.tee.legacy_signer).to_string();
+        let holder = holders.last().cloned().unwrap_or_default();
         if !holder.is_empty() && !journal::signed_by(journal_head, &holder) {
             bail!("the published log head is not signed by the holder {holder}");
+        }
+    }
+    let anchored = if state.settings.anchor.is_some() { crate::anchor::on_chain(state).await? } else { None };
+    let rebuilt = match &journal_head {
+        Some(journal_head) => Some(rebuild(state, journal_head, holders, anchored).await?),
+        None if anchored.is_some() => bail!("the chain anchors the log but none is published to go on from"),
+        None => None,
+    };
+    if let Some(rebuilt) = &rebuilt {
+        if !rebuilt.divergences.is_empty() {
+            eprintln!("custody: the published log departs from the rules in {} places; the accounts go on as the rules give them", rebuilt.divergences.len());
         }
     }
     let attestation = tee.attestation(&signer, &state.settings.public(), None).await?;
@@ -369,24 +402,134 @@ async fn appoint(state: &State) -> Result<()> {
         .db
         .run(move |conn| {
             append(conn, &kept)?;
-            if let Some(found) = &journal_head {
+            if let (Some(found), Some(rebuilt)) = (&journal_head, &rebuilt) {
                 journal::adopt(
                     conn,
                     found["segment"].as_i64().unwrap_or(0),
                     found["last"].as_i64().unwrap_or(0),
                     found["head"].as_str().unwrap_or(journal::GENESIS),
                 )?;
+                rebuilt.write(conn)?;
             }
-            // Appointed without a handover, the accounts start afresh here, and a replay starts again from the snapshot after.
             journal::append(conn, journal::Record::new("custody", now(), json!({"record": kept}), Value::Null))?;
             journal::append(conn, journal::Record::new("start", now(), started, Value::Null))?;
+            // The accounts as rebuilt, in the log: a replay compares them with its own and goes on.
             crate::snapshot::record(conn, now())?;
             Ok(())
         })
         .await?;
+    state.forget_clock();
+    refresh_pause(state).await?;
     state.custody.set(Status::Active)?;
     eprintln!("custody: appointed by validators' stake, signing as {signer} from record {}", record["seq"]);
     Ok(())
+}
+
+/// Every key that held the log, oldest first: the legacy signer, then each published custody record's signer, the chain of
+/// records checked link by link up to `head`.
+async fn holders(state: &State, head: Option<&Value>) -> Result<Vec<String>> {
+    let legacy = &state.settings.tee.legacy_signer;
+    let mut found: Vec<String> = Some(legacy.clone()).filter(|l| !l.is_empty()).into_iter().collect();
+    let Some(head) = head else { return Ok(found) };
+    let mut before: Option<Value> = None;
+    for seq in 0..=head["seq"].as_i64().context("a custody record without a seq")? {
+        let record = read_json(state, &record_key(seq)).await?.with_context(|| format!("custody record {seq} is not published"))?;
+        if let Some(problem) = link_problem(&record, before.as_ref(), legacy) {
+            bail!("custody record {seq}: {problem}");
+        }
+        found.push(record["signer"].as_str().unwrap_or_default().to_string());
+        before = Some(record);
+    }
+    if before.as_ref().map(record_hash) != Some(record_hash(head)) {
+        bail!("the latest custody record is not the last of the published chain");
+    }
+    Ok(found)
+}
+
+/// What a CVM appointed without a handover takes over from the published log.
+struct Rebuilt {
+    accounts: Value,
+    clock: Option<Value>,
+    pause: Option<Value>,
+    divergences: Vec<Value>,
+}
+
+impl Rebuilt {
+    /// In place of this copy's own: the accounts, the clock every rule time counts from, and the pause.
+    fn write(&self, conn: &Connection) -> Result<()> {
+        crate::snapshot::load(conn, &self.accounts)?;
+        conn.execute("DELETE FROM clock", [])?;
+        if let Some(clock) = &self.clock {
+            let (block, at) = (clock["anchor_block"].as_i64().context("a clock without its block")?, clock["anchor_at"].as_f64().unwrap_or(0.0));
+            conn.execute("INSERT INTO clock (name, block, at) VALUES ('anchor', ?, ?)", params![block, at])?;
+        }
+        set_pause(conn, self.pause.as_ref())
+    }
+}
+
+/// The published log replayed with the API's rules, from the newest snapshot that comes before both its head and the entry the
+/// chain anchors; each file is checked for a holder's signature and its links, and the head must be the one published.
+async fn rebuild(state: &State, head: &Value, holders: Vec<String>, anchored: Option<crate::anchor::Anchored>) -> Result<Rebuilt> {
+    let (last, hash) = (head["last"].as_i64().context("a log head without its last entry")?, head["head"].as_str().unwrap_or_default().to_string());
+    if let Some(anchored) = &anchored {
+        if anchored.seq > last {
+            bail!("the published log ends at entry {last}, the chain anchors entry {}: files are missing", anchored.seq);
+        }
+    }
+    let mut segments = Vec::new();
+    let mut number = head["segment"].as_i64().context("a log head without its file")?;
+    while number >= 1 {
+        let raw = state.storage.get(&journal::segment_key(number)).await.map_err(|e| anyhow!("log file {number}: {e}"))?;
+        let segment: Value = serde_json::from_slice(&raw).with_context(|| format!("log file {number}"))?;
+        let snapshotted = segment["entries"].as_array().into_iter().flatten().any(|e| e["kind"] == "snapshot");
+        let reaches = anchored.as_ref().is_none_or(|a| segment["first"].as_i64().is_some_and(|first| first <= a.seq));
+        segments.push(segment);
+        if snapshotted && reaches {
+            break;
+        }
+        number -= 1;
+    }
+    segments.reverse();
+    let mut blobs = std::collections::HashMap::new();
+    for segment in &segments {
+        for sha in journal::blobs_named(segment["entries"].as_array().map(Vec::as_slice).unwrap_or_default()) {
+            match state.storage.get(&journal::blob_key(&sha)).await {
+                Ok(body) => drop(blobs.insert(sha, body.to_vec())),
+                // The replay names an entry whose blob is gone.
+                Err(StorageError::Missing) => {}
+                Err(error) => bail!("blob {sha}: {error}"),
+            }
+        }
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut replay = crate::replay::Replay::open(None)?;
+        let lookup = |sha: &str| blobs.get(sha).cloned();
+        for (at, segment) in segments.iter().enumerate() {
+            if let Err(broken) = replay.apply_segment(segment, &holders, at == 0, &lookup)? {
+                bail!("the published log does not hold: {broken}");
+            }
+        }
+        if replay.position()? != (last, hash.clone()) {
+            bail!("the published log head names entry {last} ({hash}), its files end at {:?}", replay.position()?);
+        }
+        if let Some(anchored) = &anchored {
+            let entry = segments.iter().flat_map(|s| s["entries"].as_array().cloned().unwrap_or_default()).find(|e| e["seq"].as_i64() == Some(anchored.seq));
+            if entry.as_ref().map(journal::hash_of) != Some(anchored.head.clone()) {
+                bail!("the chain anchors {} at entry {}, the published log holds another", anchored.head, anchored.seq);
+            }
+        }
+        if !replay.started()? {
+            bail!("the published log holds no snapshot to rebuild the accounts from");
+        }
+        let pause = replay.meta("pause")?.filter(|_| replay.meta("paused").ok().flatten() == Some(Value::Bool(true)));
+        Ok(Rebuilt {
+            accounts: crate::snapshot::take(&replay.conn, now())?,
+            clock: replay.meta("clock")?,
+            pause,
+            divergences: replay.divergences.iter().map(|d| d.to_json()).collect(),
+        })
+    })
+    .await?
 }
 
 /// A holder whose log another CVM was appointed to, or whose own handover is published while its disk says otherwise, stops.
@@ -673,28 +816,41 @@ pub async fn receive(state: &State, body: Bytes) -> Result<Value, ApiError> {
         return Err(conflict("the state does not match the record"));
     }
     write_state(state, &blob).await?;
+    state.forget_clock();
     state.custody.keep(Status::Standby, Some(record.clone()))?;
     eprintln!("custody: state of {} received in record {}, waiting for it to be published", record["from"], record["seq"]);
     Ok(json!({"ack": state.sign(&canonical(&json!({"ack": hash})))}))
 }
 
-/// Stops or resumes handing out tasks; nothing else.
-pub async fn pause(state: &State, paused: bool, reason: &str, by: &str) -> Result<Value> {
-    let mut redis = state.redis.clone();
+/// Stops or resumes the accounts: while paused no task is handed out, no upload completed, no report taken and no verdict
+/// settled, and every claim alive lapses at no cost (a `pause` outage). The pause, its outage and its log entry are one transaction.
+pub async fn pause(state: &State, paused: bool, reason: &str, by: &str, request: Value, blobs: Vec<journal::Blob>) -> Result<Value> {
+    let tick = state.tick().await?;
     let pause = paused.then(|| json!({"reason": reason, "since": now(), "by": by}));
-    match &pause {
-        Some(pause) => redis.set::<_, _, ()>(PAUSE_KEY, pause.to_string()).await?,
-        None => redis.del::<_, ()>(PAUSE_KEY).await?,
-    }
-    state.custody.note_pause(pause.clone());
+    let answer = json!({"paused": pause});
+    let (kept, why, logged) = (pause.clone(), reason.to_string(), answer.clone());
+    state
+        .db
+        .run(move |conn| {
+            set_pause(conn, kept.as_ref())?;
+            if paused {
+                crate::outages::begin_logged(conn, PAUSE_CAUSE, tick.at, tick.block, &why)?;
+            } else {
+                crate::outages::end_logged(conn, PAUSE_CAUSE, tick.at, tick.block)?;
+            }
+            let input = json!({"request": request, "paused": paused, "reason": why});
+            journal::append(conn, journal::Record::new("pause", now(), input, logged).with_blobs(blobs))?;
+            Ok(())
+        })
+        .await?;
+    state.custody.note_pause(pause);
     eprintln!("custody: {} by {by}: {reason}", if paused { "paused" } else { "resumed" });
-    Ok(json!({"paused": pause}))
+    Ok(answer)
 }
 
-/// The pause as Redis holds it, so every copy of the API sees the same.
+/// The pause as SQLite holds it, so every copy of the API sees the same.
 pub async fn refresh_pause(state: &State) -> Result<()> {
-    let raw: Option<String> = state.redis.clone().get(PAUSE_KEY).await?;
-    state.custody.note_pause(raw.and_then(|raw| serde_json::from_str(&raw).ok()));
+    state.custody.note_pause(state.lookups.read(current_pause).await?);
     Ok(())
 }
 

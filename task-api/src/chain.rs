@@ -84,6 +84,24 @@ pub fn endpoint(network: &str) -> String {
     }
 }
 
+/// The endpoints of a comma-separated list of networks, in order.
+pub fn endpoints(network: &str) -> Vec<String> {
+    network.split(',').map(str::trim).filter(|name| !name.is_empty()).map(endpoint).collect()
+}
+
+/// Who runs an endpoint, as far as its URL says: the last two labels of a name, or an address (or a one-label name) with its port.
+pub fn operator(url: &str) -> String {
+    let Ok(parsed) = reqwest::Url::parse(url) else { return url.to_string() };
+    match (parsed.domain(), parsed.host_str()) {
+        (Some(name), _) if name.trim_end_matches('.').contains('.') => {
+            let labels: Vec<&str> = name.trim_end_matches('.').rsplit('.').take(2).collect();
+            labels.into_iter().rev().collect::<Vec<_>>().join(".").to_lowercase()
+        }
+        (_, Some(address)) => format!("{address}:{}", parsed.port_or_known_default().unwrap_or_default()),
+        (_, None) => url.to_string(),
+    }
+}
+
 impl Chain {
     /// One network, or several separated by commas to fall back on in order.
     pub fn new(network: &str) -> Result<Chain> {
@@ -93,7 +111,7 @@ impl Chain {
     /// Several networks, `quorum` of which must agree on every answer.
     pub fn with(network: &str, options: &ChainOptions) -> Result<Chain> {
         let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
-        let urls: Vec<String> = network.split(',').map(str::trim).filter(|name| !name.is_empty()).map(endpoint).collect();
+        let urls = endpoints(network);
         if urls.is_empty() {
             bail!("no chain endpoint in {network:?}");
         }
@@ -146,7 +164,7 @@ impl Chain {
     }
 
     /// The answer `quorum` endpoints give alike; with a quorum of one, the first endpoint's that answers.
-    async fn agreed(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn agreed(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         if self.quorum <= 1 {
             return self.rpc(method, params).await;
         }
@@ -163,6 +181,18 @@ impl Chain {
         }
         let failed = answers.iter().filter(|answer| answer.is_err()).count();
         bail!("{method}: {} of {} chain endpoints must agree; {} answers differed and {failed} failed", self.quorum, self.urls.len(), tally.len())
+    }
+
+    /// Sends to every endpoint at once, so no single one can drop it; the first answer of any that took it.
+    pub async fn broadcast(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        let answers = self.ask_all(method, params).await;
+        let failed: Vec<String> = answers.iter().filter_map(|answer| answer.as_ref().err().map(|e| format!("{e:#}"))).collect();
+        answers.into_iter().flatten().next().ok_or_else(|| anyhow!("{method}: no chain endpoint took it: {}", failed.join("; ")))
+    }
+
+    /// How many endpoints there are.
+    pub fn endpoints(&self) -> usize {
+        self.urls.len()
     }
 
     /// Every endpoint not paused, at once; a paused one counts as failed.
@@ -461,7 +491,7 @@ impl Chain {
         self.state_call_at(method, input, None).await
     }
 
-    async fn state_call_at(&self, method: &str, input: &[u8], at: Option<&str>) -> Result<Vec<u8>> {
+    pub(crate) async fn state_call_at(&self, method: &str, input: &[u8], at: Option<&str>) -> Result<Vec<u8>> {
         let mut params = vec![json!(method), json!(format!("0x{}", hex(input)))];
         if let Some(at) = at {
             params.push(json!(at));
@@ -610,6 +640,16 @@ mod tests {
             fields.push(("incentives".to_string(), Value::unnamed_composite(incentives.into_iter().map(Value::u128))));
         }
         Value::named_composite(fields).map_context(|_| 0u32)
+    }
+
+    #[test]
+    fn an_endpoints_operator_is_its_domain_or_its_address() {
+        assert_eq!(operator(&endpoint("finney")), "opentensor.ai");
+        assert_eq!(operator("https://lite.chain.opentensor.ai:443"), "opentensor.ai");
+        assert_eq!(operator("https://bittensor-finney.api.onfinality.io/public"), "onfinality.io");
+        assert_eq!(operator("http://127.0.0.1:9944"), "127.0.0.1:9944");
+        assert_ne!(operator("http://127.0.0.1:9944"), operator("http://127.0.0.1:9945"));
+        assert_eq!(operator("http://localhost:9944"), "localhost:9944");
     }
 
     #[test]

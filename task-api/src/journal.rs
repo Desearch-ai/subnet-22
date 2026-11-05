@@ -405,8 +405,17 @@ pub async fn log_shares(state: &State) -> Result<()> {
         .await
 }
 
+/// One publish at a time in a process: the janitor, the anchor pass and a handover each publish, and two at once would name the same file.
+static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The newest published entry's number and hash, None before anything was published.
+pub fn published_head(conn: &Connection) -> Result<Option<(i64, String)>> {
+    Ok(conn.query_row("SELECT last, head FROM journal_segments ORDER BY segment DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+}
+
 /// Publishes the entries not yet published as the next numbered signed file, after the blobs they name; None when there were none.
 pub async fn publish(state: &State) -> Result<Option<i64>> {
+    let _one = PUBLISHING.lock().await;
     let (segment, last, prev) = state
         .db
         .run(|conn| {
