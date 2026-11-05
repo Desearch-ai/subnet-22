@@ -39,6 +39,10 @@ pub const BELOW_QUORUM: &str = "below_quorum";
 pub const REFERENCES_DISAGREE: &str = "references_disagree";
 pub const ONE_REFERENCE: &str = "too_few_references";
 pub const ALL_NEUTRAL: &str = "neutral_hosts";
+/// A fail on validators' reports that were taken before the upload's validation deadline: other reports could still have come.
+pub const FINALIZED_EARLY: &str = "finalized_early";
+/// A report whose row counts the public file contradicts, in the miner's disfavour.
+pub const CONTRADICTED: &str = "the upload's own rows contradict its counts";
 
 /// What decides an upload's accounts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +103,7 @@ impl Judged {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Params {
     pub coverage_gate: f64,
-    /// Matching reports an objective fail needs before it charges anything.
+    /// Validators of distinct coldkeys whose reports must carry the same facts before an objective fail charges anything.
     pub objective_quorum: usize,
     /// Validators of distinct coldkeys whose own models must find the same mismatch before an embed upload fails on it.
     pub embed_references: usize,
@@ -121,7 +125,7 @@ impl Default for Params {
     fn default() -> Self {
         Params {
             coverage_gate: COVERAGE_GATE,
-            objective_quorum: 1,
+            objective_quorum: 2,
             embed_references: 2,
             loadability_samples: 30,
             neutral_uploads: 3,
@@ -234,6 +238,72 @@ pub fn facts(vote: &Value) -> Option<Facts> {
     })
 }
 
+/// A crawl file's row counts as every validator's scoring counts them, and as anyone counts them again off the public file:
+/// rows for the task's URLs, repeats of those, rows for other URLs, and error rows among the first row of each URL.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Counted {
+    pub returned: i64,
+    pub duplicates: i64,
+    pub unassigned: i64,
+    pub error_rows: i64,
+}
+
+impl Counted {
+    /// Counts a file's rows, each its URL and whether it is an error row.
+    pub fn of_rows<'a>(job: &Value, rows: impl Iterator<Item = (&'a str, bool)>) -> Counted {
+        let wanted: BTreeSet<&str> = urls_of(job).into_iter().collect();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut counted = Counted::default();
+        for (url, error) in rows {
+            if !wanted.contains(url) {
+                counted.unassigned += 1;
+            } else if !seen.insert(url) {
+                counted.duplicates += 1;
+            } else {
+                counted.returned += 1;
+                counted.error_rows += i64::from(error);
+            }
+        }
+        counted
+    }
+
+    fn of_facts(facts: &Facts) -> Counted {
+        Counted { returned: facts.returned, duplicates: facts.duplicates, unassigned: facts.unassigned, error_rows: facts.error_rows }
+    }
+
+    /// Facts the file contradicts in the miner's disfavour: more repeats or other URLs, fewer rows or more error rows than it has.
+    fn charged_by(&self, claimed: &Counted) -> bool {
+        claimed.duplicates > self.duplicates || claimed.unassigned > self.unassigned || claimed.returned < self.returned || claimed.error_rows > self.error_rows
+    }
+}
+
+/// What the public file's row counts make of the reports: the votes it bears out, in their order; the validators whose counts it
+/// contradicts, left out of the accounts; and those of them whose counts would have charged the miner, which are wrong reports.
+/// A report that could not read the file, or read another version, says nothing about its counts and is kept.
+pub fn sift(votes: &[Value], counted: &Counted) -> (Vec<Value>, Vec<String>, Vec<String>) {
+    let (mut kept, mut contradicted, mut wrong) = (Vec::new(), Vec::new(), Vec::new());
+    for vote in votes {
+        let validator = vote["validator"].as_str().unwrap_or_default().to_string();
+        match facts(vote).filter(|f| f.readable && !f.changed).map(|f| Counted::of_facts(&f)) {
+            Some(claimed) if claimed != *counted => {
+                if counted.charged_by(&claimed) {
+                    wrong.push(validator.clone());
+                }
+                contradicted.push(validator);
+            }
+            _ => kept.push(vote.clone()),
+        }
+    }
+    (kept, contradicted, wrong)
+}
+
+/// Whether the file's row counts could change an upload's accounts: its reports carry counts, and they fail it, disagree, fall
+/// short of a quorum, or leave URLs unreturned, which the round's close may still judge.
+pub fn wants_count(votes: &[Value], judged: &Judged) -> bool {
+    votes.iter().any(|vote| facts(vote).is_some_and(|f| f.readable && !f.changed))
+        && (judged.outcome == Outcome::Fail || [FACTS_DISPUTED, BELOW_QUORUM].contains(&judged.reason.as_str()) || judged.returned < judged.assigned)
+}
+
 /// Two reports agree when every fact both carry is the same; a report without per-host rows agrees on the rest.
 fn agree(one: &Facts, other: &Facts) -> bool {
     let strip = |facts: &Facts| Facts { hosts: None, ..facts.clone() };
@@ -309,15 +379,28 @@ fn fault_reason(votes: &[Value]) -> &str {
     }
 }
 
-/// A checked crawl upload, on the facts its validators agree on.
-pub fn judge_crawl(job: &Value, votes: &[Value], round: &RoundView, error_share: f64, params: &Params) -> Judged {
+/// The owner a validator's report counts under: its coldkey, or the hotkey itself off the metagraph.
+fn owner_of<'a>(validator: &'a str, coldkey_of: &'a HashMap<String, String>) -> &'a str {
+    coldkey_of.get(validator).map(String::as_str).filter(|c| !c.is_empty()).unwrap_or(validator)
+}
+
+/// How many owners the reports come from: two hotkeys of one coldkey are one.
+fn owners<'a>(validators: impl Iterator<Item = &'a str>, coldkey_of: &'a HashMap<String, String>) -> usize {
+    validators.map(|validator| owner_of(validator, coldkey_of)).collect::<BTreeSet<_>>().len()
+}
+
+/// A checked crawl upload, on the facts its validators agree on; a fail charges only once validators of
+/// `objective_quorum` distinct coldkeys reported it.
+pub fn judge_crawl(job: &Value, votes: &[Value], coldkey_of: &HashMap<String, String>, round: &RoundView, error_share: f64, params: &Params) -> Judged {
     let assigned = urls_of(job).len() as i64;
-    let found: Vec<Facts> = votes.iter().filter_map(facts).collect();
+    let reporting: Vec<(&str, Facts)> = votes.iter().filter_map(|vote| Some((vote["validator"].as_str().unwrap_or_default(), facts(vote)?))).collect();
+    let found: Vec<Facts> = reporting.iter().map(|(_, facts)| facts.clone()).collect();
     let Some(first) = found.first() else { return Judged::neutral(fault_reason(votes), assigned, 0) };
     if found.iter().any(|other| !agree(first, other)) {
         return Judged::neutral(FACTS_DISPUTED, assigned, found.len());
     }
     let reports = found.len();
+    let owners = owners(reporting.iter().map(|(validator, _)| *validator), coldkey_of);
     // Read without a pinned version, the key can be rewritten by the bucket's owner or anyone who saw its upload link, not only
     // the miner; read by version, it cannot change at all. Either way a changed upload charges nothing.
     if first.changed {
@@ -348,7 +431,7 @@ pub fn judge_crawl(job: &Value, votes: &[Value], round: &RoundView, error_share:
         None
     };
     match failed {
-        Some(reason) if reports >= params.objective_quorum.max(1) => {
+        Some(reason) if owners >= params.objective_quorum.max(1) => {
             Judged { outcome: Outcome::Fail, reason: reason.into(), credited: 0, assigned: kept, returned, ramp: false, reports }
         }
         Some(_) => Judged { returned, ..Judged::neutral(BELOW_QUORUM, kept, reports) },
@@ -393,7 +476,7 @@ pub fn judge_embed(job: &Value, votes: &[Value], coldkey_of: &HashMap<String, St
         if *reason == UPLOAD_CHANGED {
             return Judged::neutral(UPLOAD_CHANGED, texts, judged.len());
         }
-        if judged.len() < params.objective_quorum.max(1) {
+        if owners(judged.iter().map(|(validator, _, _)| *validator), coldkey_of) < params.objective_quorum.max(1) {
             return Judged::neutral(BELOW_QUORUM, texts, judged.len());
         }
         return Judged { outcome: Outcome::Fail, reason: (*reason).into(), credited: 0, assigned: texts, returned: texts, ramp: false, reports: judged.len() };
@@ -401,7 +484,7 @@ pub fn judge_embed(job: &Value, votes: &[Value], coldkey_of: &HashMap<String, St
     let mismatched: BTreeSet<&str> = judged
         .iter()
         .filter(|(_, verdict, reason)| *verdict == "fail" && *reason == VECTORS_MISMATCH)
-        .map(|(validator, _, _)| coldkey_of.get(*validator).map(String::as_str).filter(|c| !c.is_empty()).unwrap_or(validator))
+        .map(|(validator, _, _)| owner_of(validator, coldkey_of))
         .collect();
     if passes > 0 && !mismatched.is_empty() {
         return Judged::neutral(REFERENCES_DISAGREE, texts, judged.len());
@@ -454,6 +537,16 @@ pub fn create(conn: &Connection) -> rusqlite::Result<()> {
             at        REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS wrong_reports_validator ON wrong_reports (validator, at);
+        CREATE TABLE IF NOT EXISTS round_uploads (
+            seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            round_id     TEXT NOT NULL,
+            job          TEXT NOT NULL,
+            basis        TEXT NOT NULL,
+            coldkeys     TEXT NOT NULL,
+            published    TEXT NOT NULL,
+            finalized_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS round_uploads_round ON round_uploads (round_id, seq);
         ",
     )
 }
@@ -488,6 +581,52 @@ pub fn round_view(conn: &Connection, round_id: &str, params: &Params) -> anyhow:
     let mut statement = conn.prepare("SELECT host, uploads, failed FROM round_hosts WHERE round_id = ?")?;
     let hosts = statement.query_map([round_id], |row| Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?))))?.collect::<rusqlite::Result<_>>()?;
     Ok(RoundView { sampled, loaded, hosts, ..RoundView::default() }.decide(params))
+}
+
+/// A crawl upload finalized and waiting for its round to close: what its accounts will be judged on.
+pub struct Held {
+    pub job: Value,
+    pub basis: Value,
+    pub coldkeys: HashMap<String, String>,
+    pub published: String,
+    pub finalized_at: f64,
+}
+
+/// Keeps a finalized crawl upload until its round closes, in the order uploads were finalized.
+pub fn hold_upload(conn: &Connection, job: &Value, basis: &Value, coldkeys: &HashMap<String, String>, published: &str, at: f64) -> anyhow::Result<()> {
+    let mut kept = job.clone();
+    if let Some(fields) = kept.as_object_mut() {
+        fields.remove("manifest");
+    }
+    conn.execute(
+        "INSERT INTO round_uploads (round_id, job, basis, coldkeys, published, finalized_at) VALUES (?, ?, ?, ?, ?, ?)",
+        params![job["round_id"].as_str().unwrap_or_default(), kept.to_string(), basis.to_string(), json!(coldkeys).to_string(), published, at],
+    )?;
+    Ok(())
+}
+
+/// The round's held uploads in the order they were finalized.
+pub fn held_uploads(conn: &Connection, round_id: &str) -> anyhow::Result<Vec<Held>> {
+    let mut statement = conn.prepare("SELECT job, basis, coldkeys, published, finalized_at FROM round_uploads WHERE round_id = ? ORDER BY seq")?;
+    let rows = statement.query_map([round_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, crate::db::real(row, 4)?))
+    })?;
+    let rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(job, basis, coldkeys, published, finalized_at)| Held {
+            job: serde_json::from_str(&job).unwrap_or(Value::Null),
+            basis: serde_json::from_str(&basis).unwrap_or(Value::Null),
+            coldkeys: serde_json::from_str(&coldkeys).unwrap_or_default(),
+            published,
+            finalized_at,
+        })
+        .collect())
+}
+
+pub fn release_uploads(conn: &Connection, round_id: &str) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM round_uploads WHERE round_id = ?", [round_id])?;
+    Ok(())
 }
 
 /// Drops the loadability of rounds no longer kept, and wrong reports past any window.
@@ -540,25 +679,30 @@ mod tests {
         json!({"validator": validator, "verdict": verdict, "result": result})
     }
 
+    /// One validator's report is enough, to test a rule on its own.
+    fn one() -> Params {
+        Params { objective_quorum: 1, ..Params::default() }
+    }
+
     fn clean(returned: i64, errors: i64) -> Value {
         json!({"returned": returned, "error_rows": errors, "duplicates": 0, "unassigned": 0, "reextract_mismatch": 0, "integrity_checked": 20, "reason": "ok", "samples": []})
     }
 
     #[test]
     fn an_objective_fail_charges_whatever_the_live_pages_showed() {
-        let params = Params::default();
+        let params = one();
         let task = job(100, &["a.example"]);
         let mut bad = clean(100, 0);
         bad["duplicates"] = 1.into();
         bad["reason"] = "content_mismatch".into();
-        let judged = judge_crawl(&task, &[vote("v1", bad.clone())], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("v1", bad.clone())], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.reason.as_str()), (Outcome::Fail, EXTRA_ROWS));
         let mut text = clean(100, 0);
         text["reextract_mismatch"] = 5.into();
-        assert_eq!(judge_crawl(&task, &[vote("v1", text)], &RoundView::default(), 1.0, &params).reason, TEXT_NOT_FROM_HTML);
+        assert_eq!(judge_crawl(&task, &[vote("v1", text)], &HashMap::new(), &RoundView::default(), 1.0, &params).reason, TEXT_NOT_FROM_HTML);
         let mut unreadable = clean(0, 0);
         unreadable["reason"] = UNREADABLE.into();
-        assert_eq!(judge_crawl(&task, &[vote("v1", unreadable)], &RoundView::default(), 1.0, &params).reason, UNREADABLE);
+        assert_eq!(judge_crawl(&task, &[vote("v1", unreadable)], &HashMap::new(), &RoundView::default(), 1.0, &params).reason, UNREADABLE);
     }
 
     #[test]
@@ -568,7 +712,7 @@ mod tests {
         let mut mismatch = clean(100, 0);
         mismatch["verdict"] = "fail".into();
         mismatch["reason"] = "content_mismatch".into();
-        let judged = judge_crawl(&task, &[vote("v1", mismatch.clone()), vote("v2", mismatch)], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("v1", mismatch.clone()), vote("v2", mismatch)], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.credited, judged.ramp), (Outcome::Pass, 100, true));
     }
 
@@ -578,42 +722,47 @@ mod tests {
         let task = job(100, &["a.example"]);
         let mut lie = clean(100, 0);
         lie["duplicates"] = 3.into();
-        let judged = judge_crawl(&task, &[vote("honest", clean(100, 0)), vote("liar", lie)], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("honest", clean(100, 0)), vote("liar", lie)], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.reason.as_str(), judged.reports), (Outcome::Neutral, FACTS_DISPUTED, 2));
         let mut fault = clean(0, 0);
         fault["reason"] = "unscorable".into();
-        let judged = judge_crawl(&task, &[vote("crashed", fault), vote("v2", clean(100, 0))], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("crashed", fault), vote("v2", clean(100, 0))], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.reports), (Outcome::Pass, 1), "a validator's own crash reports no facts");
         let mut changed = clean(0, 0);
         changed["reason"] = UPLOAD_CHANGED.into();
-        let judged = judge_crawl(&task, &[vote("v1", changed.clone())], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("v1", changed.clone())], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.reason.as_str()), (Outcome::Neutral, UPLOAD_CHANGED), "a rewritten key may not be the miner's doing");
-        let judged = judge_crawl(&task, &[vote("v1", changed), vote("v2", clean(100, 0))], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("v1", changed), vote("v2", clean(100, 0))], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!(judged.reason, FACTS_DISPUTED, "one validator read the pinned version, another did not");
     }
 
     #[test]
     fn a_quorum_holds_back_a_fail_one_validator_found_alone() {
-        let params = Params { objective_quorum: 2, ..Params::default() };
+        let params = Params::default();
+        assert_eq!(params.objective_quorum, 2, "by default one validator alone never charges");
         let task = job(10, &["a.example"]);
         let mut bad = clean(10, 0);
         bad["unassigned"] = 1.into();
-        assert_eq!(judge_crawl(&task, &[vote("v1", bad.clone())], &RoundView::default(), 1.0, &params).reason, BELOW_QUORUM);
-        assert_eq!(judge_crawl(&task, &[vote("v1", bad.clone()), vote("v2", bad)], &RoundView::default(), 1.0, &params).outcome, Outcome::Fail);
+        assert_eq!(judge_crawl(&task, &[vote("v1", bad.clone())], &HashMap::new(), &RoundView::default(), 1.0, &params).reason, BELOW_QUORUM);
+        let both = [vote("v1", bad.clone()), vote("v2", bad)];
+        assert_eq!(judge_crawl(&task, &both, &HashMap::new(), &RoundView::default(), 1.0, &params).outcome, Outcome::Fail);
+        let one_owner = HashMap::from([("v1".to_string(), "c1".to_string()), ("v2".to_string(), "c1".to_string())]);
+        let judged = judge_crawl(&task, &both, &one_owner, &RoundView::default(), 1.0, &params);
+        assert_eq!((judged.outcome, judged.reason.as_str()), (Outcome::Neutral, BELOW_QUORUM), "two hotkeys of one coldkey are one owner");
     }
 
     #[test]
     fn the_gate_follows_the_rounds_loadability() {
-        let params = Params::default();
+        let params = one();
         let task = job(100, &["a.example"]);
         let fresh = RoundView { sampled: 10, loaded: 2, ..RoundView::default() }.decide(&params);
         assert_eq!(fresh.loadability, None, "too few samples keep the absolute gate");
-        assert_eq!(judge_crawl(&task, &[vote("v1", clean(60, 0))], &fresh, 1.0, &params).reason, COVERAGE);
+        assert_eq!(judge_crawl(&task, &[vote("v1", clean(60, 0))], &HashMap::new(), &fresh, 1.0, &params).reason, COVERAGE);
         let junk = RoundView { sampled: 100, loaded: 60, ..RoundView::default() }.decide(&params);
         assert!((junk.gate(&params) - 0.51).abs() < 1e-9);
         let mut sixty = task.clone();
         sixty["reported"] = json!({"rows": 60, "ok": 60, "errors": 0});
-        let judged = judge_crawl(&sixty, &[vote("v1", clean(60, 0))], &junk, 1.0, &params);
+        let judged = judge_crawl(&sixty, &[vote("v1", clean(60, 0))], &HashMap::new(), &junk, 1.0, &params);
         assert_eq!((judged.outcome, judged.ramp), (Outcome::Pass, true), "60 rows clear a gate of 51 and grow the budget");
         let mut unchecked = task.clone();
         unchecked["reported"] = json!({"rows": 55, "ok": 30, "errors": 25});
@@ -636,11 +785,11 @@ mod tests {
         honest["hosts"] = json!({"owner.example": [50, 50], "fine.example": [50, 0]});
         let mut reported_errors = task.clone();
         reported_errors["reported"] = json!({"rows": 100, "ok": 50, "errors": 50});
-        let paid_honest = judge_crawl(&reported_errors, &[vote("v1", honest)], &round, 0.0, &params);
+        let paid_honest = judge_crawl(&reported_errors, &[vote("v1", honest)], &HashMap::new(), &round, 0.0, &params);
         // The owner's own miner, which loaded it.
         let mut owner = clean(100, 0);
         owner["hosts"] = json!({"owner.example": [50, 0], "fine.example": [50, 0]});
-        let paid_owner = judge_crawl(&task, &[vote("v1", owner)], &round, 0.0, &params);
+        let paid_owner = judge_crawl(&task, &[vote("v1", owner)], &HashMap::new(), &round, 0.0, &params);
         assert_eq!((paid_honest.assigned, paid_honest.credited, paid_honest.outcome), (50, 50, Outcome::Pass));
         assert_eq!(paid_owner.credited, paid_honest.credited, "neither is paid for the neutral host");
         let mut unchecked = task.clone();
@@ -663,10 +812,10 @@ mod tests {
 
     #[test]
     fn an_overstated_report_fails_on_the_file() {
-        let params = Params::default();
+        let params = one();
         let mut task = job(100, &["a.example"]);
         task["reported"] = json!({"rows": 100, "ok": 100, "errors": 0});
-        let judged = judge_crawl(&task, &[vote("v1", clean(100, 10))], &RoundView::default(), 1.0, &params);
+        let judged = judge_crawl(&task, &[vote("v1", clean(100, 10))], &HashMap::new(), &RoundView::default(), 1.0, &params);
         assert_eq!((judged.outcome, judged.reason.as_str()), (Outcome::Fail, REPORTED_ROWS));
     }
 
@@ -679,8 +828,8 @@ mod tests {
         let params = Params::default();
         let task = json!({"texts": 200, "chars": 5400});
         let coldkeys = HashMap::from([("v1".to_string(), "c1".to_string()), ("v2".to_string(), "c1".to_string()), ("v3".to_string(), "c3".to_string())]);
-        let one = judge_embed(&task, &[embed_vote("v1", "fail", VECTORS_MISMATCH)], &coldkeys, &params);
-        assert_eq!((one.outcome, one.reason.as_str()), (Outcome::Neutral, ONE_REFERENCE));
+        let single = judge_embed(&task, &[embed_vote("v1", "fail", VECTORS_MISMATCH)], &coldkeys, &params);
+        assert_eq!((single.outcome, single.reason.as_str()), (Outcome::Neutral, ONE_REFERENCE));
         let same_owner = judge_embed(&task, &[embed_vote("v1", "fail", VECTORS_MISMATCH), embed_vote("v2", "fail", VECTORS_MISMATCH)], &coldkeys, &params);
         assert_eq!(same_owner.reason, ONE_REFERENCE, "two hotkeys of one coldkey are one reference");
         let two = judge_embed(&task, &[embed_vote("v1", "fail", VECTORS_MISMATCH), embed_vote("v3", "fail", VECTORS_MISMATCH)], &coldkeys, &params);
@@ -694,10 +843,56 @@ mod tests {
         assert_eq!(split.reason, REFERENCES_DISAGREE);
         let passed = judge_embed(&task, &[embed_vote("v1", "pass", "ok")], &coldkeys, &params);
         assert_eq!((passed.outcome, passed.credited), (Outcome::Pass, 5400));
-        let malformed = judge_embed(&task, &[embed_vote("v1", "fail", "vectors_malformed")], &coldkeys, &params);
+        let malformed = judge_embed(&task, &[embed_vote("v1", "fail", "vectors_malformed")], &coldkeys, &one());
         assert_eq!((malformed.outcome, malformed.reason.as_str()), (Outcome::Fail, "vectors_malformed"), "a fact of the file needs no second model");
+        let alone = judge_embed(&task, &[embed_vote("v1", "fail", "vectors_malformed")], &coldkeys, &params);
+        assert_eq!(alone.reason, BELOW_QUORUM, "but, by default, a second owner's report");
+        let one_owner = judge_embed(&task, &[embed_vote("v1", "fail", "vectors_malformed"), embed_vote("v2", "fail", "vectors_malformed")], &coldkeys, &params);
+        assert_eq!(one_owner.reason, BELOW_QUORUM);
+        let owners = judge_embed(&task, &[embed_vote("v1", "fail", "vectors_malformed"), embed_vote("v3", "fail", "vectors_malformed")], &coldkeys, &params);
+        assert_eq!(owners.outcome, Outcome::Fail);
         let unscorable = judge_embed(&task, &[embed_vote("v1", "void", "unscorable")], &coldkeys, &params);
         assert_eq!(unscorable.outcome, Outcome::Neutral);
+    }
+
+    #[test]
+    fn the_files_rows_are_counted_as_validators_count_them_and_sift_the_reports() {
+        let task = job(3, &["a.example"]);
+        let (a, b, c) = ("https://a.example/0", "https://a.example/1", "https://a.example/2");
+        let rows = [(a, false), (b, true), (a, false), ("https://elsewhere.example/9", false)];
+        let counted = Counted::of_rows(&task, rows.into_iter());
+        assert_eq!(counted, Counted { returned: 2, duplicates: 1, unassigned: 1, error_rows: 1 }, "{c} is missing");
+        let mut true_counts = clean(2, 1);
+        true_counts["duplicates"] = 1.into();
+        true_counts["unassigned"] = 1.into();
+        let mut short = true_counts.clone();
+        short["returned"] = 1.into();
+        let mut kind = true_counts.clone();
+        kind["duplicates"] = 0.into();
+        let mut unread = clean(0, 0);
+        unread["reason"] = UNREADABLE.into();
+        let votes = [vote("honest", true_counts), vote("short", short), vote("kind", kind), vote("unread", unread)];
+        let (kept, contradicted, wrong) = sift(&votes, &counted);
+        let kept: Vec<&str> = kept.iter().map(|v| v["validator"].as_str().unwrap()).collect();
+        assert_eq!(kept, ["honest", "unread"], "a report that could not read the file says nothing of its rows");
+        assert_eq!(contradicted, ["short", "kind"]);
+        assert_eq!(wrong, ["short"], "only counts that would charge the miner are wrong reports");
+    }
+
+    #[test]
+    fn the_file_is_counted_only_when_its_rows_could_change_the_accounts() {
+        let task = job(10, &["a.example"]);
+        let votes = [vote("v1", clean(10, 0))];
+        let passed = judge_crawl(&task, &votes, &HashMap::new(), &RoundView::default(), 1.0, &one());
+        assert!(!wants_count(&votes, &passed), "a full pass");
+        let short = [vote("v1", clean(9, 0))];
+        assert!(wants_count(&short, &judge_crawl(&task, &short, &HashMap::new(), &RoundView::default(), 1.0, &one())), "rows missing");
+        let mut extra = clean(10, 0);
+        extra["duplicates"] = 1.into();
+        let alone = [vote("v1", extra)];
+        let judged = judge_crawl(&task, &alone, &HashMap::new(), &RoundView::default(), 1.0, &Params::default());
+        assert_eq!(judged.reason, BELOW_QUORUM);
+        assert!(wants_count(&alone, &judged), "a fail one owner claims");
     }
 
     #[test]

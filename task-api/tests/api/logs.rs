@@ -224,6 +224,7 @@ async fn each_hour_shows_the_work_handed_out_the_claims_refused_and_how_checks_w
     vote(&h, &h.validator, "pass", Some(&passed)).await;
     let failed = task_id(&h.mine(&h.miner, 0).await);
     judged(&h, &h.validator, "fail", Some(&failed), objective_fail()).await.1.expect("the vote is taken");
+    h.past_deadline().await;
     h.mine(&h.rival, 0).await;
     assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(h.rival.claim().await["refusal"]["code"], "QUEUE_EMPTY");

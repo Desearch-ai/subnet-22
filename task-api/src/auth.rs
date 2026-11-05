@@ -78,7 +78,8 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
         return Err(ApiError::status(401, "malformed auth headers"));
     }
     let sent_at: f64 = timestamp.parse::<u64>().map_err(|_| ApiError::status(401, "malformed auth headers"))? as f64;
-    if (now() - sent_at).abs() > TOLERANCE_S {
+    // Timed by the chain while the host clock is off it, so a host clock never refuses a miner whose own clock is right.
+    if (state.request_now() - sent_at).abs() > TOLERANCE_S {
         return Err(ApiError::status(401, "timestamp outside tolerance"));
     }
     let admin = state.admins.contains(hotkey);

@@ -200,6 +200,8 @@ pub struct Settings {
     pub storage_probe_s: f64,
     /// Blocks finality may fall behind the best block before the claims alive then are forgiven.
     pub finality_stall_blocks: i64,
+    /// Seconds the host clock may be off the chain's before signed requests are timed by the chain and claims are forgiven; 0 is off.
+    pub clock_skew_s: f64,
     /// Matching reports an objective fail needs before it charges a miner anything.
     pub objective_quorum: usize,
     /// Validators of distinct coldkeys whose own models must find the same mismatch before an embed upload fails on it.
@@ -444,6 +446,7 @@ impl Settings {
             tee,
             storage_probe_s: number("TASK_API_STORAGE_PROBE_S", 30.0)?,
             finality_stall_blocks: number("TASK_API_FINALITY_STALL_BLOCKS", 10)?,
+            clock_skew_s: number("TASK_API_CLOCK_SKEW_S", 30.0)?,
             objective_quorum: number("TASK_API_OBJECTIVE_QUORUM", 1)?,
             embed_references: number("TASK_API_EMBED_REFERENCES", 2)?,
             loadability_samples: number("TASK_API_LOADABILITY_SAMPLES", 30)?,
@@ -547,6 +550,7 @@ impl Settings {
             ("TASK_API_CANARY_EVERY_S", json!(self.canary_every)),
             ("TASK_API_STORAGE_PROBE_S", json!(self.storage_probe_s)),
             ("TASK_API_FINALITY_STALL_BLOCKS", json!(self.finality_stall_blocks)),
+            ("TASK_API_CLOCK_SKEW_S", json!(self.clock_skew_s)),
             ("TASK_API_OBJECTIVE_QUORUM", json!(self.objective_quorum)),
             ("TASK_API_EMBED_REFERENCES", json!(self.embed_references)),
             ("TASK_API_LOADABILITY_SAMPLES", json!(self.loadability_samples)),

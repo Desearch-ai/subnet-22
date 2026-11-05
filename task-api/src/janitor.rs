@@ -215,6 +215,7 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
         due.kept_block_at = Some(Instant::now());
         state.keep_best_block().await?;
         watch_finality(state).await?;
+        watch_clock(state, true).await?;
     }
     let probe_every = Duration::from_secs_f64(state.settings.storage_probe_s.max(1.0));
     if state.probe_storage.swap(false, Ordering::AcqRel) || elapsed(due.probed_at, probe_every) {
@@ -262,6 +263,38 @@ async fn probe_storage(state: &State, due: &mut Due) -> Result<()> {
             if state.db.run(move |conn| outages::begin_logged(conn, outages::STORAGE, start.at, start.block, &detail)).await? {
                 eprintln!("storage outage from block {}: {why}; claims alive in it lapse at no cost", start.block);
             }
+        }
+    }
+    Ok(())
+}
+
+/// The host clock against the chain's. Once it is off by more than `TASK_API_CLOCK_SKEW_S`, signed requests are timed by the
+/// chain, and a clock outage dated from the last check that agreed forgives every claim alive in it: a request refused for a
+/// timestamp before the check caught it was refused for no fault of its miner. Every copy times its own requests; the copy that
+/// leads (`log`) records the outage.
+pub async fn watch_clock(state: &State, log: bool) -> Result<()> {
+    let (Seeds::Chain(chain), limit) = (&state.seeds, state.settings.clock_skew_s) else { return Ok(()) };
+    if limit <= 0.0 {
+        return Ok(());
+    }
+    let (tick, best) = (state.tick().await?, chain.current_block().await?);
+    let Some(block_time) = chain.block_time(tick.block).await? else { return Ok(()) };
+    let offset = outages::host_offset(now(), block_time, best, tick.block, state.seeds.block_seconds());
+    if offset.abs() > limit {
+        state.set_clock_offset(offset);
+        if !log {
+            return Ok(());
+        }
+        let start = state.clock_ok.lock().expect("clock check").unwrap_or(tick);
+        let detail = format!("the host clock is {offset:+.0}s off block {}'s time {block_time:.0}", tick.block);
+        if state.db.run(move |conn| outages::begin_logged(conn, outages::CLOCK, start.at, start.block, &detail)).await? {
+            eprintln!("host clock {offset:+.0}s off the chain's at block {}; requests are timed by the chain, claims alive lapse at no cost", tick.block);
+        }
+    } else {
+        state.set_clock_offset(0.0);
+        *state.clock_ok.lock().expect("clock check") = Some(tick);
+        if log && state.db.run(move |conn| outages::end_logged(conn, outages::CLOCK, tick.at, tick.block)).await? {
+            eprintln!("host clock agrees with the chain again at block {}", tick.block);
         }
     }
     Ok(())
@@ -339,6 +372,9 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
 
 async fn keep_warm(state: Arc<State>, mut stop: watch::Receiver<bool>) {
     while !*stop.borrow() {
+        if let Err(error) = watch_clock(&state, false).await {
+            eprintln!("could not check the host clock against the chain's: {error:#}");
+        }
         match logs::warm(&state).await {
             Err(ApiError::Internal(error)) => eprintln!("could not make the log pages: {error:#}"),
             Err(ApiError::Status { status, detail, .. }) => eprintln!("could not make the log pages: {status} {detail}"),

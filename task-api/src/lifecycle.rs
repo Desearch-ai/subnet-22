@@ -49,6 +49,8 @@ pub const REPORTED_ROWS: &str = "reported_rows";
 /// Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
 pub const UNREPORTED: &str = "unreported";
 pub const LOCKED: &str = "locked";
+/// A crawl upload whose accounts wait for its round to close.
+pub const HELD: &str = validations::HELD;
 
 pub fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
@@ -159,7 +161,9 @@ pub async fn publish_open(state: &State, at: f64) -> Result<bool> {
         for (task_id, manifest, deadline) in found {
             known.insert(task_id, (manifest, deadline));
         }
-        open_ids.iter().filter_map(|id| known.get(id)).filter(|(_, deadline)| deadline - at >= CHECKABLE_LEFT_S).map(|(manifest, _)| manifest.clone()).collect()
+        // A short validation window, as on a devnet, still lists its uploads for a fifth of it.
+        let left = CHECKABLE_LEFT_S.min(state.settings.validation_ttl / 5.0);
+        open_ids.iter().filter_map(|id| known.get(id)).filter(|(_, deadline)| deadline - at >= left).map(|(manifest, _)| manifest.clone()).collect()
     };
     let listed: Vec<String> = uploads.iter().map(|m| text(m, "key").to_string()).collect();
     if state.open_listed.lock().expect("open listing").as_ref() == Some(&listed) {
@@ -499,25 +503,70 @@ pub async fn close_finished(state: &State) -> Result<Vec<String>> {
         if open > 0 {
             continue;
         }
-        let closing = round_id.clone();
-        state
-            .db
-            .run(move |conn| {
-                let root = roundlog::anchor(conn, &closing, now())?;
-                roundstore::close(conn, &closing, now())?;
-                journal::append(conn, journal::Record::new("close", now(), json!({"round_id": closing}), json!({"anchor_root": root})))?;
-                Ok(())
-            })
-            .await?;
-        // Later refusals must not land in a log whose root is anchored.
-        for current in state.current.lock().expect("current rounds").values_mut() {
-            if *current == round_id {
-                current.clear();
-            }
-        }
+        close_round(state, &round_id).await?;
         closed.push(round_id);
     }
     Ok(closed)
+}
+
+/// Closes a round whose tasks are all done: its log root is anchored and its held uploads settled on its final view, in the
+/// transaction that logs the close.
+pub async fn close_round(state: &State, round_id: &str) -> Result<()> {
+    let (closing, params, at) = (round_id.to_string(), state.settings.rules(), state.rule_now().await?);
+    let settled = state
+        .db
+        .run(move |conn| {
+            let root = roundlog::anchor(conn, &closing, now())?;
+            roundstore::close(conn, &closing, now())?;
+            let (round, settled) = settle_round(conn, &closing, &params, at)?;
+            let output = json!({
+                "anchor_root": root,
+                "round": round_logged(&round, &params),
+                "settled": settled.iter().map(RoundUpload::logged).collect::<Vec<_>>(),
+            });
+            journal::append(conn, journal::Record::new("close", at, json!({"round_id": closing}), output))?;
+            Ok(settled)
+        })
+        .await?;
+    // Later refusals must not land in a log whose root is anchored.
+    for current in state.current.lock().expect("current rounds").values_mut() {
+        if *current == round_id {
+            current.clear();
+        }
+    }
+    settled_elsewhere(state, &settled).await
+}
+
+/// A round's final view as its close entry states it: what validators sampled and loaded, its gate and its neutral hosts.
+pub fn round_logged(round: &RoundView, params: &rules::Params) -> Value {
+    let mut view = round.view();
+    view["gate"] = round.gate(params).into();
+    view
+}
+
+/// What a round's close settled, told to the bucket and the publisher: uploads a failed check took back, and each report
+/// rewritten with the accounts it came to.
+async fn settled_elsewhere(state: &State, settled: &[RoundUpload]) -> Result<()> {
+    for upload in settled {
+        if let Some(checked) = &upload.checked {
+            withdrawn(state, &upload.miner, CRAWL, checked.taken.clone(), "check_failed").await?;
+            if let Some(penalty) = &checked.penalty {
+                withdrawn(state, &upload.miner, CRAWL, penalty.clone(), "repeated_fails").await?;
+                eprintln!("miner={} {CRAWL} full penalty: repeated_fails", short(&upload.miner));
+            }
+        }
+        if upload.report_key.is_empty() {
+            continue;
+        }
+        let (task, key) = (upload.task_id.clone(), upload.report_key.clone());
+        let report = state.lookups.read(move |conn| validations::report_of(conn, &task, &key)).await?;
+        if let Some(report) = report {
+            if let Err(error) = put_json(&state.pages, &upload.report_key, &report, None).await {
+                eprintln!("could not rewrite the report for {}: {error}", upload.task_id);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn finish_task(state: &State, round_id: &str, task_id: &str) -> Result<()> {
@@ -962,11 +1011,19 @@ impl Basis {
         }
     }
 
-    /// The validators whose votes it rests on, in the order they reported; a replay reads the votes from their reports.
-    pub fn voters(&self) -> Vec<String> {
+    /// As a held upload keeps it until its round closes.
+    pub fn stored(&self) -> Value {
         match self {
-            Basis::Checked(votes) => votes.iter().map(|vote| text(vote, "validator").to_string()).collect(),
-            _ => Vec::new(),
+            Basis::Checked(votes) => json!({"mode": self.mode(), "votes": votes}),
+            _ => json!({"mode": self.mode()}),
+        }
+    }
+
+    pub fn from_stored(stored: &Value) -> Basis {
+        match text(stored, "mode") {
+            "checked" => Basis::Checked(stored["votes"].as_array().cloned().unwrap_or_default()),
+            "unscored" => Basis::Unscored,
+            _ => Basis::Unchecked,
         }
     }
 }
@@ -980,9 +1037,39 @@ pub fn judge(
     params: &rules::Params,
     at: f64,
 ) -> Result<(Judged, RoundView)> {
+    let mut round = if kind_of(job) == CRAWL { rules::round_view(conn, text(job, "round_id"), params)? } else { RoundView::default() };
+    if let (Basis::Checked(votes), CRAWL) = (basis, kind_of(job)) {
+        // The upload counts toward its own round: its samples, and its rows per host when its reports agree on them.
+        let hosts = agreed_hosts(votes);
+        let (sampled, loaded) = votes.iter().filter(|vote| rules::facts(vote).is_some()).fold((0, 0), |(s, l), vote| {
+            let (vs, vl) = rules::loaded_samples(vote["result"]["samples"].as_array().map(Vec::as_slice).unwrap_or_default());
+            (s + vs, l + vl)
+        });
+        round.sampled += sampled;
+        round.loaded += loaded;
+        for (host, (rows, errors)) in hosts.iter().flatten() {
+            if *rows > 0 {
+                let entry = round.hosts.entry(host.clone()).or_default();
+                entry.0 += 1;
+                entry.1 += i64::from(errors * 2 > *rows);
+            }
+        }
+        round = round.decide(params);
+    }
+    Ok((judge_on(conn, job, basis, coldkeys, params, &round, at)?, round))
+}
+
+/// The upload's accounts under the rules against a round view given whole, as its round's close settles them.
+pub fn judge_on(
+    conn: &Connection,
+    job: &Value,
+    basis: &Basis,
+    coldkeys: &HashMap<String, String>,
+    params: &rules::Params,
+    round: &RoundView,
+    at: f64,
+) -> Result<Judged> {
     let kind = kind_of(job);
-    let round_id = text(job, "round_id");
-    let mut round = if kind == CRAWL { rules::round_view(conn, round_id, params)? } else { RoundView::default() };
     // Error rows count at the share of the miner's failures checks reproduced, this upload's own checks included.
     let error_share = if kind == CRAWL {
         let ((judged, unconfirmed), (own, own_unconfirmed)) = (checks::error_counts(conn, text(job, "miner"), at)?, error_samples(basis));
@@ -990,34 +1077,15 @@ pub fn judge(
     } else {
         0.0
     };
-    let judged = match (basis, kind == EMBED) {
-        (Basis::Unchecked, false) => rules::judge_unchecked(job, &round, error_share, params),
+    Ok(match (basis, kind == EMBED) {
+        (Basis::Unchecked, false) => rules::judge_unchecked(job, round, error_share, params),
         (Basis::Unchecked, true) => rules::judge_unchecked_embed(job),
         (Basis::Unscored, _) => {
             Judged { outcome: Outcome::Neutral, reason: rules::UNSCORED.into(), credited: 0, assigned: assigned(job), returned: 0, ramp: false, reports: 0 }
         }
         (Basis::Checked(votes), true) => rules::judge_embed(job, votes, coldkeys, params),
-        (Basis::Checked(votes), false) => {
-            // The upload counts toward its own round: its samples, and its rows per host when its reports agree on them.
-            let hosts = agreed_hosts(votes);
-            let (sampled, loaded) = votes.iter().filter(|vote| rules::facts(vote).is_some()).fold((0, 0), |(s, l), vote| {
-                let (vs, vl) = rules::loaded_samples(vote["result"]["samples"].as_array().map(Vec::as_slice).unwrap_or_default());
-                (s + vs, l + vl)
-            });
-            round.sampled += sampled;
-            round.loaded += loaded;
-            for (host, (rows, errors)) in hosts.iter().flatten() {
-                if *rows > 0 {
-                    let entry = round.hosts.entry(host.clone()).or_default();
-                    entry.0 += 1;
-                    entry.1 += i64::from(errors * 2 > *rows);
-                }
-            }
-            round = round.decide(params);
-            rules::judge_crawl(job, votes, &round, error_share, params)
-        }
-    };
-    Ok((judged, round))
+        (Basis::Checked(votes), false) => rules::judge_crawl(job, votes, coldkeys, round, error_share, params),
+    })
 }
 
 /// Rows per host the reports agree on, None when they disagree on any fact or none carries them.
@@ -1080,8 +1148,20 @@ pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) 
         return finalize_unchecked(state, task_id, job, false).await;
     }
     let votes = state.validation.votes(&state.redis, task_id).await?;
+    // Only the deadline closes the reports a fail rests on: which validators count as active is Redis's to say, not the log's,
+    // and a report still to come could contradict the facts.
+    if !due && may_fail(state, job, &votes, now).await? {
+        return Ok(None);
+    }
     let decision = held_to_report(job, decide(&votes, false, true));
     conclude_validation(state, task_id, job, decision, Basis::Checked(votes), false).await
+}
+
+/// Whether the reports in so far fail the upload as its round stands now, or would with another owner's report agreeing.
+async fn may_fail(state: &State, job: &Value, votes: &[Value], now: f64) -> Result<bool> {
+    let (job, basis, coldkeys, params) = (job.clone(), Basis::Checked(votes.to_vec()), coldkeys(state, votes), state.settings.rules());
+    let (judged, _) = state.lookups.read(move |conn| judge(conn, &job, &basis, &coldkeys, &params, now)).await?;
+    Ok(judged.outcome == Outcome::Fail || judged.reason == rules::BELOW_QUORUM)
 }
 
 fn overstated(job: &Value, result: &Value) -> bool {
@@ -1174,6 +1254,7 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
         Basis::Checked(votes) => coldkeys(state, votes),
         _ => HashMap::new(),
     };
+    let (basis, sifted) = sifted(state, job, basis, &coldkeys, &params, at).await?;
     // Judged once for the report written first; the transaction judges again with whatever of the round settled since.
     let (judged, _) = {
         let (job, basis, coldkeys, params) = (job.clone(), basis.clone(), coldkeys.clone(), params.clone());
@@ -1200,19 +1281,25 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
             .db
             .run(move |conn| {
                 let kept = Kept { report: &report, publish: publish.as_ref(), details: details.as_deref() };
-                let given = Given { basis: &basis, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
+                let given =
+                    Given { basis: &basis, sifted: &sifted, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
                 let Some(settled) = finalize_accounts(conn, &task, &job, &decision, given, kept, at)? else { return Ok(None) };
-                // A drawn upload's check settles in the verdict's own transaction, so a replay settles it alike.
-                let checked = if truthy(job.get("picked")) { check_accounts(conn, &job, &basis, &settled.judged, &published, at)? } else { None };
+                // A drawn upload's check settles with its accounts, in the same transaction, so a replay settles it alike.
+                let checked =
+                    if truthy(job.get("picked")) && !settled.held { check_accounts(conn, &job, &basis, &settled.judged, &published, at)? } else { None };
                 let input = json!({
                     "task_id": task,
                     "key": text(&job, "key"),
                     "mode": basis.mode(),
-                    "voters": basis.voters(),
+                    // Every report in the order taken, those the file's rows contradict too: the majority decided on all of them.
+                    "voters": decision.votes.iter().map(|vote| text(vote, "validator").to_string()).collect::<Vec<_>>(),
                     "coldkeys": coldkeys,
                     "published": published,
                     "published_reason": published_reason,
                     "picked": job.get("picked").cloned().unwrap_or(Value::Null),
+                    "recount": sifted.counted,
+                    "contradicted": sifted.contradicted,
+                    "wrong_reports": sifted.wrong,
                 });
                 journal::append(conn, journal::Record::new("finalize", at, input, finalized_output(&settled, &decision, checked.as_ref())))?;
                 Ok(Some((settled, checked)))
@@ -1249,9 +1336,9 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     }
     Ok(Some(json!({
         "task_id": task_id,
-        "verdict": account_verdict(settled.judged.outcome),
+        "verdict": if settled.held { HELD } else { account_verdict(settled.judged.outcome) },
         "reason": settled.judged.reason,
-        "credited": settled.judged.credited,
+        "credited": if settled.held { 0 } else { settled.judged.credited },
         "published": flow == "pass",
         "miner_budget": settled.budget,
     })))
@@ -1271,9 +1358,9 @@ fn error_samples(basis: &Basis) -> (i64, i64) {
 /// What a finalize entry says the verdict did, as a replay works it out again.
 pub fn finalized_output(settled: &Settled, decision: &Decision, checked: Option<&Checked>) -> Value {
     json!({
-        "verdict": account_verdict(settled.judged.outcome),
+        "verdict": if settled.held { HELD } else { account_verdict(settled.judged.outcome) },
         "reason": settled.judged.reason,
-        "credited": settled.judged.credited,
+        "credited": if settled.held { 0 } else { settled.judged.credited },
         "budget": settled.budget,
         "publish": settled.publish.is_some(),
         "agreed": decision.agreed,
@@ -1429,9 +1516,71 @@ pub struct Kept<'a> {
     pub details: Option<&'a [u8]>,
 }
 
+/// What the public file's row counts made of an upload's reports, when they were counted.
+#[derive(Clone, Debug, Default)]
+pub struct Sifted {
+    pub counted: Option<rules::Counted>,
+    /// Validators whose counts the file contradicts: left out of the accounts.
+    pub contradicted: Vec<String>,
+    /// Those of them whose counts would have charged the miner: wrong reports.
+    pub wrong: Vec<String>,
+}
+
+/// The reports of a checked crawl upload its file's rows bear out. The rows are counted off the version every validator was
+/// sent when they could change the accounts; a report they contradict is left out, and counts against its validator when it would
+/// have charged the miner.
+async fn sifted(state: &State, job: &Value, basis: Basis, coldkeys: &HashMap<String, String>, params: &rules::Params, at: f64) -> Result<(Basis, Sifted)> {
+    let Basis::Checked(votes) = &basis else { return Ok((basis, Sifted::default())) };
+    if kind_of(job) != CRAWL {
+        return Ok((basis, Sifted::default()));
+    }
+    let (probe, checked, coldkeys, params) = (job.clone(), basis.clone(), coldkeys.clone(), params.clone());
+    let (judged, _) = state.lookups.read(move |conn| judge(conn, &probe, &checked, &coldkeys, &params, at)).await?;
+    if !rules::wants_count(votes, &judged) {
+        return Ok((basis, Sifted::default()));
+    }
+    let Some(counted) = recount(state, job).await else { return Ok((basis, Sifted::default())) };
+    let (kept, contradicted, wrong) = rules::sift(votes, &counted);
+    if !contradicted.is_empty() {
+        eprintln!("task={} the file's rows contradict the counts of {contradicted:?}", text(job, "task_id"));
+    }
+    Ok((Basis::Checked(kept), Sifted { counted: Some(counted), contradicted, wrong }))
+}
+
+/// The upload's row counts off the version validators were sent; None when storage or the file would not give them.
+async fn recount(state: &State, job: &Value) -> Option<rules::Counted> {
+    let size = job.get("size").and_then(Value::as_u64).filter(|size| (1..=state.settings.max_upload).contains(size))?;
+    let pin = match (job.get("version").and_then(Value::as_str), job.get("etag").and_then(Value::as_str).filter(|e| !e.is_empty())) {
+        (Some(version), _) => desearch::r2::Pin::Version(version),
+        (None, Some(etag)) => desearch::r2::Pin::Etag(etag),
+        (None, None) => desearch::r2::Pin::Any,
+    };
+    let key = text(job, "key");
+    let bytes = match state.storage.get_range_at(key, 0..size, pin).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("could not read {key} to count its rows: {error}");
+            return None;
+        }
+    };
+    let probe = job.clone();
+    match tokio::task::spawn_blocking(move || crate::storage::row_counts(&probe, bytes)).await {
+        Ok(Ok(counted)) => Some(counted),
+        Ok(Err(error)) => {
+            eprintln!("could not count the rows of {key}: {error:#}");
+            None
+        }
+        Err(error) => {
+            eprintln!("counting the rows of {key} stopped: {error}");
+            None
+        }
+    }
+}
+
 /// What the accounts are judged on, and what the validators' majority found for publishing.
 pub struct Given<'a> {
     pub basis: &'a Basis,
+    pub sifted: &'a Sifted,
     pub coldkeys: &'a HashMap<String, String>,
     pub params: &'a rules::Params,
     pub published: &'a str,
@@ -1444,36 +1593,40 @@ pub struct Settled {
     pub judged: Judged,
     pub publish: Option<Value>,
     pub report: Map<String, Value>,
+    /// A crawl upload's accounts wait for its round to close; `judged` is what its round showed so far.
+    pub held: bool,
 }
 
-/// Every SQLite effect of one verdict, committed together and judged inside the same transaction, so uploads of one round
-/// settle in one order; None when the upload was finalized before.
+/// Every SQLite effect of one verdict, committed together and judged inside the same transaction; None when the upload was
+/// finalized before. A crawl upload's budget, credit, strike and check wait for its round to close (`settle_round`), so every
+/// upload of a round is judged on the round's final loadability and neutral hosts; what is published follows now.
 pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision: &Decision, given: Given, kept: Kept, now: f64) -> Result<Option<Settled>> {
     let Kept { report, publish, details } = kept;
     let (judged, _) = judge(conn, job, given.basis, given.coldkeys, given.params, now)?;
+    let (kind, miner) = (kind_of(job), text(job, "miner"));
+    let held = kind == CRAWL;
     let mut report = report.clone();
     account_report(&mut report, &judged, given.published, given.published_reason);
+    if held {
+        report.insert("verdict".into(), HELD.into());
+        report.insert("credited".into(), 0.into());
+    }
     let publish = publish.filter(|_| publishes(given.published, &judged)).cloned();
-    let (kind, miner) = (kind_of(job), text(job, "miner"));
-    if !validations::finalize(conn, task_id, text(job, "key"), account_verdict(judged.outcome), judged.credited, publish.as_ref(), now)? {
+    let (verdict, credited) = if held { (HELD, 0) } else { (account_verdict(judged.outcome), judged.credited) };
+    if !validations::finalize(conn, task_id, text(job, "key"), verdict, credited, publish.as_ref(), now)? {
         return Ok(None);
     }
     if let (Basis::Checked(votes), CRAWL) = (given.basis, kind) {
         rules::note_round(conn, text(job, "round_id"), votes, agreed_hosts(votes).as_ref())?;
     }
-    if kind == CRAWL && judged.outcome != Outcome::Neutral {
-        budgets::record_coverage(conn, miner, judged.assigned, judged.returned, now)?;
+    for validator in &given.sifted.wrong {
+        rules::note_wrong_report(conn, validator, task_id, rules::CONTRADICTED, now)?;
     }
-    let budget = match judged.outcome {
-        Outcome::Fail => {
-            let budget = budgets::penalise(conn, miner, task_id, "verification_failed", kind, now)?.budget;
-            if kind == CRAWL {
-                budgets::credit(conn, miner, -judged.assigned, kind, now)?;
-            }
-            budget
-        }
-        Outcome::Pass if judged.credited != 0 => budgets::reward(conn, miner, task_id, judged.credited, judged.ramp, kind, now)?.budget,
-        _ => budgets::get(conn, miner, kind)?.budget,
+    let budget = if held {
+        rules::hold_upload(conn, job, &given.basis.stored(), given.coldkeys, given.published, now)?;
+        budgets::get(conn, miner, kind)?.budget
+    } else {
+        settle_accounts(conn, task_id, job, &judged, now)?
     };
     // Agreement with the majority is shown on the validators' pages; it no longer costs a validator anything.
     if !decision.agreed.is_empty() || !decision.disagreed.is_empty() {
@@ -1485,13 +1638,84 @@ pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision
     majority.insert("verdict".into(), given.published.into());
     majority.insert("credited".into(), decision.vote()["credited"].clone());
     validations::record_votes(conn, &majority, &decision.votes, &decision.disagreed, decision.vote()["result"]["reason"] != NO_MAJORITY)?;
-    if judged.outcome == Outcome::Fail {
+    if !held && judged.outcome == Outcome::Fail {
         strike(conn, miner, &judged.reason, task_id, kind, now)?;
     }
     if crashed_on_all(&decision.votes) {
         budgets::lock_out(conn, miner, kind, HOSTILE_LOCKOUT_H, "hostile_upload", now)?;
     }
-    Ok(Some(Settled { budget, judged, publish, report }))
+    Ok(Some(Settled { budget, judged, publish, report, held }))
+}
+
+/// The budget and the count of work an upload's judgment moves; the miner's budget after.
+fn settle_accounts(conn: &Connection, task_id: &str, job: &Value, judged: &Judged, now: f64) -> Result<i64> {
+    let (kind, miner) = (kind_of(job), text(job, "miner"));
+    if kind == CRAWL && judged.outcome != Outcome::Neutral {
+        budgets::record_coverage(conn, miner, judged.assigned, judged.returned, now)?;
+    }
+    Ok(match judged.outcome {
+        Outcome::Fail => {
+            let budget = budgets::penalise(conn, miner, task_id, "verification_failed", kind, now)?.budget;
+            if kind == CRAWL {
+                budgets::credit(conn, miner, -judged.assigned, kind, now)?;
+            }
+            budget
+        }
+        Outcome::Pass if judged.credited != 0 => budgets::reward(conn, miner, task_id, judged.credited, judged.ramp, kind, now)?.budget,
+        _ => budgets::get(conn, miner, kind)?.budget,
+    })
+}
+
+/// One crawl upload settled at its round's close.
+pub struct RoundUpload {
+    pub task_id: String,
+    pub miner: String,
+    pub judged: Judged,
+    pub budget: i64,
+    pub checked: Option<Checked>,
+    pub report_key: String,
+}
+
+impl RoundUpload {
+    /// What the close entry says this upload's accounts came to, as a replay works it out again.
+    pub fn logged(&self) -> Value {
+        json!({
+            "task_id": self.task_id,
+            "verdict": account_verdict(self.judged.outcome),
+            "reason": self.judged.reason,
+            "credited": self.judged.credited,
+            "budget": self.budget,
+            "taken": self.checked.as_ref().map(Checked::taken_ids).unwrap_or_default(),
+            "penalty": self.checked.as_ref().is_some_and(|c| c.penalty.is_some()),
+        })
+    }
+}
+
+/// A crawl round's close: every upload it held, in the order they were finalized, judged on the round's final loadability and
+/// neutral hosts, so none is paid for a host that ends up neutral or failed on a gate the round later lowered. A fail on
+/// validators' reports gathered before the upload's validation deadline charges nothing.
+pub fn settle_round(conn: &Connection, round_id: &str, params: &rules::Params, now: f64) -> Result<(RoundView, Vec<RoundUpload>)> {
+    let round = rules::round_view(conn, round_id, params)?;
+    let mut settled = Vec::new();
+    for held in rules::held_uploads(conn, round_id)? {
+        let basis = Basis::from_stored(&held.basis);
+        let (job, task_id) = (&held.job, text(&held.job, "task_id").to_string());
+        let mut judged = judge_on(conn, job, &basis, &held.coldkeys, params, &round, now)?;
+        let deadline = job.get("deadline").and_then(Value::as_f64).unwrap_or(f64::NEG_INFINITY);
+        if judged.outcome == Outcome::Fail && matches!(basis, Basis::Checked(_)) && held.finalized_at < deadline {
+            judged = Judged { outcome: Outcome::Neutral, reason: rules::FINALIZED_EARLY.into(), credited: 0, ..judged };
+        }
+        let verdict = account_verdict(judged.outcome);
+        let report_key = validations::settle(conn, &task_id, text(job, "key"), verdict, &judged.reason, judged.credited, &judged.view())?;
+        let budget = settle_accounts(conn, &task_id, job, &judged, now)?;
+        if judged.outcome == Outcome::Fail {
+            strike(conn, text(job, "miner"), &judged.reason, &task_id, CRAWL, now)?;
+        }
+        let checked = if truthy(job.get("picked")) { check_accounts(conn, job, &basis, &judged, &held.published, now)? } else { None };
+        settled.push(RoundUpload { task_id, miner: text(job, "miner").to_string(), judged, budget, checked, report_key });
+    }
+    rules::release_uploads(conn, round_id)?;
+    Ok((round, settled))
 }
 
 pub fn publish_job(state: &State, job: &Value, vote: &Value, agreed: &[String]) -> Value {
@@ -1553,7 +1777,17 @@ async fn finish_finalized(state: &State, task_id: &str, job: &Value, finalized: 
         copy["urls"] = job["urls"].clone();
         copy
     });
-    if !close_upload(state, task_id, job, &finalized.verdict, publish.as_ref(), seeding).await? {
+    // A held crawl upload went on as its publish copy says: published when the majority passed it.
+    let flow = if finalized.verdict == HELD {
+        if publish.is_some() {
+            "pass"
+        } else {
+            "fail"
+        }
+    } else {
+        finalized.verdict.as_str()
+    };
+    if !close_upload(state, task_id, job, flow, publish.as_ref(), seeding).await? {
         return Ok(None);
     }
     let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());

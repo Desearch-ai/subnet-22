@@ -68,6 +68,10 @@ async fn settled(h: &Harness, miner: &Client, validator: &Client, verdict: &str)
         if picked {
             let facts = if verdict == "fail" { objective_fail() } else { json!({}) };
             judged(h, validator, verdict, Some(&id), facts).await.1.unwrap();
+            if verdict == "fail" {
+                // A fail is decided at the validation deadline.
+                h.past_deadline().await;
+            }
             return id;
         }
         if ["pass", "fail", "queued"].contains(&h.status(&id).await.as_str()) {
@@ -107,16 +111,20 @@ async fn busy_day(h: &Harness) {
 
 #[tokio::test]
 async fn a_replay_of_the_published_log_reaches_the_api_accounts() {
-    let h = Harness::start().await;
+    // A short validation window, so the fails of the busy day are decided at their real deadline and the log shows it.
+    let h = Harness::with(|s| s.validation_ttl = 2.0).await;
     busy_day(&h).await;
     let files = published(&h).await;
     let all = entries(&files);
     let kinds: std::collections::BTreeSet<&str> = all.iter().filter_map(|e| e["kind"].as_str()).collect();
-    for kind in ["start", "snapshot", "enqueue", "reveal", "claim", "complete", "settle", "report", "finalize", "abandon", "lapse", "requests", "shares"] {
+    for kind in
+        ["start", "snapshot", "enqueue", "reveal", "claim", "complete", "settle", "report", "finalize", "close", "abandon", "lapse", "requests", "shares"]
+    {
         assert!(kinds.contains(kind), "no {kind} entry in {kinds:?}");
     }
-    let finalized: Vec<&Value> = all.iter().filter(|e| e["kind"] == "finalize").collect();
-    assert!(finalized.iter().any(|e| e["output"]["penalty"] == true), "two fails among the last ten bring the full penalty");
+    // A crawl upload's accounts settle when its round closes.
+    let settled: Vec<&Value> = all.iter().filter(|e| e["kind"] == "close").flat_map(|e| e["output"]["settled"].as_array().into_iter().flatten()).collect();
+    assert!(settled.iter().any(|upload| upload["penalty"] == true), "two fails among the last ten bring the full penalty");
     assert!(all.iter().any(|e| e["kind"] == "complete" && e["output"]["refused"]["status"] == 400), "a refused completion is logged");
 
     let (replay, chained) = replayed(&h, &files);
@@ -153,7 +161,8 @@ async fn a_replay_of_the_published_log_reaches_the_api_accounts() {
 
 #[tokio::test]
 async fn altered_dropped_forked_and_made_up_entries_are_caught() {
-    let h = Harness::start().await;
+    // A short validation window, so the fails of the busy day are decided at their real deadline and the log shows it.
+    let h = Harness::with(|s| s.validation_ttl = 2.0).await;
     busy_day(&h).await;
     let files = published(&h).await;
     let signer = h.state.signer();
@@ -175,14 +184,18 @@ async fn altered_dropped_forked_and_made_up_entries_are_caught() {
 
     // History rewritten whole, links and all: the replay shows the verdict is not what the rules give.
     let rewritten = rechained(&h, &files, |entry| {
-        if entry["kind"] == "finalize" && entry["output"]["verdict"] == "fail" {
-            entry["output"]["budget"] = 100.into();
+        if entry["kind"] == "close" {
+            for upload in entry["output"]["settled"].as_array_mut().into_iter().flatten() {
+                if upload["verdict"] == "fail" {
+                    upload["budget"] = 100.into();
+                }
+            }
         }
     });
     let (replay, chained) = replayed(&h, &rewritten);
     assert_eq!(chained, Ok(()));
     let fraud: Vec<_> = replay.fraud().collect();
-    assert!(fraud.iter().any(|d| d.kind == "finalize" && d.what.contains("verdict")), "{fraud:?}");
+    assert!(fraud.iter().any(|d| d.kind == "close" && d.what.contains("close settled")), "{fraud:?}");
     // and the anchor the chain holds names the head the API committed to before, not this one.
     let honest = entries(&files);
     let anchored = journal::hash_of(honest.last().unwrap());

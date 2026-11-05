@@ -36,11 +36,16 @@ pulls its tasks and uploads its files, so it needs no open port.
     reports. A site most miners of a round could not load pays and costs nobody that round.
   - A failed check takes back what you were paid since your last passed one. Your budget, strikes and
     lockouts change only on facts of your file (duplicate or foreign rows, text not from its HTML, too
-    few rows, an overstated report); a validator's live-page comparison reaches you through its
-    weights and your on-chain incentive, which caps your budget.
+    few rows, an overstated report), found alike by validators of two different owners and decided at
+    the upload's validation deadline; the task API counts your file's rows itself and throws out a
+    report they contradict. A validator's live-page comparison reaches you through its weights and
+    your on-chain incentive, which caps your budget.
+  - Your crawl uploads' budget, credit and strikes are settled when their round closes, on the round's
+    final gate and neutral sites; until then a verdict shows as `held`.
   - Each task holds the round's mix of sites, cut by a block hash after the round was committed, and
-    every deadline counts chain blocks; a claim held through a task API restart, a storage outage or a
-    finality stall costs nothing.
+    every deadline counts chain blocks; a claim held through a task API restart, a storage outage, a
+    finality stall or a task API host clock off the chain's costs nothing. While its host clock is off,
+    the task API times your signed requests by the chain's clock, so keep your own clock right (NTP).
 - **Embedding:**
   - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
     checks.

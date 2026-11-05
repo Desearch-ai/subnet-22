@@ -32,6 +32,19 @@ jobs:
    - Crawl miners are paid from the log of every completed upload, at the rate the validator's own
      checks of each miner paid, less what its failed checks take back.
    - Embed miners are paid the same way, counted in the characters of the texts they embedded.
+   - Coverage is relative to the round, as the task API judges it: a task must return 85% × the
+     share of the round's pages validators could load, counting only URLs and rows outside the
+     round's **neutral hosts** (hosts most checked uploads of the round could not load). Those hosts
+     pay nobody and cost nobody. Once a round closes, the gate and neutral hosts are the ones the
+     task API settled in its signed log (the round's `close` entry, read by the log follower).
+     While the round is open, the validator uses its own checks of it: their samples, once there
+     are 30, and the hosts most of them could not load. Your vote is cast on that view. Your
+     weights judge coverage again each time they are set, so a check made early in a round is paid
+     on the round's final gate.
+   - An upload that storage served in another version than the one its completion pinned
+     (`upload_changed`) is still reported, so the task API keeps the evidence against storage and
+     never publishes the upload. Your weights neither pay nor charge the miner for it, and do not pay
+     it as an unchecked upload either.
    - See [Emission](./emission.md).
 
 4. **Checks the task API itself.**
@@ -207,8 +220,11 @@ curl -s "https://api-22.desearch.ai/v1/tasks?validator=<hotkey>"
 `/v1/health` lists the active validators and every validator's standing: how many finalized uploads
 it took part in, how many times it disagreed with the majority, and its wrong reports. Disagreeing
 costs nothing: your live-page judgment goes into your own weights. Only reports your tasks could not
-have produced (a sampled URL outside the task, rows that do not add up) count as wrong; five within a
-day and the API refuses your reports for the rest of it. Reports carry the facts of each file (rows,
-duplicates, rows per host, rows not re-extracted from their HTML); the task API charges miners on
-those facts alone, and facts that differ between two validators charge nobody. See
-[Rules](./rules.md).
+have produced (a sampled URL outside the task, rows that do not add up), and reports whose row counts
+the upload's own file contradicts against the miner (more duplicates or foreign rows, fewer rows or
+more error rows than the file has: the task API counts them itself when they could charge anyone),
+count as wrong; five within a day and the API refuses your reports for the rest of it. Reports carry
+the facts of each file (rows, duplicates, rows per host, rows not re-extracted from their HTML); the
+task API charges miners on those facts alone, only when validators of two different coldkeys report the
+same facts, and only at the upload's validation deadline. Facts that differ between two validators
+charge nobody. See [Rules](./rules.md).

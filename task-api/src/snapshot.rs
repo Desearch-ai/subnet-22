@@ -1,8 +1,8 @@
 //! The accounts as decisions read them, dumped in a fixed order, so the API and a replay can show they hold the same by one hash.
 //!
 //! A replay starts from the first snapshot in the log and, at every later one, compares the digest of its own accounts with the API's.
-//! A crawl round's loadability and neutral hosts ride along so a replay that joins late judges the round's uploads alike; they are
-//! loaded, not compared, since the API drops them with the round and a replay keeps no rounds.
+//! A crawl round's loadability, neutral hosts and the uploads waiting for its close ride along so a replay that joins late judges
+//! the round's uploads alike; they are loaded, not compared, since the API drops them with the round and a replay keeps no rounds.
 
 use anyhow::Result;
 use rusqlite::{params_from_iter, types::Value as Sql, Connection};
@@ -35,8 +35,13 @@ const TABLES: [(&str, &str, &str); 12] = [
     ),
 ];
 
-/// What crawl rounds' checked uploads built up, as the rules judge the next upload of the round.
-const ROUNDS: [(&str, &str, &str); 2] = [("round_loads", "round_id, sampled, loaded", "1"), ("round_hosts", "round_id, host, uploads, failed", "1")];
+/// What crawl rounds' checked uploads built up, as the rules judge the next upload of the round, and the uploads whose accounts
+/// wait for their round to close.
+const ROUNDS: [(&str, &str, &str); 3] = [
+    ("round_loads", "round_id, sampled, loaded", "1"),
+    ("round_hosts", "round_id, host, uploads, failed", "1"),
+    ("round_uploads", "seq, round_id, job, basis, coldkeys, published, finalized_at", "1"),
+];
 
 fn rows_of(conn: &Connection, tables: &[(&str, &str, &str)], at: f64) -> Result<Map<String, Value>> {
     let mut state = Map::new();

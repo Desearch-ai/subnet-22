@@ -162,6 +162,7 @@ class Validator:
                 storage_url=self.config.neuron.storage_url,
                 seeds=self.seed_for,
                 signer=signer,
+                round_views=self.settled_round,
             )
             log.info(
                 f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
@@ -503,9 +504,21 @@ class Validator:
             log.info("ScrapingDog serves this key again, checking crawl tasks")
         checker.provider_down = problem
 
+    def settled_round(self, round_id: str) -> dict | None:
+        """A closed round's gate and neutral hosts as the task API's signed log settled them; None while it is open."""
+        journal = getattr(self, "journal", None)
+        return journal.round_view(round_id) if journal else None
+
     async def weights(self) -> np.ndarray | None:
-        """Each pool from every miner's logged uploads, judged by this validator's own checks."""
-        paid = {CRAWL: self.ledger.crawl_paid(), EMBED: self.ledger.embed_paid()}
+        """Each pool from every miner's logged uploads, judged by this validator's own checks; crawl coverage on each
+        round's gate and neutral hosts as the signed log settled them, our own checks' view while a round is open.
+        """
+        journal = getattr(self, "journal", None)
+        rounds = journal.round_views() if journal else None
+        paid = {
+            CRAWL: self.ledger.crawl_paid(rounds=rounds),
+            EMBED: self.ledger.embed_paid(),
+        }
         shares = {}
         for kind, found in paid.items():
             if earned := proportions({m: f.amount for m, f in found.items()}):

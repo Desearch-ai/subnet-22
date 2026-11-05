@@ -129,7 +129,7 @@ async fn a_crawl_task_goes_round_trip() {
         {"url": "https://site0.example/page/0", "status": 200, "sampled": true, "miner_snippet": "Story"},
         {"url": "https://site1.example/page/1", "status": 404, "error": "http_4xx"},
     ]);
-    let scored = h.validator.post(&score_path, detailed).await.unwrap();
+    let scored = h.settled_answer(h.validator.post(&score_path, detailed).await.unwrap()).await;
     assert_eq!(scored, json!({"task_id": id, "verdict": "pass", "reason": "ok", "credited": 3, "published": true, "miner_budget": 2}));
     assert_eq!(h.validator.post(&score_path, score("pass", 3, "ok", None, &first_url(&task))).await.unwrap_err().status, 409);
     let view = h.view(&id).await;
@@ -176,7 +176,11 @@ async fn a_crawl_task_goes_round_trip() {
     not_from_html["reextract_mismatch"] = 1.into();
     not_from_html["integrity_checked"] = 3.into();
     let failed = h.validator.post(&second_score, not_from_html).await.unwrap();
-    assert_eq!(failed, json!({"task_id": second_id, "verdict": "fail", "reason": "text_not_from_html", "credited": 0, "published": false, "miner_budget": 1}));
+    assert_eq!(failed["verdict"], "pending", "a fail on a validator's report waits for the validation deadline");
+    assert_eq!(h.past_deadline().await, [second_id.as_str()]);
+    let miner = h.miner.ss58();
+    let budget = h.state.db.run(move |conn| task_api::budgets::get(conn, &miner, task_api::budgets::CRAWL)).await.unwrap().budget;
+    assert_eq!(budget, 1, "the fail halved the budget");
     let view = h.view(&second_id).await;
     assert_eq!(view["status"], "queued", "a failed task goes back out for someone else");
     assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("text_not_from_html")));
@@ -186,7 +190,7 @@ async fn a_crawl_task_goes_round_trip() {
     let again = h.mine(&h.rival, 0).await;
     assert_eq!((task_id(&again), again["urls"].clone()), (second_id.clone(), second["urls"].clone()));
     h.opened(Some(&h.validator), None).await;
-    h.validator.post(&second_score, score("pass", 3, "ok", None, &first_url(&second))).await.unwrap();
+    h.settled_answer(h.validator.post(&second_score, score("pass", 3, "ok", None, &first_url(&second))).await.unwrap()).await;
     let drained = h.miner.claim().await;
     assert_eq!((drained["tasks"].clone(), drained["refusal"]["code"].clone()), (json!([]), json!("QUEUE_EMPTY")));
 
@@ -200,8 +204,10 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!((miner["pools"]["crawl"]["budget"].clone(), miner["pools"]["crawl"]["in_flight"].clone()), (json!(1), json!(0)));
     assert_eq!(miner["coverage"]["returned"], 6);
 
-    assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
+    // The last vote's round closed once its last task was decided, and its uploads' accounts settled then.
+    assert!(lifecycle::close_finished(&h.state).await.unwrap().is_empty());
     let published = h.public(&format!("/v1/rounds/{round_id}")).await.1;
+    assert!(!published["closed_at"].is_null());
     let log = h.public(&format!("/v1/rounds/{round_id}/log")).await.1;
     let leaves: Vec<Vec<u8>> = log["entries"].as_array().unwrap().iter().map(canonical).collect();
     assert_eq!(task_api::proofs::merkle_root(&leaves), log["anchor_root"].as_str().unwrap());
@@ -312,6 +318,7 @@ async fn races_backlogs_storage_faults_and_voids() {
     assert_eq!(pending["verdict"], "pending", "the vote is kept, the final verdict waits");
     assert_eq!(h.status(&id).await, "voting");
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap(), [id.as_str()]);
+    h.settle().await;
     assert_eq!(h.status(&id).await, "pass");
     assert_eq!(h.public("/v1/health").await.1["verdicts"]["pass"], 1);
 

@@ -12,11 +12,12 @@ from aiohttp import hdrs
 from yarl import URL
 
 from desearch.client import TaskApiError
-from desearch.credit import crawl_credit, embed_credit
+from desearch.credit import LOADED_OUTCOMES, crawl_credit, embed_credit
 from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import verify as verify_manifest
 from neurons.validators.custody import as_signers
+from neurons.validators.ledger import NEUTRAL
 
 LIST_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 LIST_CACHE_S = 2.0
@@ -249,37 +250,50 @@ class TaskChecker:
             return
         credited, assigned = crawl_credit(result), len(set(job["urls"]))
         returned = result.get("returned", 0)
+        # Storage serving another version is evidence against storage, not the miner: neither paid nor charged.
+        changed = result.get("reason") == UPLOAD_CHANGED
         self.ledger.record(
             job["task_id"],
             CRAWL,
             job["miner"],
-            result["verdict"],
-            credited,
+            NEUTRAL if changed else result["verdict"],
+            0 if changed else credited,
             assigned,
             returned,
         )
+        content = result.get("content_verdict", result["verdict"])
+        samples = result.get("samples", [])
+        # Coverage is judged again when weights are set, on the round's gate then, so the check keeps its verdict without
+        # coverage and what it pays if coverage holds.
         self.ledger.record_check(
             job["key"],
             job["miner"],
             job["completed_at"],
-            result["verdict"],
-            credited,
+            NEUTRAL if changed else content,
+            0 if changed else crawl_credit({**result, "verdict": content}),
             returned,
             returned - result.get("error_rows", 0),
             assigned,
             round_id=job.get("round_id", ""),
             hosts=result.get("hosts"),
+            content_verdict=None if changed else content,
+            assigned_hosts=result.get("assigned_hosts"),
+            sampled=len(samples),
+            loaded=sum(1 for s in samples if s.get("outcome") in LOADED_OUTCOMES),
         )
 
     def note_embed_verdict(self, job: dict, result: dict) -> None:
-        """Counted in characters: every one on a pass, none on a fail."""
+        """Counted in characters: every one on a pass, none on a fail, nothing either way when storage changed the file."""
         credited, chars = embed_credit(job, result), int(job.get("chars", 0))
         texts = job.get("texts", 0)
+        verdict = (
+            NEUTRAL if result.get("reason") == UPLOAD_CHANGED else result["verdict"]
+        )
         self.ledger.record(
             job["task_id"],
             EMBED,
             job["miner"],
-            result["verdict"],
+            verdict,
             credited,
             texts,
             texts,
@@ -288,7 +302,7 @@ class TaskChecker:
             job["key"],
             job["miner"],
             job["completed_at"],
-            result["verdict"],
+            verdict,
             credited,
             chars,
             chars,

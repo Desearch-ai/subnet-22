@@ -27,9 +27,9 @@ def test_the_api_listens_on_its_port_inside_and_reaches_redis_and_storage_on_loc
     assert (found["TASK_API_DATA"], found["TASK_API_TASK_URLS"]) == ("/data", "100")
     assert (found["TASK_API_REGISTRY"], found["TASK_API_SEEDS"]) == ("local", "local")
     assert (found["TASK_API_GENESIS"], found["TASK_API_CHECK_SHARE"]) == ("5.0", "1")
-    assert found["TASK_API_EMBED_CHECK_SHARE"] == "1", (
-        "every embed upload is checked too"
-    )
+    assert (
+        found["TASK_API_EMBED_CHECK_SHARE"] == "1"
+    ), "every embed upload is checked too"
     assert found["TASK_API_EMBED_TASKS"] == "0"
     assert (
         local.api_env(Ports(19000), 5.0, 100, embed=True)["TASK_API_EMBED_TASKS"] == "1"
@@ -52,9 +52,9 @@ def test_the_image_is_named_for_its_sources_and_ignores_build_output(tmp_path):
 
     (tmp_path / "crates/desearch/target/release/junk").write_text("y")
     (tmp_path / "task-api/app/main.py").write_text("changed")
-    assert local.image_tag(tmp_path) == tag, (
-        "build output and other folders do not count"
-    )
+    assert (
+        local.image_tag(tmp_path) == tag
+    ), "build output and other folders do not count"
     (tmp_path / "task-api/src/main.rs").write_text("fn main() { }")
     assert local.image_tag(tmp_path) != tag
 
@@ -482,9 +482,9 @@ def test_the_reference_server_answers_the_validators_client_with_the_stored_vect
     assert served == ["desearch-4b-v1"] and listed["max_model_len"] == 2048
     assert vectors.shape == (2, 2560) and list(vectors.argmax(axis=1)) == [4, 1]
     (ok, floats), (unknown, _), (other, _), (encoding, _) = answers
-    assert ok == 200 and np.argmax(floats["data"][0]["embedding"]) == 2, (
-        "floats unless asked for base64"
-    )
+    assert (
+        ok == 200 and np.argmax(floats["data"][0]["embedding"]) == 2
+    ), "floats unless asked for base64"
     assert (unknown, other, encoding) == (400, 404, 400)
 
 
@@ -636,9 +636,9 @@ def test_the_sandbox_validator_checks_only_its_own_mode_s_tasks():
     validator.stopping = asyncio.Event()
     validator.stopping.set()
     validator.embed = False
-    assert asyncio.run(validator.check_embed_tasks()) is None, (
-        "crawl mode waits instead of checking embed tasks"
-    )
+    assert (
+        asyncio.run(validator.check_embed_tasks()) is None
+    ), "crawl mode waits instead of checking embed tasks"
 
 
 def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights():
@@ -656,7 +656,7 @@ def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights()
         return SimpleNamespace(amount=amount, uploads=1, checked=1, failed=0, rate=1.0)
 
     class Ledger:
-        def crawl_paid(self):
+        def crawl_paid(self, rounds=None):
             return {"crawler": paid(100.0)}
 
         def embed_paid(self):

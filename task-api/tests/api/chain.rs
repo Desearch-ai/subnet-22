@@ -167,7 +167,9 @@ async fn every_copy_and_every_restart_keeps_the_first_anchor() {
     let first = State::new(settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
     let clock = first.clock().await.unwrap();
     let tick = first.tick().await.unwrap();
-    assert_eq!((clock.anchor_block, clock.block_seconds, tick.at), (6_998, 12.0, clock.anchor_at));
+    // The fake chain finalizes two blocks behind its head, which moves on every 12 s of a slow start.
+    assert!((6_998..=6_999).contains(&clock.anchor_block), "{}", clock.anchor_block);
+    assert_eq!((clock.block_seconds, tick.at), (12.0, clock.anchor_at));
     let again = State::new(settings, h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
     assert_eq!(again.clock().await.unwrap(), clock);
     assert!(first.started_at() <= tick.at, "a restart is dated by the first finalized block it read");

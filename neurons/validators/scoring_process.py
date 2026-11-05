@@ -10,6 +10,7 @@ import pyarrow
 from desearch.extraction import extract
 from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
+    COVERAGE,
     FetchedPage,
     extraction_url,
     load_upload,
@@ -61,7 +62,15 @@ def answer(conn, kind: str, payload) -> None:
 
 
 def _score_in_child(
-    conn, data, assigned, seed, min_samples, match_ratio, memory_mb
+    conn,
+    data,
+    assigned,
+    seed,
+    min_samples,
+    match_ratio,
+    memory_mb,
+    gate=COVERAGE,
+    neutral=(),
 ) -> None:
     try:
         unconfined = confine()
@@ -72,7 +81,9 @@ def _score_in_child(
         planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
         answer(conn, "samples", {"urls": planned, "unconfined": unconfined})
         fetched: dict[str, FetchedPage] = conn.recv()
-        result = score(rows, assigned, fetched, seed, min_samples, match_ratio)
+        result = score(
+            rows, assigned, fetched, seed, min_samples, match_ratio, gate, neutral
+        )
         texts = live_texts(kept, fetched)
         result["urls"] = url_log(rows, result["samples"], texts, result["rejected"])
         answer(conn, "scored", result)
@@ -104,6 +115,8 @@ class ScoringProcess:
         match_ratio: float,
         budget: float,
         memory_mb: int = MEMORY_MB,
+        gate: float = COVERAGE,
+        neutral: list[str] = (),
     ):
         context = _process_context()
         self.conn, self.child_conn = context.Pipe()
@@ -117,6 +130,8 @@ class ScoringProcess:
                 min_samples,
                 match_ratio,
                 memory_mb,
+                gate,
+                sorted(neutral),
             ),
             daemon=True,
         )

@@ -1,7 +1,7 @@
 //! What every request and the janitor share: settings, Redis, SQLite, the buckets, the chain and the receipt key.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -78,6 +78,11 @@ pub struct State {
     pub work: Mutex<Option<(std::time::Instant, Arc<budgets::Work>)>>,
     /// Set when storage failed a request, so the janitor probes it without waiting for its turn.
     pub probe_storage: AtomicBool,
+    /// Milliseconds the host clock runs ahead of the chain's once it is off by more than `TASK_API_CLOCK_SKEW_S`, else 0: signed
+    /// requests are timed by the chain then.
+    clock_offset_ms: AtomicI64,
+    /// The last clock check that agreed with the chain: a clock outage is dated from it.
+    pub clock_ok: Mutex<Option<Tick>>,
     /// Set on shutdown so /v1/ping fails and the proxy stops routing here before the server stops.
     pub draining: AtomicBool,
     /// Completions running on after their caller may have stopped waiting.
@@ -224,6 +229,8 @@ impl State {
             clock: tokio::sync::OnceCell::new(),
             work: Mutex::default(),
             probe_storage: AtomicBool::new(false),
+            clock_offset_ms: AtomicI64::new(0),
+            clock_ok: Mutex::default(),
             draining: AtomicBool::new(false),
             detached: AtomicUsize::new(0),
             settings,
@@ -265,6 +272,20 @@ impl State {
     }
 
     /// The finalized height now and its rule time, which every deadline, window and lockout is measured on.
+    /// Seconds the host clock runs ahead of the chain's while they disagree, else 0.
+    pub fn clock_offset(&self) -> f64 {
+        self.clock_offset_ms.load(Ordering::Acquire) as f64 / 1000.0
+    }
+
+    pub fn set_clock_offset(&self, seconds: f64) {
+        self.clock_offset_ms.store((seconds * 1000.0).round() as i64, Ordering::Release);
+    }
+
+    /// The time signed requests are judged by: the host's, or the chain's while the host clock is off it.
+    pub fn request_now(&self) -> f64 {
+        now() - self.clock_offset()
+    }
+
     pub async fn tick(&self) -> Result<Tick> {
         let block = self.seeds.height().await?;
         let tick = self.clock().await?.tick(block);
