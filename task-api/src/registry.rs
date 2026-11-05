@@ -61,6 +61,18 @@ pub fn save(conn: &Connection, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
+/// Each hotkey's coldkey as the registry table holds it, the hotkey itself for one off the metagraph. The table is written in the
+/// transaction that logs the metagraph, so what a verdict reads here in its own transaction is what the log names before it.
+pub fn coldkeys_of<'a>(conn: &Connection, hotkeys: impl IntoIterator<Item = &'a str>) -> Result<HashMap<String, String>> {
+    let mut statement = conn.prepare("SELECT coldkey FROM registry WHERE hotkey = ?")?;
+    let mut found = HashMap::new();
+    for hotkey in hotkeys {
+        let coldkey: Option<Option<String>> = statement.query_row([hotkey], |row| row.get(0)).optional()?;
+        found.insert(hotkey.to_string(), coldkey.flatten().filter(|c| !c.is_empty()).unwrap_or_else(|| hotkey.to_string()));
+    }
+    Ok(found)
+}
+
 pub fn saved(conn: &Connection) -> Result<Vec<Entry>> {
     let mut statement = conn.prepare("SELECT hotkey, uid, is_validator, coldkey, incentive FROM registry")?;
     let rows = statement
@@ -215,5 +227,41 @@ impl Registry {
             Registry::Local { .. } => None,
             Registry::Chain { entries, .. } => entries.read().expect("registry lock").get(hotkey).cloned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn neuron(uid: i64, hotkey: &str, coldkey: &str) -> Neuron {
+        Neuron {
+            uid,
+            hotkey: hotkey.into(),
+            coldkey: coldkey.into(),
+            validator_permit: true,
+            total_stake_rao: 20_000_000_000_000,
+            alpha_stake_rao: 30_000_000_000,
+            incentive: None,
+        }
+    }
+
+    #[test]
+    fn a_verdict_reads_coldkeys_as_the_logged_metagraph_names_them() {
+        let conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        crate::journal::create(&conn).unwrap();
+        let registry = Registry::chain();
+        let neurons = vec![neuron(0, "5V1", "5Owner"), neuron(1, "5V2", "5Owner"), neuron(2, "5V3", "")];
+        let entries = registry.load(neurons.clone());
+        // The table and the log entry are written in one transaction, which is what a verdict's own transaction reads.
+        save(&conn, &entries).unwrap();
+        log_metagraph(&conn, 22, Some(100), &neurons, &entries).unwrap();
+        let found = coldkeys_of(&conn, ["5V1", "5V2", "5V3", "5Gone"]).unwrap();
+        assert_eq!(found["5V1"], "5Owner");
+        assert_eq!(found["5V2"], "5Owner", "two hotkeys of one owner count once");
+        assert_eq!((found["5V3"].as_str(), found["5Gone"].as_str()), ("5V3", "5Gone"), "no coldkey, or off the metagraph: the hotkey");
+        let logged: String = conn.query_row("SELECT entry FROM journal WHERE kind = 'metagraph'", [], |row| row.get(0)).unwrap();
+        assert!(logged.contains("\"block\":100"));
     }
 }

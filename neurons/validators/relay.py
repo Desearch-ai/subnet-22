@@ -76,6 +76,7 @@ class Relay:
         rate: Bucket | None = None,
         timeout: float | None = None,
         journal_proofs: Callable[[float], list[dict]] | None = None,
+        journal_status: Callable[[], dict] | None = None,
     ):
         self.keypair = keypair
         self.api_url = api_url.rstrip("/")
@@ -91,6 +92,7 @@ class Relay:
         self.forwarded = 0
         # The fraud proofs this validator's check of the task API's log wrote, published beside its censorship proofs.
         self.journal_proofs = journal_proofs
+        self.journal_status = journal_status
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
@@ -242,8 +244,9 @@ class Relay:
     async def log_proofs(self, request: web.Request) -> web.Response:
         since = float(request.query.get("since", 0) or 0)
         found = self.journal_proofs(since) if self.journal_proofs else []
+        status = self.journal_status() if self.journal_status else None
         return web.json_response(
-            {"validator": self.keypair.ss58_address, "proofs": found}
+            {"validator": self.keypair.ss58_address, "proofs": found, "status": status}
         )
 
 

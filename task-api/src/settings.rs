@@ -637,8 +637,7 @@ impl Settings {
         let anchored = anchor.as_ref().map(|AnchorSettings { network, quorum, netuid, key_uri: _, every_blocks, min_blocks, per_epoch }| {
             (without_credentials(network), *quorum, *netuid, *every_blocks, *min_blocks, *per_epoch)
         });
-        let anchor_field =
-            |pick: fn(&(String, usize, u16, i64, i64, i64)) -> Value| anchored.as_ref().map(pick).unwrap_or(Value::Null);
+        let anchor_field = |pick: fn(&(String, usize, u16, i64, i64, i64)) -> Value| anchored.as_ref().map(pick).unwrap_or(Value::Null);
         [
             ("TASK_API_LISTEN", json!(listen)),
             ("TASK_API_DATA", json!(data.display().to_string())),

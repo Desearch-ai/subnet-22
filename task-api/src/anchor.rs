@@ -509,15 +509,7 @@ mod tests {
 
     #[test]
     fn periodic_anchors_leave_part_of_the_epoch_to_rounds() {
-        let settings = AnchorSettings {
-            network: String::new(),
-            quorum: 1,
-            netuid: 22,
-            key_uri: String::new(),
-            every_blocks: 12,
-            min_blocks: 3,
-            per_epoch: 30,
-        };
+        let settings = AnchorSettings { network: String::new(), quorum: 1, netuid: 22, key_uri: String::new(), every_blocks: 12, min_blocks: 3, per_epoch: 30 };
         let due = |conn: &Connection, block| due_at(conn, journal::head(conn).unwrap().0, block, &settings).unwrap();
         // Periodic anchors have used all but the reserve of the last epoch.
         let sent: Vec<(i64, i64)> = (0..30 - ROUND_RESERVE).map(|i| (i + 1, 1_000 + i * 12)).collect();

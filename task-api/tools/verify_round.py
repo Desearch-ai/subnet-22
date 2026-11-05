@@ -329,6 +329,11 @@ def verify(
                 signer or published_signer,
             ),
         )
+    elif storage:
+        print(
+            f"  {RED}[ !! ] NOT CHECKED: no anchor hotkey is pinned (desearch/trust.py) or given (--anchor), so whether the"
+            f" round was anchored before its seed block is unknown{RESET}"
+        )
 
     if receipts:
         ok &= check(

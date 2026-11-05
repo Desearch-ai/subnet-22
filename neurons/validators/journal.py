@@ -59,6 +59,8 @@ INCLUSION_BLOCKS = 20
 GAP_WAIT_S = 1_800.0
 # A log whose links broke is read again from its newest snapshot this long after, to see whether it holds from there.
 REJOIN_AFTER_S = 600.0
+# How often a follower without an anchor hotkey to check says so in the validator's log.
+UNANCHORED_LOG_S = 600.0
 # The log keeps up when it was checked this recently, every file read and replayed, and the chain read to within a few blocks.
 STALE_S = 600.0
 MAX_BEHIND_FILES = 10
@@ -68,6 +70,11 @@ OUTCOME_KINDS = ("claim", "complete", "abandon", "witness")
 OUTCOMES_KEPT_S = 8 * 86400
 
 log = logging.getLogger("validator")
+
+UNANCHORED = (
+    "no anchor hotkey is pinned (desearch/trust.py TASK_API_ANCHOR_HOTKEY or --neuron.task_api_anchor), so the log's anchors"
+    " are not checked: a log rolled back, forked or taken down would not show"
+)
 
 
 @dataclass
@@ -253,6 +260,8 @@ class JournalFollower:
             return f"the task API's log shows fraud at entry {fraud['seq']}: {fraud['what']}"
         if self.state("broken"):
             return f"the task API's log does not hold together: {self.state('broken')}"
+        if self.anchor_key is None:
+            return UNANCHORED
         if not self.replay_bin:
             return "the task API's log is not replayed (--neuron.no_replay)"
         checked = self.state("checked_at")
@@ -272,6 +281,18 @@ class JournalFollower:
         ):
             return "the anchors on chain are not read up to the head yet"
         return None
+
+    def status(self) -> dict:
+        """What this follower vouches for, published beside its proofs: whether the log's anchors are checked at all, and why the
+        API's inputs are kept out of the weights, if they are."""
+        return {
+            "anchors_checked": self.anchor_key is not None,
+            "replayed": bool(self.replay_bin),
+            "distrust": self.distrust(),
+            "fraud": self.state("fraud"),
+            "last": self.state("last"),
+            "anchored_through": self.anchored_through(),
+        }
 
     def fraud_spans(self) -> list[tuple[float, float]]:
         """The times the log showed fraud, from the entry it was found at to when the log held together again: uploads logged then
@@ -317,6 +338,12 @@ class JournalFollower:
                 return problems
             self.db.execute("DELETE FROM state WHERE name IN ('broken', 'broken_at')")
             await self.rejoin(latest, after=None)
+        if self.anchor_key is None:
+            # Not a passing check: none is made. Said every few minutes, and published as the follower's status.
+            said = float(self.state("unanchored_said_at") or 0)
+            if self.clock() - said >= UNANCHORED_LOG_S:
+                log.error("task API log: %s", UNANCHORED)
+                self.set_state("unanchored_said_at", self.clock())
         problems += await self.scan_chain()
         number = self.state("segment")
         joining = number is None or bool(self.state("joining"))
@@ -923,7 +950,9 @@ class JournalFollower:
         files = sorted((self.folder / "seq").glob("*.json"))
         for path in files[:-KEEP_FILES]:
             path.unlink(missing_ok=True)
-        self.db.execute("DELETE FROM outcomes WHERE at < ?", (time.time() - OUTCOMES_KEPT_S,))
+        self.db.execute(
+            "DELETE FROM outcomes WHERE at < ?", (time.time() - OUTCOMES_KEPT_S,)
+        )
         self.db.commit()
 
     def write_proof(self, problem: Problem) -> None:

@@ -302,3 +302,90 @@ async fn a_cvm_is_not_appointed_over_a_published_log_that_does_not_hold() {
     assert_eq!(latest(&h).await["signer"], h.state.signer().as_str(), "and publishes no record");
     let _ = (dir_a, dir_c);
 }
+
+/// One log holding what every block adds, replayed by a validator from its first entry to its last with no divergence: a clock
+/// outage and a lapse it forgives (A), validators' storage witnesses and a lapse they forgive (C), a pause (D), a crawl upload held
+/// at its verdict and settled when its round closes (A), and a CVM appointed afresh that goes on from the published head (D).
+#[tokio::test]
+async fn one_log_with_every_blocks_events_replays_without_a_divergence() {
+    use task_api::replay::Replay;
+    use task_api::{journal, lifecycle, outages};
+    let (dir_a, dir_c) = (short_dir(), short_dir());
+    let agent_a = FakeDstack::start(&dir_a.0).await;
+    let socket = agent_a.socket.display().to_string();
+    let h = Harness::with(move |s| {
+        in_custody(socket)(s);
+        s.validation_ttl = 2.0;
+    })
+    .await;
+    let version = fakedstack::compose_hash();
+    let a = h.state.signer();
+    trust(&h.state, approving(format!("sn22tee:{version}@{a}")));
+    custody::poll(&h.state).await.unwrap();
+    assert_eq!(h.state.custody.status(), Status::Active);
+    h.enqueue(urls(6)).await;
+    let later = || async { h.state.clock().await.unwrap().at(h.state.tick().await.unwrap().block + 100_000) };
+    let settle_block = || tokio::time::sleep(std::time::Duration::from_millis(100));
+
+    // The host clock off the chain's (as `janitor::watch_clock` logs it): a claim alive then lapses at no cost.
+    let tick = h.state.tick().await.unwrap();
+    h.state.db.run(move |conn| outages::begin_logged(conn, outages::CLOCK, tick.at, tick.block, "the host clock is +300s off")).await.unwrap();
+    h.rival.claim().await;
+    let lapsed = lifecycle::reclaim_expired(&h.state, later().await).await.unwrap();
+    assert_eq!(lapsed.len(), 1);
+    let tick = h.state.tick().await.unwrap();
+    h.state.db.run(move |conn| outages::end_logged(conn, outages::CLOCK, tick.at, tick.block)).await.unwrap();
+    settle_block().await;
+
+    // Two validators' storage witnesses, the harness's quorum: a claim alive then lapses at no cost though the API saw storage up.
+    for validator in [&h.validator, &h.other_validator] {
+        let record = json!({"kind": "probe", "version": 2, "witness": validator.ss58(), "ok": false, "step": "put", "detail": "HTTP 503", "block": 1, "at": desearch::time::now()});
+        validator.post("/v1/storage/witness", json!({"record": record})).await.unwrap();
+    }
+    h.miner.claim().await;
+    assert_eq!(lifecycle::reclaim_expired(&h.state, later().await).await.unwrap().len(), 1);
+    settle_block().await;
+
+    // A pause, resumed.
+    h.admin.post("/v1/admin/pause", json!({"paused": true, "reason": "an upgrade"})).await.unwrap();
+    h.admin.post("/v1/admin/pause", json!({"paused": false})).await.unwrap();
+
+    // A crawl upload checked and passed: held at its verdict, settled when its round closes.
+    let done = h.mine(&h.miner, 0).await;
+    let (_, scored) = harness::judged(&h, &h.validator, "pass", Some(&harness::task_id(&done)), json!({})).await;
+    scored.unwrap();
+    h.past_deadline().await;
+    h.settle().await;
+    while journal::publish(&h.state).await.unwrap().is_some() {}
+
+    // A second CVM appointed afresh goes on from the head A published, with the accounts that log gives.
+    let agent_c = FakeDstack::start(&dir_c.0).await;
+    let (c, _c_url, _c_dir) = h.sibling(11, in_custody(agent_c.socket.display().to_string())).await;
+    trust(&c, approving(format!("sn22tee:{version}@{}", c.signer())));
+    custody::poll(&c).await.unwrap();
+    assert_eq!(c.custody.status(), Status::Active);
+    while journal::publish(&c).await.unwrap().is_some() {}
+
+    let files = journal_files(&c).await;
+    let entries: Vec<&Value> = files.iter().flat_map(|f| f["entries"].as_array().unwrap()).collect();
+    let causes: Vec<&str> = entries.iter().filter(|e| e["kind"] == "lapse").filter_map(|e| e["input"]["forgiven"].as_str()).collect();
+    assert_eq!(causes, ["clock_outage", "storage_witnessed_outage"], "both lapses forgiven, each for its own outage");
+    assert!(entries.iter().any(|e| e["kind"] == "outage" && e["input"]["cause"] == outages::CLOCK));
+    assert_eq!(entries.iter().filter(|e| e["kind"] == "witness" && e["output"].get("refused").is_none()).count(), 2);
+    assert_eq!(entries.iter().filter(|e| e["kind"] == "pause").count(), 2);
+    assert!(entries.iter().any(|e| e["kind"] == "finalize" && e["output"]["verdict"] == lifecycle::HELD), "the crawl verdict was held");
+    assert!(
+        entries.iter().any(|e| e["kind"] == "close" && e["output"]["settled"].as_array().is_some_and(|s| !s.is_empty())),
+        "and settled at its round's close"
+    );
+    assert!(entries.iter().any(|e| e["kind"] == "custody" && e["input"]["record"]["kind"] == "appoint" && e["input"]["record"]["signer"] == c.signer()));
+
+    let blobs = |sha: &str| h.object(&journal::blob_key(sha));
+    let mut replay = Replay::open(None).unwrap();
+    for file in &files {
+        replay.apply_segment(file, &[a.clone(), c.signer()], false, &blobs).unwrap().expect("one chain under both holders");
+    }
+    assert!(replay.started().unwrap(), "the replay started at the first snapshot and went on through the appointment");
+    assert_eq!(replay.divergences, [], "every rule of every block gives what the API logged");
+    let _ = (dir_a, dir_c);
+}

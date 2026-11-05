@@ -1315,6 +1315,12 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
         state
             .db
             .run(move |conn| {
+                // Read again in the transaction, from the table saved with the metagraph the log holds: a reload between the
+                // provisional judgment and this one is judged as a replay of the log judges it.
+                let coldkeys = match &basis {
+                    Basis::Checked(_) if !coldkeys.is_empty() => crate::registry::coldkeys_of(conn, coldkeys.keys().map(String::as_str))?,
+                    _ => coldkeys,
+                };
                 let kept = Kept { report: &report, publish: publish.as_ref(), details: details.as_deref() };
                 let given =
                     Given { basis: &basis, sifted: &sifted, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };

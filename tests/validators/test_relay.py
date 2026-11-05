@@ -468,12 +468,16 @@ async def test_a_relay_publishes_the_fraud_proofs_its_validator_found_in_the_log
     async with world(tmp_path) as w:
         proofs = [{"problem": {"what": "the shares", "severity": "fraud", "seq": 2}}]
         w.relays[0].journal_proofs = lambda since: [p for p in proofs if since <= 1.0]
+        w.relays[0].journal_status = lambda: {"anchors_checked": False}
         async with w.http.get(f"{w.relay_urls[0]}/v1/journal/proofs") as r:
             found = await r.json()
         assert (
             found["proofs"] == proofs
             and found["validator"] == VALIDATORS[0].ss58_address
         )
+        assert found["status"] == {
+            "anchors_checked": False
+        }, "a check skipped is published too"
         async with w.http.get(f"{w.relay_urls[1]}/v1/journal/proofs") as r:
             assert (await r.json())[
                 "proofs"

@@ -145,7 +145,9 @@ class Validator:
             asyncio.create_task(self.check_witnesses()),
         ]
         if self.config.witness_probe_every_s:
-            background.append(asyncio.create_task(self.storage_probe.follow(self.stopping)))
+            background.append(
+                asyncio.create_task(self.storage_probe.follow(self.stopping))
+            )
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
         finally:
@@ -451,7 +453,7 @@ class Validator:
             ),
             chain_head=self.finalized_block,
             block_extrinsics=self.block_extrinsics,
-            anchor_hotkey=neuron.task_api_anchor,
+            anchor_hotkey=self.anchor_hotkey(),
             metagraph_at=self.metagraph_at,
         )
         self.journal = follower
@@ -460,6 +462,8 @@ class Validator:
                 for problem in await follower.poll():
                     if problem.severity == "fraud":
                         self.publish_proof(problem)
+                if wandb.run is not None:
+                    wandb.run.summary["task_api_log"] = follower.status()
             except Exception as error:
                 log.warning(f"Task API log unavailable, retrying: {error!r}")
             await asyncio.sleep(JOURNAL_POLL_S)
@@ -486,6 +490,7 @@ class Validator:
             journal_proofs=lambda since: (
                 self.journal.proofs(since) if self.journal else []
             ),
+            journal_status=lambda: self.journal.status() if self.journal else None,
         )
         runner = await serve(relay, relay_config.host, relay_config.port)
         try:
@@ -495,7 +500,8 @@ class Validator:
 
     async def check_witnesses(self) -> None:
         """Holds the task API to the answer it gave every request this validator witnessed (relayed for a miner, or its own
-        storage reports): a proof when the anchored log lacks, contradicts or delayed it, or never saw it arrive."""
+        storage reports): a proof when the anchored log lacks, contradicts or delayed it, or never saw it arrive.
+        """
         relay_config = self.config.relay
         api = self.config.neuron.task_api_url
         custody = await self.api_signer()
@@ -512,7 +518,9 @@ class Validator:
             after_blocks=relay_config.check_after_blocks,
             source=api,
             outcomes=OutcomeLog(lambda: self.journal),
-            signers=lambda: [relay_config.signer] if relay_config.signer else custody.every(),
+            signers=lambda: (
+                [relay_config.signer] if relay_config.signer else custody.every()
+            ),
             late_blocks=relay_config.late_blocks,
             keypair=self.wallet.hotkey,
         )
@@ -522,7 +530,10 @@ class Validator:
         """A fork or withheld file of the upload log: kept, signed, with this validator's proofs."""
         if problem["severity"] != "fraud":
             return
-        proof = witness.seal(self.wallet.hotkey, {**problem, "storage_url": self.config.neuron.storage_url})
+        proof = witness.seal(
+            self.wallet.hotkey,
+            {**problem, "storage_url": self.config.neuron.storage_url},
+        )
         self.witnesses.add_proof(proof, f"upload_log:{problem['seq']}")
 
     async def follow_upload_log(self) -> None:
@@ -534,7 +545,11 @@ class Validator:
                 self.wallet.hotkey,
                 self.witnesses,
                 self.head,
-                on_failure=self.storage_probe.noticed if self.config.witness_probe_every_s else None,
+                on_failure=(
+                    self.storage_probe.noticed
+                    if self.config.witness_probe_every_s
+                    else None
+                ),
             )
             if self.config.witness_storage
             else None
@@ -594,7 +609,8 @@ class Validator:
 
     def settled_round(self, round_id: str) -> dict | None:
         """A closed round's gate and neutral hosts as the task API's signed log settled them; None while it is open, and while
-        the log is not trusted, when our own checks' view of the round counts instead."""
+        the log is not trusted, when our own checks' view of the round counts instead.
+        """
         journal = getattr(self, "journal", None)
         if journal is None or journal.distrust():
             return None

@@ -274,7 +274,16 @@ Whatever fails is a fraud proof, written beside the validator (the signed file h
 published by its relay at `/v1/journal/proofs` and in its Weights & Biases run. From then until the replay,
 started again at a snapshot past the fraud, has held through an anchor on chain, and whenever the replay
 cannot run or keep up, the validator sets weights from its own checks only: the API's upload log, budgets,
-verdicts and shares reach no weight, and uploads logged while the log showed fraud are never paid.
+verdicts and shares (and the round views `close` entries give) reach no weight, and uploads logged while the
+log showed fraud are never paid. Until an anchor hotkey is pinned (`TASK_API_ANCHOR_HOTKEY`, empty until it is
+registered), no anchor is checked: an unanchored log could be rolled back or forked unseen, so validators say
+so every few minutes, publish it as their status beside their proofs, and set weights from their own checks.
+Each validator's checks are drawn by block hash, so those weights keep miners' shares in proportion, only
+noisier.
+
+A verdict counts its voters' owners by the coldkeys of the metagraph the log holds before it: the API reads them
+inside the verdict's transaction from the table it saves in the same transaction as each `metagraph` entry, and
+every validator checks that entry against its own node at the block it names.
 
 **Signed reads.** Every answered `GET` carries `X-Desearch-Signer`, `X-Desearch-Signed-At` and
 `X-Desearch-Signature`, a signature over the canonical JSON

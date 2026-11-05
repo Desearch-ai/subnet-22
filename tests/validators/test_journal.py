@@ -772,6 +772,7 @@ async def test_a_fraud_keeps_the_apis_inputs_out_until_the_log_holds_again(tmp_p
             node({}),
             anchored(anchor),
             str(replay),
+            anchor_hotkey=ANCHORER.ss58_address,
             clock=lambda: clock[0],
         )
         assert await follower.poll() == []
@@ -847,7 +848,13 @@ async def test_without_the_replay_or_before_a_snapshot_the_log_is_not_trusted(tm
     )
     async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
         unreplayed = JournalFollower(
-            http, url, API.ss58_address, tmp_path / "a", node({}), anchored([])
+            http,
+            url,
+            API.ss58_address,
+            tmp_path / "a",
+            node({}),
+            anchored([]),
+            anchor_hotkey=ANCHORER.ss58_address,
         )
         await unreplayed.poll()
         assert "not replayed" in unreplayed.distrust()
@@ -859,9 +866,56 @@ async def test_without_the_replay_or_before_a_snapshot_the_log_is_not_trusted(tm
             node({}),
             anchored([]),
             str(replay),
+            anchor_hotkey=ANCHORER.ss58_address,
         )
         await waiting.poll()
         assert "waits for a snapshot" in waiting.distrust()
+
+
+async def test_without_an_anchor_hotkey_the_skip_is_said_published_and_trusted_by_nobody(
+    tmp_path, caplog
+):
+    import aiohttp
+
+    bucket = Bucket()
+    entries = chained(3)
+    bucket.put(segment_key(1), segment(1, entries, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, entries))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    replay, _ = fake_replay(
+        tools,
+        [
+            {
+                "replayed_files": 1,
+                "last": 3,
+                "head": "h",
+                "fraud": 0,
+                "started": True,
+                "since": 1,
+            }
+        ],
+    )
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        follower = JournalFollower(
+            http,
+            url,
+            API.ss58_address,
+            tmp_path / "v",
+            node({}),
+            anchored([]),
+            str(replay),
+        )
+        assert await follower.poll() == []
+        assert "anchors are not checked" in follower.distrust(), "not a passing check"
+        assert "no anchor hotkey is pinned" in caplog.text
+        assert follower.status()["anchors_checked"] is False
+        assert "anchors are not checked" in follower.status()["distrust"]
+        caplog.clear()
+        await follower.poll()
+        assert (
+            "no anchor hotkey" not in caplog.text
+        ), "said every few minutes, not every poll"
 
 
 def test_a_replay_tool_must_run_and_be_this_releases_version(tmp_path):
