@@ -394,6 +394,15 @@ impl Chain {
         Ok((block, hash))
     }
 
+    /// The time a block's author put in it (`Timestamp::Now`), in seconds; None before the block exists.
+    pub async fn block_time(&self, block: i64) -> Result<Option<f64>> {
+        let Some(hash) = self.block_hash(block).await? else { return Ok(None) };
+        let key = [crate::anchor::twox(b"Timestamp", 2), crate::anchor::twox(b"Now", 2)].concat();
+        let Some(raw) = self.storage(&key, &hash).await? else { return Ok(None) };
+        let millis: [u8; 8] = raw.get(..8).and_then(|bytes| bytes.try_into().ok()).ok_or_else(|| anyhow!("a timestamp of {} bytes", raw.len()))?;
+        Ok(Some(u64::from_le_bytes(millis) as f64 / 1000.0))
+    }
+
     /// The raw value at a storage key, at a block, None when unset.
     pub async fn storage(&self, key: &[u8], at: &str) -> Result<Option<Vec<u8>>> {
         let found = self.agreed("state_getStorage", json!([format!("0x{}", hex(key)), at])).await?;

@@ -79,6 +79,8 @@ pub const VOTE_FIELDS: [&str; 20] = [
 ];
 pub const VERDICTS: [&str; 3] = ["pass", "fail", "void"];
 pub const WITHDRAWN: &str = "withdrawn";
+/// A crawl upload whose accounts wait for its round to close.
+pub const HELD: &str = "held";
 pub const URL_DETAIL_DAYS: f64 = 2.0;
 const VERDICT_SUMS: &str = "SUM(verdict = 'pass'), SUM(verdict = 'fail'), SUM(verdict = 'void')";
 
@@ -594,6 +596,7 @@ pub fn judged_since(conn: &Connection, miner: &str, since: f64, kind: &str) -> R
 }
 
 /// A passed upload taken back: its task, the credit it had, and the round it came from.
+#[derive(Clone, Debug)]
 pub struct Taken {
     pub task_id: String,
     pub credited: i64,
@@ -625,6 +628,49 @@ pub fn withdraw(conn: &Connection, miner: &str, kind: &str, since: f64, checked_
         )?;
     }
     Ok(rows.into_iter().map(|(_, task_id, credited, _, round_id)| Taken { task_id, credited, round_id }).collect())
+}
+
+/// A held crawl upload's verdict once its round closed: its row, the miner's totals and its final verdict say what it came to.
+/// Returns the report's key, empty when no row waited.
+pub fn settle(conn: &Connection, task_id: &str, upload_key: &str, verdict: &str, reason: &str, credited: i64, accounts: &Value) -> Result<String> {
+    conn.execute("UPDATE final_verdicts SET verdict = ?, credited = ? WHERE task_id = ? AND upload_key = ?", params![verdict, credited, task_id, upload_key])?;
+    let found = conn
+        .query_row(
+            "SELECT id, miner, kind, scored_at, report, report_key FROM validations WHERE task_id = ? AND upload_key = ? AND verdict = ? ORDER BY id DESC LIMIT 1",
+            params![task_id, upload_key, HELD],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, real(row, 3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)),
+        )
+        .optional()?;
+    let Some((id, miner, kind, scored_at, report, report_key)) = found else { return Ok(String::new()) };
+    let mut report: Map<String, Value> = serde_json::from_str(&report).unwrap_or_default();
+    report.insert("verdict".into(), verdict.into());
+    report.insert("reason".into(), reason.into());
+    report.insert("credited".into(), credited.into());
+    report.insert("accounts".into(), accounts.clone());
+    conn.execute(
+        "UPDATE validations SET verdict = ?, reason = ?, credited = ?, report = ? WHERE id = ?",
+        params![verdict, reason, credited, Value::Object(report).to_string(), id],
+    )?;
+    conn.execute("UPDATE verdict_counts SET n = n - 1 WHERE miner = ? AND verdict = ?", params![miner, HELD])?;
+    conn.execute("DELETE FROM verdict_counts WHERE miner = ? AND verdict = ? AND n <= 0", params![miner, HELD])?;
+    conn.execute("INSERT INTO verdict_counts VALUES (?, ?, 1) ON CONFLICT (miner, verdict) DO UPDATE SET n = n + 1", params![miner, verdict])?;
+    if id <= rolled_through(conn)? {
+        conn.execute(
+            "UPDATE miner_hours SET pass = pass + ?, fail = fail + ?, void = void + ?, credited = credited + ? WHERE miner = ? AND kind = ? AND hour = ?",
+            params![i64::from(verdict == "pass"), i64::from(verdict == "fail"), i64::from(verdict == "void"), credited, miner, kind, hour_of(scored_at)],
+        )?;
+    }
+    Ok(report_key)
+}
+
+/// The report a verdict row keeps, as written to its report key.
+pub fn report_of(conn: &Connection, task_id: &str, report_key: &str) -> Result<Option<Value>> {
+    let found: Option<String> = conn
+        .query_row("SELECT report FROM validations WHERE task_id = ? AND report_key = ? ORDER BY id DESC LIMIT 1", params![task_id, report_key], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(found.and_then(|report| serde_json::from_str(&report).ok()))
 }
 
 /// The last verdict row counted into the hourly totals; at first, the last one before the kept window.

@@ -34,13 +34,17 @@ uploads are paid on the counts you reported, at the rate your checks paid. A rep
 round's gate fails: 85% of the task's URLs, lowered in proportion when validators could load less of
 the round. A host most miners of a round could not load is neutral that round: its rows pay nobody
 and cost nobody, in the task API and in every validator's weights, so a site only one miner can load
-earns that miner nothing.
+earns that miner nothing. The gate and the neutral hosts are settled when the round closes, and so are
+your crawl uploads' accounts in the task API: until then a verdict shows as `held`, and no upload is
+paid for a host that turns neutral later in its round.
 
 In a validator's weights, a failed check earns nothing and costs the task's URLs, and takes back
 everything you uploaded since your last check that validator passed. In the task API, which sets
 your budget, strikes and lockouts, only a fail on facts of your file counts: duplicate rows, rows for
 URLs you were not given, text that does not come from its HTML, too few rows, a report claiming more
-pages than the file holds, or a file written again after completion. Such a fail takes back what the
+pages than the file holds, or an unreadable file. It must be reported alike by validators of two
+different owners (coldkeys), it is decided only at the upload's validation deadline, and a report whose
+row counts your own file contradicts is thrown out and counted against its validator. Such a fail takes back what the
 API counted since your last pass and unpublishes it, and your next 10 uploads are all checked; two
 among your last 10 take back your last 24 hours and lock you out for 48 hours. A fail on the live
 pages alone, a validator finding your text differs from the page it fetched, costs you nothing in the

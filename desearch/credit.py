@@ -18,6 +18,31 @@ REPORTED_SLACK = 0.02
 # this share of them were mostly error rows: most miners who got it could not load it.
 NEUTRAL_UPLOADS = 3
 NEUTRAL_SHARE = 0.5
+# Validators' samples a round needs before its loadability lowers the coverage gate; samples of these outcomes are pages the
+# validator could load, whatever the miner got.
+LOADABILITY_SAMPLES = 30
+LOADED_OUTCOMES = ("matched", "mismatched", "errors_unconfirmed")
+
+
+def round_gate(sampled: int, loaded: int) -> float:
+    """The share of its URLs a task must return: the gate, lowered in proportion when validators could load less of the round."""
+    if sampled >= LOADABILITY_SAMPLES and sampled > 0:
+        return COVERAGE_GATE * min(1.0, max(0.0, loaded / sampled))
+    return COVERAGE_GATE
+
+
+def covers(returned: int, assigned: int, gate: float) -> bool:
+    """Enough rows outside the round's neutral hosts for the task's URLs outside them; a task wholly on neutral hosts always does."""
+    return assigned <= 0 or returned >= gate * assigned
+
+
+def outside_hosts(
+    hosts: dict[str, list[int]], assigned: dict[str, int], neutral: set[str]
+) -> tuple[int, int]:
+    """Rows returned and URLs assigned on hosts that are not neutral."""
+    returned = sum(rows for host, (rows, _) in hosts.items() if host not in neutral)
+    urls = sum(count for host, count in assigned.items() if host not in neutral)
+    return returned, urls
 
 
 def neutral_hosts(checked: list[dict[str, list[int]]]) -> set[str]:

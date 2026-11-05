@@ -107,6 +107,7 @@ async fn a_failed_task_takes_its_urls_back_from_the_day() {
     let h = started(3).await;
     h.mine(&h.miner, 0).await;
     judged(&h, &h.validator, "fail", None, objective_fail()).await.1.unwrap();
+    h.past_deadline().await;
     assert_eq!(credit_of(&h, h.miner.ss58()).await, -3);
 }
 

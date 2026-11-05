@@ -48,7 +48,11 @@ pub async fn settled(h: &Harness, task: &str) -> String {
     while Instant::now() < deadline {
         lifecycle::settle_seeded(&h.state).await.unwrap();
         match h.state.validation.job(&h.redis, task).await.unwrap() {
-            None => return "finalized".into(),
+            None => {
+                // Finalized on the miner's own report; its round closes at once so its accounts settle.
+                h.settle().await;
+                return "finalized".into();
+            }
             Some(job) if job.get("picked").is_some_and(|p| p.is_string()) => return job["picked"].as_str().unwrap().into(),
             Some(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
@@ -109,7 +113,9 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
     let checked = task_id(&h.mine(&h.miner, 0).await);
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
     let verdict = judged(&h, &h.validator, "fail", Some(&checked), objective_fail()).await.1.unwrap();
-    assert_eq!(verdict["verdict"], "fail");
+    assert_eq!(verdict["verdict"], "pending", "a fail waits for the validation deadline");
+    assert_eq!(h.past_deadline().await, [checked.as_str()]);
+    assert_eq!(h.view(&checked).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
     let taken = h.public(&format!("/v1/miners/{hotkey}")).await.1["take_backs"].clone();
@@ -144,7 +150,7 @@ async fn an_upload_written_again_after_completion_charges_nothing_and_checks_the
         changed[count] = 0.into();
     }
     // Read without a pinned version, the key could have been rewritten by the bucket's owner or a relay that saw its link.
-    let verdict = h.validator.post(&format!("/v1/validation/{checked}/score"), changed).await.unwrap();
+    let verdict = h.settled_answer(h.validator.post(&format!("/v1/validation/{checked}/score"), changed).await.unwrap()).await;
     assert_eq!((verdict["verdict"].clone(), verdict["published"].clone()), (json!("void"), json!(false)));
     assert_eq!(h.view(&checked).await["score"]["reason"], UPLOAD_CHANGED);
     assert_ne!(h.view(&unchecked).await["score"]["verdict"], "withdrawn", "nothing is taken back");
@@ -172,6 +178,7 @@ async fn two_fails_among_the_last_ten_checks_lock_out_and_wipe_the_day() {
         let task = task_id(&h.mine(&h.miner, 0).await);
         settled(&h, &task).await;
         judged(&h, &h.validator, "fail", Some(&task), objective_fail()).await.1.unwrap();
+        h.past_deadline().await;
     }
     let asked = hotkey.clone();
     let until = h.state.db.run(move |conn| budgets::locked_until(conn, &asked, "crawl", desearch::time::now())).await.unwrap().expect("locked out");
@@ -183,8 +190,9 @@ async fn two_fails_among_the_last_ten_checks_lock_out_and_wipe_the_day() {
 async fn a_checked_upload_that_overstates_its_report_fails() {
     let h = started(3, 1.0).await;
     let task = task_id(&h.mine(&h.miner, 0).await);
-    let verdict = judged(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("errors_confirmed"), "")).await.1.unwrap();
-    assert_eq!(verdict["verdict"], "fail");
+    judged(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("errors_confirmed"), "")).await.1.unwrap();
+    h.past_deadline().await;
+    assert_eq!(h.view(&task).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&task).await["score"]["reason"], lifecycle::REPORTED_ROWS);
 }
 

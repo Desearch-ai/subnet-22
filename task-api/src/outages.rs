@@ -13,6 +13,8 @@ use crate::state::State;
 
 pub const STORAGE: &str = "storage";
 pub const FINALITY: &str = "finality";
+/// The host clock off the chain's: signed requests were refused for a time the miner did not get wrong.
+pub const CLOCK: &str = "clock";
 /// Where the storage probe writes; it is overwritten every probe.
 pub const PROBE_KEY: &str = "probe/storage.json";
 pub const KEEP_DAYS: f64 = 7.0;
@@ -104,6 +106,12 @@ pub fn prune(conn: &Connection, now: f64) -> Result<()> {
     Ok(())
 }
 
+/// Seconds the host clock runs ahead of the chain's, negative when behind: its time against the finalized block's timestamp plus
+/// the blocks made since, at `block_seconds` each, so the finalized block's lag is not taken for skew.
+pub fn host_offset(wall: f64, block_time: f64, best: i64, finalized: i64, block_seconds: f64) -> f64 {
+    wall - (block_time + (best - finalized).max(0) as f64 * block_seconds)
+}
+
 /// Writes the probe object and reads it back; the error says what failed.
 pub async fn probe_storage(state: &State, at: f64) -> Result<(), String> {
     let body = Bytes::from(json!({"at": at, "signer": state.signer()}).to_string());
@@ -118,6 +126,14 @@ pub async fn probe_storage(state: &State, at: f64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_clock_is_measured_against_the_newest_block_not_the_finalized_one() {
+        // Finalized two blocks behind best: its time is 24 s old on a clock that agrees.
+        assert_eq!(host_offset(1_000.0, 976.0, 102, 100, 12.0), 0.0);
+        assert_eq!(host_offset(1_300.0, 976.0, 102, 100, 12.0), 300.0, "a host five minutes ahead");
+        assert_eq!(host_offset(1_000.0, 1_036.0, 100, 100, 12.0), -36.0, "a host behind");
+    }
 
     #[test]
     fn a_claim_alive_during_an_outage_is_forgiven_and_one_after_it_is_not() {

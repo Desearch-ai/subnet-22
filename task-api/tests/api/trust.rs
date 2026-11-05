@@ -23,6 +23,13 @@ async fn verdict(h: &Harness, validator: &Client, verdict: &str, task: Option<&s
     judged(h, validator, verdict, task, overrides).await.1.expect("the vote is taken")
 }
 
+/// The only validator passes the oldest upload, leaving its round to close in its own time.
+async fn raw_pass(h: &Harness) -> Value {
+    let job = h.opened(Some(&h.validator), None).await;
+    let body = score("pass", job["urls"].as_array().map_or(0, Vec::len) as i64, "ok", None, job["urls"][0].as_str().unwrap_or_default());
+    h.validator.post(&format!("/v1/validation/{}/score", job["task_id"].as_str().unwrap_or_default()), body).await.expect("the vote is taken")
+}
+
 #[tokio::test]
 async fn one_active_validator_finalizes_alone() {
     let h = started(3).await;
@@ -146,6 +153,7 @@ async fn a_task_past_its_deadline_is_decided_on_the_votes_it_has() {
     job["deadline"] = (desearch::time::now() - 1.0).into();
     let _: () = h.redis.clone().set(format!("vjob:{task}"), job.to_string()).await.unwrap();
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap().len(), 1);
+    h.settle().await;
     assert_eq!(h.status(&task).await, "pass", "never voided for a slow validator");
 }
 
@@ -158,6 +166,7 @@ async fn an_upload_no_validator_voted_on_by_its_deadline_passes_on_its_report() 
     job["deadline"] = 0.into();
     let _: () = h.redis.clone().set(format!("vjob:{task}"), job.to_string()).await.unwrap();
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap(), [task.as_str()]);
+    h.settle().await;
     let view = h.view(&task).await;
     assert_eq!((view["status"].clone(), view["score"]["reason"].clone(), view["score"]["credited"].clone()), (json!("pass"), json!("unchecked"), json!(3)));
     assert_eq!(h.state.publish.depth(&h.redis).await.unwrap(), 1);
@@ -201,7 +210,7 @@ async fn disagreeing_with_the_other_validators_never_excludes_a_validator() {
     h.state.db.run(move |conn| (0..50).try_for_each(|_| validations::record_audit(conn, &[], std::slice::from_ref(&hotkey)))).await.unwrap();
     let job = h.opened(Some(&h.validator), Some(&task)).await;
     let scored = h.validator.post(&format!("/v1/validation/{task}/score"), score("pass", 3, "ok", None, job["urls"][0].as_str().unwrap())).await;
-    assert_eq!(scored.unwrap()["verdict"], "pass");
+    assert_eq!(h.settled_answer(scored.unwrap()).await["verdict"], "pass");
     assert_eq!(standing(&h).await[h.validator.ss58()]["excluded"], false);
 }
 
@@ -284,6 +293,7 @@ async fn two_reports_for_one_task_at_once_leave_one_verdict_and_its_report() {
     let (one, two) = tokio::join!(h.validator.post(&path, body.clone()), h.validator.post(&path, body));
     let outcomes: Vec<u16> = [one, two].into_iter().map(|r| r.map_or_else(|refused| refused.status, |_| 200)).collect();
     assert!(outcomes.contains(&200) && outcomes.iter().all(|s| [200, 409, 503].contains(s)), "{outcomes:?}");
+    h.settle().await;
     assert_eq!(h.page(h.view(&task).await["score"]["report_key"].as_str().unwrap()).unwrap()["verdict"], "pass");
     let health = h.public("/v1/health").await.1;
     assert_eq!((health["verdicts"]["pass"].clone(), health["verdicts"]["fail"].clone()), (json!(1), json!(0)));
@@ -301,6 +311,7 @@ async fn a_final_verdict_recorded_before_redis_closed_the_upload_is_paid_once() 
     let completed: f64 = h.redis.clone().zscore(VOPEN, &task).await.unwrap();
     let _: i64 = h.redis.clone().zrem(VOPEN, &task).await.unwrap();
     assert!(lifecycle::finalize_task(&h.state, &task, &job, f64::MAX).await.unwrap().is_none(), "closed under the verdict, so not finished");
+    h.settle().await;
     let once = h.public(&format!("/v1/miners/{}", h.rival.ss58())).await.1;
     assert_eq!(once["pools"]["crawl"]["verified"], 3, "finalized before Redis lost it");
     let _: i64 = h.redis.clone().zadd(VOPEN, &task, completed).await.unwrap();
@@ -355,7 +366,7 @@ async fn polling_after_a_round_closes_leaves_its_proof_intact() {
     let round_id = enqueued["round_id"].as_str().unwrap().to_string();
     h.revealed().await;
     h.mine(&h.miner, 0).await;
-    verdict(&h, &h.validator, "pass", None, json!({})).await;
+    raw_pass(&h).await;
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     let asked = round_id.clone();
     let anchored = h.state.db.run(move |conn| roundlog::anchored_root(conn, &asked)).await.unwrap();
@@ -383,7 +394,7 @@ async fn rounds_survive_a_restart_and_close_once_every_task_is_decided() {
     assert_eq!(restarted.crawl.depth(&h.redis).await.unwrap(), 1);
     assert!(lifecycle::close_finished(&h.state).await.unwrap().is_empty());
     h.mine(&h.miner, 0).await;
-    verdict(&h, &h.validator, "pass", None, json!({})).await;
+    raw_pass(&h).await;
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     assert!(!h.public(&format!("/v1/rounds/{round_id}")).await.1["closed_at"].is_null());
 }

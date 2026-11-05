@@ -184,7 +184,12 @@ class EmbedValidator(TaskChecker):
             await self.hand_back(task_id, "missing")
             return {}
         except UploadChanged:
-            log.warning("task=%s upload changed after it was completed", task_id)
+            # Reported so the task API keeps it; our ledger neither pays nor charges for it.
+            log.warning(
+                "task=%s storage served another version than the one pinned at completion:"
+                " evidence against storage, not the miner",
+                task_id,
+            )
             slices = None
         except DownloadFailed as exc:
             log.warning("%s, trying again later", exc)

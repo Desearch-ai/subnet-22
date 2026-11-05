@@ -60,10 +60,8 @@ def upload(rows=INPUTS, vector=lambda row: encode_vector(truth(row["text"]))) ->
 
 def but(text_ids: set[str], raw: bytes):
     """Honest vectors except raw for the given texts."""
-    return (
-        lambda row: raw
-        if row["text_id"] in text_ids
-        else encode_vector(truth(row["text"]))
+    return lambda row: (
+        raw if row["text_id"] in text_ids else encode_vector(truth(row["text"]))
     )
 
 
@@ -298,9 +296,9 @@ def test_a_sampled_vector_that_is_not_a_finite_unit_vector_is_malformed(raw):
     assert (result["malformed"], result["matched"]) == (1, EMBED_SAMPLES - 1)
     (sample,) = [s for s in result["samples"] if s["outcome"] == "malformed"]
     assert (sample["text_id"], sample["similarity"]) == (bad, None)
-    assert len(reference.asked) == EMBED_SAMPLES - 1, (
-        "only the well-formed are recomputed"
-    )
+    assert (
+        len(reference.asked) == EMBED_SAMPLES - 1
+    ), "only the well-formed are recomputed"
 
 
 def test_a_broken_vector_outside_the_sample_is_never_read():
@@ -338,9 +336,9 @@ def test_the_upload_is_read_only_in_the_version_its_completion_pinned():
 
     assert result["verdict"] == "pass"
     assert {pin for path, pin in pins if path == "/upload"} == {ETAG}
-    assert [pin for path, pin in pins if path == "/input"] == [None], (
-        "the input is the task API's file, not the miner's upload"
-    )
+    assert [pin for path, pin in pins if path == "/input"] == [
+        None
+    ], "the input is the task API's file, not the miner's upload"
 
 
 def test_a_manifest_without_an_etag_reads_without_if_match():
@@ -357,7 +355,7 @@ def test_a_manifest_without_an_etag_reads_without_if_match():
 @pytest.mark.parametrize(
     "refused", [412, 403], ids=["precondition failed", "closed when rewritten"]
 )
-def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters(
+def test_an_upload_changed_after_its_completion_is_reported_but_neither_pays_nor_costs(
     refused,
 ):
     reference = Reference()
@@ -389,8 +387,9 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters(
     check = ledger.db.execute(
         "SELECT kind, verdict, credited, assigned FROM checks"
     ).fetchone()
-    assert check == ("embed", "fail", 0, 1000)
-    assert ledger.embed_paid(200.0)["5Miner"].amount == -1000
+    # Evidence against storage, kept by the task API; this validator neither pays nor charges the miner for it.
+    assert check == ("embed", "neutral", 0, 1000)
+    assert "5Miner" not in ledger.embed_paid(200.0)
 
 
 def test_a_pinned_read_refused_after_its_task_closed_is_missing_not_changed():
@@ -498,7 +497,6 @@ def test_a_validator_without_its_own_model_server_does_not_vote_on_embed_uploads
     monkeypatch.setattr(validator, "EmbedValidator", refuse)
     monkeypatch.setattr(validator, "TaskApiClient", refuse)
     asyncio.run(made.check_embed_tasks())
-
 
 
 def test_a_validator_checks_only_the_models_its_own_server_serves():

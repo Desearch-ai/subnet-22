@@ -27,6 +27,14 @@ its block with it. Wall time is kept only for display and for comparing with sto
 | An active validator | reported within `TASK_API_ACTIVE_S` (3600 s) |
 | Strikes, lockouts, take-backs, shares, the error share | as in the tables below, in rule time |
 
+Signed requests carry their sender's time (`X-Timestamp`), which must be within 60 s of the API's. The
+API times them by its host clock only while that clock agrees with the chain's: on every copy, every 15 s
+(and on the leading copy every 30 s), it compares its clock with the finalized block's own timestamp
+(`Timestamp::Now`) plus 12 s for each block made since. Once the two differ by more than
+`TASK_API_CLOCK_SKEW_S` (30 s; 0 turns this off), requests are timed by the chain's clock instead, so a
+host clock that jumps never refuses a miner whose own clock is right, and the leading copy opens a
+**clock** outage (below).
+
 ## Outages
 
 A claim that ends without an upload costs its miner nothing, as when the API restarted while it was
@@ -36,10 +44,13 @@ held, when it was alive during an outage the API saw on its own side:
   bucket and reads it back; at once, too, when storage fails a miner's completion. A failed probe opens
   an outage dated from the last probe that worked; the next probe that works closes it.
 - **finality**: the finalized block more than `TASK_API_FINALITY_STALL_BLOCKS` (10) behind the best one.
+- **clock**: the host clock more than `TASK_API_CLOCK_SKEW_S` (30 s) off the chain's, dated from the last
+  check that agreed: requests refused for their timestamp before the check caught it were refused for no
+  fault of their miner. The check that agrees again closes it.
 
 A claim is forgiven when any part of it, from its start to its last block, falls in an outage. Its
-receipt names the cause (`restart`, `storage_outage`, `finality_outage`). Outages are listed at
-`GET /v1/outages`.
+receipt names the cause (`restart`, `storage_outage`, `finality_outage`, `clock_outage`). Outages are
+listed at `GET /v1/outages` and logged, so a replay forgives the same lapses.
 
 ## Rounds
 
@@ -87,6 +98,16 @@ change at all. Agreeing reports of it make the upload neutral (`upload_changed`)
 validators' majority failed it, the miner's next uploads are checked. A report whose facts the task could not have produced (a sampled URL outside the task, more samples
 than rows, rows per host that do not add up, …) is refused and recorded as a **wrong report**.
 
+When the row counts could change an upload's accounts (its reports fail it, disagree, fall short of the
+quorum, or leave URLs unreturned), the API counts them itself off the version every validator was sent:
+rows for the task's URLs, repeats of them, rows for other URLs, and error rows, as the validators'
+scoring counts them from the file's `url` and `error` columns. A report whose counts the file
+contradicts is left out of the accounts, and when its counts would have charged the miner (more repeats
+or other URLs, fewer rows or more error rows than the file has) it is a **wrong report** too. The counts
+are logged with the verdict (`recount`, `contradicted`, `wrong_reports`), for anyone holding the public
+file to count again and a replay to apply. Facts the file cannot settle (text not from its HTML, a file
+one validator could not read) stay as the reports agree on them.
+
 The **live-page comparison** (sampled pages fetched again and compared) is each validator's own
 judgment. It decides only what is published and how that validator weights the miner; it never charges
 a miner and never pays it in the API's count.
@@ -101,9 +122,17 @@ An upload's accounts are judged on its facts:
    re-extracted rows);
    `coverage` (rows returned under the round's gate); `reported_rows` (the miner reported more content
    rows than the file holds, past 2% of the task).
-3. A fail charges only when at least `TASK_API_OBJECTIVE_QUORUM` (1) reports carry the same facts;
-   below that it is neutral (`below_quorum`).
+3. A fail charges only when validators of at least `TASK_API_OBJECTIVE_QUORUM` (2) distinct coldkeys
+   reported the same facts (a hotkey off the metagraph counts as its own); two hotkeys of one owner are
+   one. Below that it is neutral (`below_quorum`): one validator alone never charges a miner. A replay
+   counts the owners from the metagraph the log holds, not from the coldkeys the API states.
 4. Otherwise it passes.
+
+Reports that fail an upload, or would with one more owner agreeing, are decided only at the upload's
+validation deadline: which validators count as active is Redis's to say, not the log's, and a report
+still to come could contradict the facts. An upload whose reports pass it may be decided as soon as every
+active validator voted. A replay flags an embed fail decided before its deadline; a crawl fail on reports
+taken before the deadline settles as neutral (`finalized_early`) when its round closes.
 
 An upload no check drew is judged on the miner's own signed report: it fails `coverage` when its rows
 are under the round's gate, else passes. Embed uploads: `vectors_malformed`, `vectors_missing`
@@ -119,6 +148,9 @@ Validators without their own model do not check embed uploads.
 | fail | halves | yes | minus its URLs outside neutral hosts | a fail: everything since the last pass taken back; the next 10 uploads checked; two among the last 10 take the last day and lock out for 48 h |
 | neutral | — | — | — | none; the task goes to another miner |
 
+A crawl upload's row above is applied when its **round closes**, not at its verdict: see below. Until
+then its verdict is `held`, its credit 0, and its report shows the round as it stood (`accounts`).
+
 **Credit** (the API's count of work, `GET /v1/shares`): content rows plus error rows at the share of
 the miner's failures checks reproduced over 72 h, `(confirmed + 1) / (judged + 2)`, the upload's own
 checks included; an embed pass, the characters it was assigned.
@@ -129,8 +161,7 @@ miner, whatever its accounts.
 
 ## Loadability and neutral hosts
 
-For each crawl round the API keeps, from the checked uploads finalized so far (each upload counting
-toward its own judgment):
+For each crawl round the API keeps, from its checked uploads:
 
 - **loadability**: the share of validators' samples whose page the validator could load (`matched`,
   `mismatched`, `errors_unconfirmed` of all samples), once at least `TASK_API_LOADABILITY_SAMPLES` (30)
@@ -144,8 +175,20 @@ neutral host's URLs and rows are left out of every rule and count for everyone t
 no pay. An upload whose rows per host are unknown (unchecked, or an older validator) is scaled to its
 task's share of URLs outside neutral hosts. `GET /v1/rounds/{id}` publishes it all as `loadability`.
 
-Each validator applies the same neutral rule (`desearch.credit.neutral_hosts`) to its own checks when
-it weighs miners, so a host only the owner's miner can load pays nobody.
+The gate and the neutral hosts are settled once, when the **round closes** (every task finished or
+dropped): each crawl upload of the round is held at its verdict and settled then, in the order its
+verdict was finalized, on the round's final loadability and neutral hosts. Its budget, strike, credit,
+coverage and check (take-backs, rechecks, the full penalty) are applied in the transaction that closes the
+round; what is published, and whether the task goes to another miner, follow the verdict at once. So no
+upload is paid for a host that turned neutral after its verdict, or failed on a gate the round later
+lowered. The `close` entry of the log states the round's final view (`round`: samples, loadability,
+`gate`, hosts, `neutral`) and each upload's accounts (`settled`), and a replay works both out again.
+Embed uploads are settled at their verdict, as nothing of theirs depends on the round.
+
+Each validator judges coverage the same way when it weighs miners: on the round's gate and neutral hosts
+as the `close` entry of the signed log states them, or, while the round is open, as its own checks of the
+round show them (`desearch.credit.round_gate`, `neutral_hosts`), so a host only the owner's miner can
+load pays nobody.
 
 ## Budget and on-chain incentive
 
@@ -167,5 +210,6 @@ that voted locks it out for a week.
 ## Validators
 
 A validator is no longer measured against the others. It is refused only while it has sent
-`TASK_API_WRONG_REPORTS` (5) or more wrong reports within `TASK_API_WRONG_REPORTS_WINDOW_S` (a day).
-How often it agreed with the majority is still shown on its page.
+`TASK_API_WRONG_REPORTS` (5) or more wrong reports within `TASK_API_WRONG_REPORTS_WINDOW_S` (a day):
+reports its task could not have produced, and reports whose row counts the upload's own file contradicts
+in the miner's disfavour. How often it agreed with the majority is still shown on its page.

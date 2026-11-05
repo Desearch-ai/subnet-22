@@ -225,7 +225,9 @@ async fn a_failed_embed_task_strikes_only_the_embed_pool() {
     let task = embed_task(&h, &h.miner).await;
     h.opened(Some(&h.validator), None).await;
     let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "malformed", "vectors_malformed")).await.unwrap();
-    assert_eq!(scored["verdict"], "fail");
+    assert_eq!(scored["verdict"], "pending", "a fail waits for the validation deadline");
+    h.past_deadline().await;
+    assert_eq!(h.view(&task_id(&task)).await["score"]["verdict"], "fail");
     assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_malformed".to_string())]);
     assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
@@ -250,7 +252,10 @@ async fn one_validators_model_alone_cannot_fail_an_embed_upload_and_two_independ
     assert_eq!(score(&h, &next, embed_score("fail", "mismatched", "vectors_mismatch")).await["verdict"], "pending");
     let path = format!("/v1/validation/{next}/score");
     let second = h.other_validator.post(&path, embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
-    assert_eq!((second["verdict"].clone(), second["reason"].clone()), (json!("fail"), json!("vectors_mismatch")));
+    assert_eq!(second["verdict"], "pending", "both voted, but a fail waits for the validation deadline");
+    h.past_deadline().await;
+    let view = h.view(&next).await;
+    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("vectors_mismatch")));
     assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
 }
 
@@ -599,8 +604,9 @@ async fn a_failed_embed_check_takes_back_the_unchecked_embed_uploads_since_the_l
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
     assert_eq!(rechecks(&h).await, (0, sampling::RECHECK_UPLOADS - 1));
 
-    let verdict = score(&h, &checked, embed_score("fail", "malformed", "vectors_malformed")).await;
-    assert_eq!(verdict["verdict"], "fail");
+    score(&h, &checked, embed_score("fail", "malformed", "vectors_malformed")).await;
+    h.past_deadline().await;
+    assert_eq!(h.view(&checked).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, EMBED).await, 0, "its characters are taken back");
     let refused: Vec<String> = h.redis.clone().zrange(PWITHDRAWN, 0, -1).await.unwrap();
@@ -624,6 +630,7 @@ async fn a_second_embed_fail_among_the_last_checks_costs_the_embed_day_and_locks
         let task = task_id(&embed_task(&h, &h.miner).await);
         assert_eq!(settled(&h, &task).await, sampling::RECHECK);
         score(&h, &task, embed_score("fail", "malformed", "vectors_malformed")).await;
+        h.past_deadline().await;
     }
     let (crawl, embed) = locked(&h).await;
     assert!(embed.expect("locked out of embed") - now() > 47.0 * 3600.0);

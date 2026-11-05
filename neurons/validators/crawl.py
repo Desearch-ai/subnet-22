@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import aiohttp
 
 from desearch.kinds import CRAWL
+from neurons.validators.ledger import view_of
 from neurons.validators.scoring import (
+    COVERAGE,
     MATCH_RATIO,
     MIN_SAMPLES,
     NOT_FETCHED,
@@ -32,10 +34,14 @@ from neurons.validators.tasks import (
 )
 
 PageFetcher = Callable[..., Awaitable[FetchedPage]]
+# A closed round's view as the task API's signed log settled it, by round id; None while the round is open.
+RoundViews = Callable[[str], Mapping | None]
 
 SCORE_TIMEOUT_S = 300.0
 PAGE_TIMEOUT_S = 60.0
 CHECK_ATTEMPTS = 2
+# Kept in this validator's ledger only; the vote sent to the task API carries the facts and the verdict.
+LEDGER_ONLY = ("assigned_hosts", "content_verdict", "content_reason")
 
 log = logging.getLogger("validator")
 
@@ -67,6 +73,7 @@ class CrawlValidator(TaskChecker):
         storage_url: str = "",
         seeds=None,
         signer: str = "",
+        round_views: RoundViews | None = None,
     ):
         super().__init__(api, http, max_download, ledger, storage_url, seeds, signer)
         self.fetcher = fetcher
@@ -74,6 +81,17 @@ class CrawlValidator(TaskChecker):
         self.match_ratio = match_ratio
         self.score_timeout = score_timeout
         self.memory_mb = memory_mb
+        self.round_views = round_views
+
+    def coverage_view(self, job: dict) -> tuple[float, set[str]]:
+        """The gate and neutral hosts the upload's coverage is judged on: its round's, as the task API's signed log
+        settled them once the round closed, else as this validator's own checks of the round show them so far.
+        """
+        round_id = job.get("round_id") or ""
+        settled = self.round_views(round_id) if self.round_views and round_id else None
+        if self.ledger is not None:
+            return self.ledger.round_view(round_id, settled)
+        return view_of(settled) if settled else (COVERAGE, set())
 
     async def check(self, job: dict) -> dict | None:
         try:
@@ -83,7 +101,12 @@ class CrawlValidator(TaskChecker):
             await self.hand_back(job["task_id"], "missing")
             return {}
         except UploadChanged:
-            log.warning("task=%s upload changed after it was completed", job["task_id"])
+            # Reported so the task API keeps it and never publishes the upload; our ledger neither pays nor charges for it.
+            log.warning(
+                "task=%s storage served another version than the one pinned at completion:"
+                " evidence against storage, not the miner",
+                job["task_id"],
+            )
             result = empty_result(set(job["urls"]), UPLOAD_CHANGED)
         except DownloadFailed as exc:
             log.warning("%s, trying again later", exc)
@@ -121,7 +144,9 @@ class CrawlValidator(TaskChecker):
         else:
             self.scoring_worked()
 
-        await self.submit_verdict(job, result)
+        await self.submit_verdict(
+            job, {k: v for k, v in result.items() if k not in LEDGER_ONLY}
+        )
         self.note_verdict(job, result)
         comparable = result["matched"] + result["mismatched"]
         log.info(
@@ -162,6 +187,7 @@ class CrawlValidator(TaskChecker):
         return {**result, "took_ms": int((time.monotonic() - started) * 1000)}
 
     async def run_check(self, job: dict, data: bytes) -> dict:
+        gate, neutral = self.coverage_view(job)
         session = ScoringProcess(
             data,
             job["urls"],
@@ -170,6 +196,8 @@ class CrawlValidator(TaskChecker):
             self.match_ratio,
             self.score_timeout,
             self.memory_mb,
+            gate,
+            sorted(neutral),
         )
         try:
             await session.start()

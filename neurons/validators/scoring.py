@@ -6,12 +6,13 @@ import io
 import itertools
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, fields
 from urllib.parse import urlsplit
 
 import pyarrow.parquet as pq
 
+from desearch.credit import COVERAGE_GATE, covers
 from desearch.extraction import EXTRACTION_V2, Page, extract, looks_blocked
 from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
 from desearch.fetch import page_url
@@ -41,7 +42,8 @@ OUTCOMES = (
     ERRORS_UNCONFIRMED,
     NOT_FETCHED,
 )
-COVERAGE = 0.85
+# The gate a round starts at; validators' loadability of the round lowers it (desearch.credit.round_gate).
+COVERAGE = COVERAGE_GATE
 MIN_SAMPLES = 10
 SAMPLE_RATE = 0.02
 # Share of compared samples that must match; set from calibration runs.
@@ -184,6 +186,14 @@ def rows_by_host(kept: dict[str, dict]) -> dict[str, list[int]]:
         counts = hosts.setdefault(host_of(url), [0, 0])
         counts[0] += 1
         counts[1] += row["error"] is not None
+    return hosts
+
+
+def assigned_by_host(urls: list[str]) -> dict[str, int]:
+    """The task's URLs per host, so coverage can leave out the round's neutral hosts."""
+    hosts: dict[str, int] = {}
+    for url in set(urls):
+        hosts[host_of(url)] = hosts.get(host_of(url), 0) + 1
     return hosts
 
 
@@ -456,12 +466,16 @@ def decide_verdict(
     assigned: int,
     checked: int,
     match_ratio: float,
+    covered: bool | None = None,
 ) -> tuple[str, str]:
+    """The verdict in rule order; `covered` says whether the rows outside the round's neutral hosts reach its gate, and
+    None leaves coverage out, as the ledger reads a check before it knows the round's final gate.
+    """
     compared = counts[MATCHED] + counts[MISMATCHED]
     judged_errors = counts[ERRORS_CONFIRMED] + counts[ERRORS_UNCONFIRMED]
     if counts["duplicates"] or counts.get("unassigned"):
         return "fail", "extra_rows"
-    if assigned and counts["returned"] / assigned < COVERAGE:
+    if covered is False:
         return "fail", "coverage"
     if counts["reextract_mismatch"] > REEXTRACT_TOLERANCE * checked:
         return "fail", "text_not_from_html"
@@ -498,8 +512,11 @@ def empty_result(wanted: set[str], reason: str) -> dict:
         "error_rows": 0,
         "integrity_checked": 0,
         "hosts": {},
+        "assigned_hosts": assigned_by_host(list(wanted)),
         "verdict": "fail",
         "reason": reason,
+        "content_verdict": "fail",
+        "content_reason": reason,
         "samples": [],
         "rejected": [],
     }
@@ -512,7 +529,12 @@ def score(
     seed: str,
     min_samples: int,
     match_ratio: float,
+    gate: float = COVERAGE,
+    neutral: Collection[str] = (),
 ) -> dict:
+    """The check of one upload. Coverage counts only rows and URLs outside the round's neutral hosts, against the round's
+    gate; the verdict without it is kept too, for the ledger to judge coverage again once the round's gate is final.
+    """
     wanted = set(assigned)
     if rows is None:
         return empty_result(wanted, "unreadable")
@@ -534,7 +556,18 @@ def score(
         "reextract_mismatch": len(not_from_html),
     }
     error_rows = sum(1 for row in kept.values() if row["error"] is not None)
-    verdict, reason = decide_verdict(counts, len(wanted), checked, match_ratio)
+    hosts = rows_by_host(kept)
+    assigned_hosts = assigned_by_host(assigned)
+    left_out = set(neutral)
+    returned_out = sum(
+        rows for host, (rows, _) in hosts.items() if host not in left_out
+    )
+    assigned_out = sum(n for host, n in assigned_hosts.items() if host not in left_out)
+    covered = covers(returned_out, assigned_out, gate)
+    verdict, reason = decide_verdict(counts, len(wanted), checked, match_ratio, covered)
+    content_verdict, content_reason = decide_verdict(
+        counts, len(wanted), checked, match_ratio
+    )
     doubted = {
         sample["url"]
         for sample in samples
@@ -544,9 +577,12 @@ def score(
         **counts,
         "error_rows": error_rows,
         "integrity_checked": checked,
-        "hosts": rows_by_host(kept),
+        "hosts": hosts,
+        "assigned_hosts": assigned_hosts,
         "verdict": verdict,
         "reason": reason,
+        "content_verdict": content_verdict,
+        "content_reason": content_reason,
         "samples": samples,
         "rejected": sorted(doubted | set(not_from_html)),
     }

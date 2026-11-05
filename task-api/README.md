@@ -169,9 +169,9 @@ dropped, reordered or forked without every later hash changing.
 | `snapshot` | when | the digest of the accounts, and the accounts in a blob named by it (one at the first start, then every `TASK_API_SNAPSHOT_EVERY_S`) |
 | `requests` | the hash of every authenticated request since the last, and the block | — |
 | `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body; a completion's Object Lock (version, until, whether it held); a report its task could not have produced (`wrong_report`) | the receipts (each naming the request's hash), the job, the vote, the budget (as the incentive caps it), the round's commitment, or why it was refused |
-| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`) |
+| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the file's row counts when they were counted and the reports they contradict, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md) (`held` for a crawl upload until its round closes), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`, `clock_outage`) |
 | `probe`, `outage` | the storage canary's probe: when, the block, whether it passed and the step that failed; an outage's start or end, its cause and block | — |
-| `reveal`, `close`, `embed_round`, `recommit` | the round, its seed block and that block's hash; a later seed block for a commitment not anchored in time | the seed, the serve order, the batches the seed cut, the round log's Merkle root, the new commitment |
+| `reveal`, `close`, `embed_round`, `recommit` | the round, its seed block and that block's hash; a later seed block for a commitment not anchored in time | the seed, the serve order, the batches the seed cut, the round log's Merkle root, the new commitment; at a crawl round's close, its final loadability, gate and neutral hosts and every held upload's accounts |
 | `metagraph` | the neurons and their stakes, when who may vote changed | the validators |
 | `prune`, `shares`, `anchor`, `receipt` | | the shares as served, an anchor the chain confirmed, receipts signed elsewhere |
 
@@ -205,8 +205,12 @@ functions on an SQLite of its own, from the first `snapshot`:
 - every logged request must be signed by the hotkey it names, and every blob must hash to its name;
 - a validator's vote is built again from its signed report; a verdict is judged again under the
   [rules](../docs/rules.md) from the votes of the voters the entry names, all of which must have been
-  reported and none left out, and the round's loadability and neutral hosts as the log built them; a report
-  its task could not have produced must be counted against its validator;
+  reported and none left out, the reports the logged row counts contradict left out, owners counted by the
+  coldkeys the logged metagraph names, and the round's loadability and neutral hosts as the log built them; a
+  report its task could not have produced, or whose counts the file contradicts against the miner, must be
+  counted against its validator; an embed fail must not be decided before its deadline;
+- a crawl round's close settles its held uploads in the order they were finalized, on the round's final view,
+  and the accounts and the view must equal the ones the `close` entry states;
 - a crawl round's commitment is worked out again from the URLs of its signed request, its batches cut again
   from that set and its seed, and it must have been anchored before its seed block;
 - whether a seeded upload is checked is drawn again from the seed block's hash, the counters and the
@@ -253,8 +257,8 @@ Each validator also fetches sampled pages and compares their text with the miner
 is its own: it sets its weights, decides with the other validators' what is published, and sends a
 task the majority did not pass to another miner, but it never charges the miner or changes its
 budget. A validator's own timeout or crash decides nothing. The API counts a passing task's content
-rows, and its error rows at the share checks could reproduce, outside the round's neutral hosts.
-[Rules](../docs/rules.md) has every rule.
+rows, and its error rows at the share checks could reproduce, outside the round's neutral hosts, once
+the round has closed and its neutral hosts are settled. [Rules](../docs/rules.md) has every rule.
 
 Rows a check turned down are not published even when the task passes: a sampled page whose text
 differs from the validator's fetch, a row whose text does not re-extract from its HTML, and a page
@@ -494,7 +498,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on |
 | `TASK_API_STORAGE_PROBE_S` | 30 | seconds between storage probes; a failed one opens an outage that forgives the claims alive in it |
 | `TASK_API_FINALITY_STALL_BLOCKS` | 10 | blocks finality may fall behind the best block before the claims alive then are forgiven |
-| `TASK_API_OBJECTIVE_QUORUM` | 1 | reports with the same facts a fail on the file needs before it charges the miner |
+| `TASK_API_CLOCK_SKEW_S` | 30 | seconds the host clock may be off the finalized block's timestamp (plus the blocks since) before signed requests are timed by the chain and a clock outage forgives the claims alive; 0 turns it off |
+| `TASK_API_OBJECTIVE_QUORUM` | 2 | validators of distinct coldkeys whose reports must carry the same facts before a fail on the file charges the miner |
 | `TASK_API_EMBED_REFERENCES` | 2 | validators of distinct coldkeys whose own models must find the same mismatch before an embed upload fails on it |
 | `TASK_API_LOADABILITY_SAMPLES` | 30 | validator samples a round needs before its loadability lowers the coverage gate |
 | `TASK_API_NEUTRAL_UPLOADS` | 3 | checked uploads with rows of a host a round needs before the host can be neutral |

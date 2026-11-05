@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 use crate::budgets::{self, CRAWL, EMBED, KEEP_H, SHARE_WINDOW_H};
 use crate::chain::Neuron;
 use crate::journal::{self, Break};
-use crate::lifecycle::{self, kind_of, text, Basis, Given, Kept};
+use crate::lifecycle::{self, kind_of, text, Basis, Given, Kept, Sifted};
 use crate::manifest::seed_from_hash;
 use crate::rounds::{self, Batch, Url};
 use crate::verdicts::{build_embed_vote, build_vote, decide, Decision};
@@ -244,6 +244,7 @@ impl Replay {
                 "report" => self.report(entry, blobs)?,
                 "settle" => self.settle(entry)?,
                 "finalize" => self.finalize(entry)?,
+                "close" => self.close(entry)?,
                 "release" => self.close_upload(text(&entry["input"], "task_id"))?,
                 "take_back" => self.take_back(entry)?,
                 "recheck" => self.recheck(entry)?,
@@ -608,6 +609,7 @@ impl Replay {
         job["picked"] = input["picked"].clone();
         let params = self.params()?;
         let mode = text(input, "mode").to_string();
+        let mut sifted = Sifted::default();
         let (basis, decision) = match mode.as_str() {
             "checked" => {
                 let voters: Vec<String> = input["voters"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
@@ -635,7 +637,25 @@ impl Replay {
                     return Ok(());
                 }
                 let decision = lifecycle::held_to_report(&job, decide(&votes, false, true));
-                (Basis::Checked(votes), decision)
+                // The file's row counts, as the API logged them, leave out the reports they contradict; anyone holding the
+                // public file can count them again.
+                let named = |list: &Value| -> Vec<String> { list.as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() };
+                let kept = match serde_json::from_value::<Option<rules::Counted>>(input["recount"].clone()).ok().flatten() {
+                    Some(counted) => {
+                        let (kept, contradicted, wrong) = rules::sift(&votes, &counted);
+                        self.compare(entry, "the reports the file's rows contradict", &input["contradicted"], json!(contradicted));
+                        self.compare(entry, "the wrong reports the file's rows show", &input["wrong_reports"], json!(wrong));
+                        sifted = Sifted { counted: Some(counted), contradicted, wrong };
+                        kept
+                    }
+                    None => {
+                        if !named(&input["contradicted"]).is_empty() || !named(&input["wrong_reports"]).is_empty() {
+                            self.diverge(entry, FRAUD, "reports were left out without the file's rows", input["contradicted"].clone(), Value::Null);
+                        }
+                        votes
+                    }
+                };
+                (Basis::Checked(kept), decision)
             }
             "unchecked" => {
                 let vote = if kind_of(&job) == EMBED {
@@ -648,18 +668,21 @@ impl Replay {
             }
             _ => (Basis::Unscored, Decision::last(lifecycle::unscored_vote(), Vec::new())),
         };
-        // Each voter counts under its coldkey, as the metagraph the log holds names it.
-        let coldkeys: HashMap<String, String> = input["coldkeys"]
+        // Each voter counts under its coldkey as the metagraph the log holds names it, whatever coldkey the API stated: a quorum of
+        // distinct owners is counted from the log, so two hotkeys of one owner cannot pass for two.
+        let stated: HashMap<String, String> = input["coldkeys"]
             .as_object()
             .into_iter()
             .flatten()
             .map(|(hotkey, coldkey)| (hotkey.clone(), coldkey.as_str().unwrap_or_default().to_string()))
             .collect();
         let known = self.meta("coldkeys")?.unwrap_or(Value::Null);
-        for (hotkey, coldkey) in &coldkeys {
+        let mut coldkeys = stated.clone();
+        for (hotkey, coldkey) in &stated {
             let expected = known[hotkey.as_str()].as_str().unwrap_or(hotkey.as_str());
             if !known.is_null() && coldkey != expected {
                 self.diverge(entry, SUSPECT, "a voter's coldkey is not the one the metagraph names", coldkey.clone().into(), expected.into());
+                coldkeys.insert(hotkey.clone(), expected.to_string());
             }
         }
         let vote = decision.vote().clone();
@@ -674,18 +697,37 @@ impl Replay {
         }
         let report = validations::build_report(task_id, &job, text(&vote, "validator"), &result, &decision.votes, float(&output["scored_at"]));
         let candidate = lifecycle::publish_candidate(&result).then(|| json!({}));
-        let given = Given { basis: &basis, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
+        let given = Given { basis: &basis, sifted: &sifted, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
         let kept = Kept { report: &report, publish: candidate.as_ref(), details: None };
         let Some(settled) = lifecycle::finalize_accounts(&self.conn, task_id, &job, &decision, given, kept, at)? else {
             self.diverge(entry, FRAUD, "a second verdict on one upload", input.clone(), Value::Null);
             return Ok(());
         };
-        let checked = if lifecycle_picked(&job) { lifecycle::check_accounts(&self.conn, &job, &basis, &settled.judged, &published, at)? } else { None };
+        // Only the deadline closes the reports a fail rests on; a crawl upload's early fail is left to its round's close.
+        let due = job.get("deadline").and_then(Value::as_f64).is_none_or(|deadline| at >= deadline);
+        if !settled.held && !due && matches!(basis, Basis::Checked(_)) && settled.judged.outcome == rules::Outcome::Fail {
+            self.diverge(entry, FRAUD, "a fail on validators' reports was finalized before its validation deadline", job["deadline"].clone(), at.into());
+        }
+        let checked =
+            if lifecycle_picked(&job) && !settled.held { lifecycle::check_accounts(&self.conn, &job, &basis, &settled.judged, &published, at)? } else { None };
         let ours = lifecycle::finalized_output(&settled, &decision, checked.as_ref());
         let names = ["verdict", "reason", "credited", "budget", "publish", "agreed", "disagreed", "taken", "penalty"];
         let pick = |from: &Value| Value::Object(names.iter().map(|name| (name.to_string(), from.get(*name).cloned().unwrap_or(Value::Null))).collect());
         self.compare(entry, "the verdict and its accounts", &pick(output), pick(&ours));
         self.close_upload(task_id)
+    }
+
+    /// A round closed: its held crawl uploads settle, in the order they were finalized, on the round's final view.
+    fn close(&mut self, entry: &Value) -> Result<()> {
+        let (round_id, at, params) = (text(&entry["input"], "round_id"), float(&entry["at"]), self.params()?);
+        let (round, settled) = lifecycle::settle_round(&self.conn, round_id, &params, at)?;
+        let output = &entry["output"];
+        let ours: Vec<Value> = settled.iter().map(lifecycle::RoundUpload::logged).collect();
+        self.compare(entry, "the accounts the round's close settled", &output["settled"], json!(ours));
+        if !settled.is_empty() || output.get("round").is_some() {
+            self.compare(entry, "the round's final loadability and neutral hosts", &output["round"], lifecycle::round_logged(&round, &params));
+        }
+        Ok(())
     }
 
     fn close_upload(&mut self, task_id: &str) -> Result<()> {

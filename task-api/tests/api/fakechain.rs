@@ -1,7 +1,7 @@
 //! A JSON-RPC stand-in for subtensor: blocks every `block_seconds` on the clock, calls counted, and refusals on demand.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,6 +21,8 @@ pub struct FakeChain {
     pub lying: AtomicBool,
     /// The finalized head trails the best block by this many blocks.
     pub finality_lag: i64,
+    /// Milliseconds the time block authors put in blocks runs behind this machine's clock: the API's host clock seen ahead.
+    behind_ms: AtomicI64,
     calls: Mutex<HashMap<String, usize>>,
     started: Instant,
     first_block: i64,
@@ -36,6 +38,7 @@ impl FakeChain {
             refusing: AtomicBool::new(false),
             lying: AtomicBool::new(false),
             finality_lag: 2,
+            behind_ms: AtomicI64::new(0),
             calls: Mutex::default(),
             started: Instant::now(),
             first_block,
@@ -62,6 +65,18 @@ impl FakeChain {
         self.lying.store(lying, Ordering::SeqCst);
     }
 
+    /// Block authors' clocks this many seconds behind this machine's, as if the API's host clock had jumped ahead.
+    pub fn set_behind(&self, seconds: f64) {
+        self.behind_ms.store((seconds * 1000.0) as i64, Ordering::SeqCst);
+    }
+
+    /// `Timestamp::Now` of a block, in milliseconds: when it was made, by its author's clock, on a chain of 12-second blocks
+    /// whose newest block was made just now, however fast this one counts.
+    fn block_time_ms(&self, block: i64) -> u64 {
+        let made = desearch::time::now() - (self.best() - block) as f64 * task_api::seeds::BLOCK_SECONDS;
+        (made * 1000.0) as u64 - self.behind_ms.load(Ordering::SeqCst) as u64
+    }
+
     pub fn finalized(&self) -> i64 {
         self.best() - self.finality_lag
     }
@@ -76,6 +91,9 @@ impl FakeChain {
 pub fn forged_hash_of(block: i64) -> String {
     hash_of(block + 1_000_000)
 }
+
+/// `twox128("Timestamp") ++ twox128("Now")`, the key every Substrate chain keeps a block's time at.
+pub const TIMESTAMP_NOW: &str = "0xf0c365c3cf59d671eb72da0e7a4113c49f1f0515f462cdcf84e0f1d6045dfcbb";
 
 pub fn hash_of(block: i64) -> String {
     format!("0x{}", desearch::canonical::hex(&Sha256::digest(block.to_string().as_bytes())))
@@ -109,6 +127,10 @@ async fn answer(State(chain): State<Arc<FakeChain>>, Json(request): Json<Value>)
                 Value::Null
             }
         }
+        "state_getStorage" if request["params"][0] == TIMESTAMP_NOW => match request["params"][1].as_str().and_then(|hash| chain.block_of(hash)) {
+            Some(block) => json!(format!("0x{}", desearch::canonical::hex(&chain.block_time_ms(block).to_le_bytes()))),
+            None => Value::Null,
+        },
         _ => return Json(json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "not here"}})).into_response(),
     };
     Json(json!({"jsonrpc": "2.0", "id": 1, "result": result})).into_response()

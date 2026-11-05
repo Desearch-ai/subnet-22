@@ -90,6 +90,7 @@ class JournalFollower:
             CREATE TABLE IF NOT EXISTS blocks (block INTEGER PRIMARY KEY, hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS requests (hash TEXT PRIMARY KEY, seq INTEGER NOT NULL, block INTEGER);
             CREATE TABLE IF NOT EXISTS request_entries (seq INTEGER PRIMARY KEY, block INTEGER);
+            CREATE TABLE IF NOT EXISTS rounds (round_id TEXT PRIMARY KEY, view TEXT NOT NULL);
             """)
 
     def state(self, name: str):
@@ -116,6 +117,22 @@ class JournalFollower:
             "SELECT seq, block FROM requests WHERE hash = ?", (request,)
         ).fetchone()
         return (row[0], row[1]) if row else None
+
+    def round_view(self, round_id: str) -> Optional[dict]:
+        """A closed crawl round's view as the API settled every upload of it: its loadability, coverage gate and neutral
+        hosts, from the round's `close` entry in the signed log; None while it is open.
+        """
+        row = self.db.execute(
+            "SELECT view FROM rounds WHERE round_id = ?", (round_id,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def round_views(self) -> dict[str, dict]:
+        """Every closed round's settled view this follower has read, by round id."""
+        return {
+            round_id: json.loads(view)
+            for round_id, view in self.db.execute("SELECT round_id, view FROM rounds")
+        }
 
     def anchored_through(self) -> int:
         """The last entry an anchor on chain covers that this log agrees with."""
@@ -226,6 +243,8 @@ class JournalFollower:
         for entry in entries:
             if entry.get("kind") == "requests":
                 self.index_requests(entry)
+            elif entry.get("kind") == "close":
+                self.index_round(entry)
         self.db.executemany(
             "INSERT OR REPLACE INTO hashes VALUES (?, ?, ?)",
             [(entry["seq"], hash_of(entry), segment["segment"]) for entry in entries],
@@ -252,6 +271,15 @@ class JournalFollower:
         if found:
             raise found[0]
         raise Broken(f"file {segment.get('segment')} has no holder to be signed by")
+
+    def index_round(self, entry: dict) -> None:
+        round_id = (entry.get("input") or {}).get("round_id")
+        view = (entry.get("output") or {}).get("round")
+        if round_id and isinstance(view, dict):
+            self.db.execute(
+                "INSERT OR REPLACE INTO rounds VALUES (?, ?)",
+                (round_id, json.dumps(view)),
+            )
 
     def index_requests(self, entry: dict) -> None:
         given = entry.get("input") or {}
