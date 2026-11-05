@@ -28,10 +28,13 @@ These need an account, money or a key, so none of them is scripted here:
      and in Phala's dashboard. Validators pin the same list.
    - `addComposeHash(<compose hash>)` for each release. This only lets a CVM boot; validators still take
      a version only once their stake approved it and the timelock passed (docs/tee.md).
-4. **The storage credentials** as encrypted environment variables of the app: `CF_R2_ACCESS_KEY_ID`,
-   `CF_R2_SECRET_ACCESS_KEY` and, if the pages bucket is on another store, `PAGES_S3_ACCESS_KEY_ID` and
-   `PAGES_S3_SECRET_ACCESS_KEY`. They are encrypted to the CVM; nothing else can be passed in, because
-   `allowed_envs` lists only these and every other value is written in the compose.
+4. **The credentials** as encrypted environment variables of the app: `CF_R2_ACCESS_KEY_ID`,
+   `CF_R2_SECRET_ACCESS_KEY` (for the versioned, Object Lock bucket the compose names) and, if the pages
+   bucket is on another store, `PAGES_S3_ACCESS_KEY_ID` and `PAGES_S3_SECRET_ACCESS_KEY`; and
+   `TASK_API_ANCHOR_KEY_URI`, the secret URI of the anchor hotkey registered on SN22 (not the legacy signer's
+   key, which the API refuses). They are encrypted to the CVM; nothing else can be passed in, because
+   `allowed_envs` lists only these and every other value is written in the compose. Every step that needs
+   an account, money or a key is in [docs/ops-checklist.md](../../../docs/ops-checklist.md).
 5. **DNS for `api-22.desearch.ai`**, DNS only (not proxied through Cloudflare: TLS must end in the CVM):
    - a `CNAME` (or `A`) to the dstack gateway's address;
    - `TXT _dstack-app-address.api-22.desearch.ai "<app_id>:443"`, so the gateway passes the TLS stream

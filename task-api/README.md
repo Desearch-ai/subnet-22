@@ -17,7 +17,7 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 
 | Path | |
 | --- | --- |
-| `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
+| `src/` | the API, in Rust: auth, queues, rounds, upload links, check results, budgets and shares, the log, the TEE and custody; the only API this repository builds (`Dockerfile.rust`) |
 | `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 | `tools/check_witnesses.py` | turns requests relaying validators witnessed, missing from the signed log, into censorship proofs |
@@ -188,7 +188,11 @@ files with one number and different heads, both signed, prove a fork on their ow
 
 **Anchors.** With `TASK_API_ANCHOR_NETWORK` set, the API commits the head to the chain with
 `Commitments.set_commitment(netuid, [Raw("sn22j1:<seq>"), Sha256(<hash of entry seq>)])`, signed by
-`TASK_API_ANCHOR_KEY_URI` (the log's key unless set). Commitments are free, live in chain state
+`TASK_API_ANCHOR_KEY_URI`, a hotkey of its own: the API refuses to start when it is the log's signing key or the
+legacy signer. Every value the anchor's signature covers (the genesis hash, the runtime's versions, the nonce) and
+every anchor read back is taken only when `TASK_API_ANCHOR_QUORUM` of the `TASK_API_ANCHOR_NETWORK` endpoints agree,
+and the anchor is sent to every endpoint, so an endpoint that lies or drops it cannot stop anchoring. Only a
+published head is anchored, so a successor can always go on from what the chain holds. Commitments are free, live in chain state
 (`Commitments.CommitmentOf(netuid, hotkey)`) where any node answers, and a hotkey may make 31 per epoch
 (3,100 bytes, each call counted as 100), so the API anchors every `TASK_API_ANCHOR_EVERY_BLOCKS` and, once a
 round opened, after `TASK_API_ANCHOR_MIN_BLOCKS`, at most `TASK_API_ANCHOR_PER_EPOCH` per 361 blocks. A
@@ -235,9 +239,12 @@ whoever holds `TASK_API_KEY_URI` until custody records start (validators pin it 
 [`desearch/trust.py`](../desearch/trust.py)); from then validators take each holder from the custody chain
 ([docs/tee.md](../docs/tee.md)). A custody record names the last entry of this log signed under the
 previous holder (`journal_seq`); the new holder logs a `custody` entry and its own `start`. One appointed
-without a handover goes on from the published head and starts the accounts afresh with a snapshot, where
-a replay starts again. A CVM's own key is not registered on the subnet, so anchoring from a CVM needs
-`TASK_API_ANCHOR_KEY_URI` (a registered hotkey, passed in as a credential).
+without a handover goes on from the published head, which must reach the entry the chain anchors: it replays
+the published log with these rules from its newest snapshot, every file checked for a holder's signature and its
+links, takes the accounts, the clock and the pause the replay arrives at, and logs a snapshot of them, which a
+replay compares with its own and goes on from. Claims, uploads and rounds the lost holder had in flight go with
+it. A CVM's own key is not registered on the subnet, so anchoring from a CVM needs `TASK_API_ANCHOR_KEY_URI`
+(a registered hotkey, passed in as a credential).
 
 ## Scoring
 
@@ -448,7 +455,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_JOURNAL_KEEP_S` | 691200 | seconds published log entries stay in SQLite |
 | `TASK_API_ANCHOR_NETWORK` | — | the chain the log's head is anchored on (a network name or URL); no anchors without it |
 | `TASK_API_ANCHOR_NETUID` | `TASK_API_NETUID` | the subnet the anchoring hotkey is registered on |
-| `TASK_API_ANCHOR_KEY_URI` | `TASK_API_KEY_URI` | the hotkey that commits the anchors |
+| `TASK_API_ANCHOR_QUORUM` | `TASK_API_CHAIN_QUORUM` | how many of the anchor network's endpoints must agree on what an anchor signs and what the chain holds; at most as many as it names |
+| `TASK_API_ANCHOR_KEY_URI` | — | the hotkey that commits the anchors; required with `TASK_API_ANCHOR_NETWORK`, never the signing key or the legacy signer |
 | `TASK_API_ANCHOR_EVERY_BLOCKS` | 12 | blocks between anchors |
 | `TASK_API_ANCHOR_MIN_BLOCKS` | 3 | blocks between anchors at least, once a round opened |
 | `TASK_API_ANCHOR_PER_EPOCH` | 30 | anchors per 361 blocks at most; the chain allows 31 |
@@ -457,13 +465,14 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_DSTACK_SOCKET` | `/var/run/dstack.sock` | the dstack guest agent the quote comes from |
 | `TASK_API_TLS_CERT` | — | the PEM certificate the TLS proxy in the CVM serves; its public key is bound into the attestation, read again as it renews |
 | `TASK_API_CLIENT_ADDRESS_HEADER` | `CF-Connecting-IP` | the header the proxy in front writes the caller's address into |
-| `TASK_API_CHAIN_QUORUM` | 1 | how many of the `TASK_API_NETWORK` endpoints must give the same block height, hash, storage or metagraph |
+| `TASK_API_CHAIN_QUORUM` | 1 | how many of the `TASK_API_NETWORK` endpoints must give the same block height, hash, storage or metagraph. With `TASK_API_KEY_SOURCE=cvm` the API refuses to start unless it is at least 2, no one operator (a URL's domain, or address and port) runs that many of the endpoints, reads are finalized and never counted on the clock, the log is anchored the same way, and uploads are locked for a day |
 | `TASK_API_CHAIN_FINALIZED` | 0 | 1 reads the finalized head instead of the best block, so no seed comes from a block that can still change |
 | `TASK_API_CHAIN_COUNT_ON` | 1 | 0 never counts blocks on the local clock: the current block is the last one read |
 | `TASK_API_CHAIN_REFRESH_S` | 30 | seconds between reads of the head |
 | `TASK_API_CUSTODY` | 0 | 1 (with `TASK_API_KEY_SOURCE=cvm`): the copy signs nothing until validators' stake appoints it or the holder hands it the log ([custody](../docs/tee.md#custody-which-key-validators-follow)) |
 | `TASK_API_CUSTODY_POLL_S` | 60 | seconds between custody checks |
-| `TASK_API_GOV_THRESHOLD` | 0.5 | share of the independent validators' stake that must approve a version, strictly more than |
+| `TASK_API_GOV_THRESHOLD` | 0.5 | share of the independent validators' stake that must approve a version, strictly more than; the owner's coldkey's stake delegated to a validator does not count for it, and a validator inheriting stake from an owner's hotkey is not independent |
+| `TASK_API_GOV_MIN_COLDKEYS` | 3 | distinct coldkeys among the approving validators a version needs as well |
 | `TASK_API_GOV_TIMELOCK_BLOCKS` | 50400 | blocks an approval must be old before a version takes over |
 | `TASK_API_SUCCESSOR_OS` | — | OS measurements (`mrtd:rtmr0:rtmr1:rtmr2`) a successor may boot besides this CVM's own, comma-separated |
 | `TASK_API_PCCS_URL` | `https://pccs.phala.network` | where a successor's quote collateral is fetched |
@@ -475,7 +484,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_ACTIVE_S` | 3600 | seconds (of rule time) since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
-| `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
+| `TASK_API_CHECK_SHARE` | `SHARE` in [`src/sampling.rs`](src/sampling.rs) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
 | `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
 | `TASK_API_RELEASE_SPREAD_S` | 60 | seconds a revealed round's tasks are released over, one by one in the round's order; 0 releases them all at once |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
@@ -491,7 +500,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
 | `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
 | `TASK_API_CANARY_EVERY_S` | 60 | seconds between storage canary probes; 0 turns the canary off; a failed one opens a storage outage |
-| `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on |
+| `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on. At least 86400, the day an upload can still be checked or taken back in, in a CVM |
 | `TASK_API_STORAGE_PROBE_S` | 30 | seconds between storage probes; a failed one opens an outage that forgives the claims alive in it |
 | `TASK_API_FINALITY_STALL_BLOCKS` | 10 | blocks finality may fall behind the best block before the claims alive then are forgiven |
 | `TASK_API_OBJECTIVE_QUORUM` | 1 | reports with the same facts a fail on the file needs before it charges the miner |
@@ -537,13 +546,16 @@ Anyone can read these; the [UI](../ui/README.md) is built on them. Every answer 
 | `GET /v1/clock` | the finalized block every deadline is measured on, and the anchor that turns blocks into the rule times the API stores |
 | `GET /v1/outages` | storage outages and finality stalls of the last week; claims alive in them lapsed at no cost |
 | `GET /v1/storage/probes` | the storage canary's probes since `since` (the last hour), newest first, and the outages they show |
-| `GET /v1/config` | every setting the API runs with, by variable name, secrets left out |
+| `GET /v1/config` | every setting the API runs with, by variable name, secrets left out, and the pause (`paused`, null while it runs) |
 | `GET /v1/attestation` | in a TEE: the TDX quote, its event log and app compose, and the document it binds (the signer, the handover key, the hash of `/v1/config`, the TLS key); `?nonce=` for a fresh one ([format](../docs/tee.md#get-v1attestation)) |
 | `GET /v1/custody` | whether this copy holds the log, the custody records it knows, and the pause |
 
-Two admin calls change what the API does, and nothing else does: `POST /v1/admin/pause` stops handing
-out tasks (claims are refused with `PAUSED`) or resumes, and `POST /v1/admin/handover` hands the log to an
-attested CVM whose version validators' stake approved ([docs/tee.md](../docs/tee.md)).
+Two admin calls change what the API does, and nothing else does: `POST /v1/admin/pause` stops the accounts
+or resumes them, and `POST /v1/admin/handover` hands the log to an attested CVM whose version validators'
+stake approved ([docs/tee.md](../docs/tee.md)). While paused, claims are refused with `PAUSED`, completions,
+abandons and reports with 503, and no upload is settled or verdict finalized; every claim alive in the pause
+lapses at no cost (`pause_outage`). The pause, its outage and its log entry are written in one transaction,
+kept in SQLite across restarts, and shown at `/v1/config` and `/v1/custody`.
 
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
 how many miners were turned away each minute on average.
@@ -594,7 +606,7 @@ desearch-pages bucket
 A page's key comes from its URL alone; it is how the change files and `current/` name a page:
 
 ```python
-from app.canonical import canonicalize, domain_of, url_sha1
+from feeder.canonical import canonicalize, domain_of, url_sha1  # the Python copy of crates/desearch/src/canonical.rs
 
 url = canonicalize(assigned_url)
 key = f"pages/{domain_of(url)}/{url_sha1(url)}"
@@ -603,12 +615,15 @@ key = f"pages/{domain_of(url)}/{url_sha1(url)}"
 ## Tests
 
 ```bash
+cd task-api && cargo test
+```
+
+```bash
 cd task-api && python3 -m pytest -q
 ```
 
-The tests use Redis db 14 and an in-memory R2; run one suite at a time. The Rust tests (`cargo test`) use
-Redis dbs 12 and 13 on `127.0.0.1:6379`, or the address in `TASK_API_TEST_REDIS`. `TASK_API_TEST_R2=1` also runs
-the storage tests against real buckets, under `_test/`.
+The API's tests are the Rust ones; the Python tests left here cover the feeder, the watchdog and the tools in
+`tools/`. The Rust tests use Redis dbs 11 to 13 on `127.0.0.1:6379`, or the address in `TASK_API_TEST_REDIS`.
 
 The Rust tests (`cargo test`) use Redis db 13 at `TASK_API_TEST_REDIS_ADDR` (`127.0.0.1:6379` unless set,
 so checkouts testing at once can each run their own). `TASK_API_TEST_CHAIN=test` (or a local node's URL)

@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha384};
 
 pub const MRTD: [u8; 48] = [0x11; 48];
-pub const APP_COMPOSE: &str = r#"{"allowed_envs":["CF_R2_ACCESS_KEY_ID","CF_R2_SECRET_ACCESS_KEY"],"docker_compose_file":"services: {}","kms_enabled":true,"manifest_version":2,"name":"sn22-task-api","runner":"docker-compose"}"#;
+/// A compose with every protection a successor's must have on (`verify::MINIMUM_SETTINGS`), the anchor key its one extra credential.
+pub const APP_COMPOSE: &str = r#"{"allowed_envs":["CF_R2_ACCESS_KEY_ID","CF_R2_SECRET_ACCESS_KEY","TASK_API_ANCHOR_KEY_URI"],"docker_compose_file":"services:\n  api:\n    environment:\n      TASK_API_CHAIN_QUORUM: \"2\"\n      TASK_API_ANCHOR_QUORUM: \"2\"\n      TASK_API_ANCHOR_NETWORK: finney,https://bittensor-finney.api.onfinality.io/public\n      TASK_API_UPLOAD_LOCK_S: \"86400\"\n      TASK_API_GOV_MIN_COLDKEYS: \"3\"\n","kms_enabled":true,"manifest_version":2,"name":"sn22-task-api","runner":"docker-compose"}"#;
 const RUNTIME_EVENT: u32 = 0x0800_0001;
 
 pub struct FakeDstack {

@@ -23,6 +23,7 @@ use serde_json::json;
 
 use crate::chain::{decode_hex, Chain};
 use crate::journal;
+use crate::settings::AnchorSettings;
 use crate::state::State;
 
 pub const TAG: &str = "sn22j1:";
@@ -246,11 +247,13 @@ pub struct Extrinsics {
 }
 
 impl Extrinsics {
+    /// Every value a signature covers is one the chain's endpoints agree on: an endpoint that lies about the genesis hash or the
+    /// runtime's versions would otherwise make every anchor fail its signature check.
     pub async fn load(chain: Arc<Chain>) -> Result<Extrinsics> {
         let metadata = chain.metadata(None).await?;
-        let genesis = chain.rpc("chain_getBlockHash", json!([0])).await?;
+        let genesis = chain.agreed("chain_getBlockHash", json!([0])).await?;
         let genesis = genesis.as_str().and_then(|h| decode_hex(h.trim_start_matches("0x"))).ok_or_else(|| anyhow!("no genesis hash"))?;
-        let version = chain.rpc("state_getRuntimeVersion", json!([])).await?;
+        let version = chain.agreed("state_getRuntimeVersion", json!([])).await?;
         let number = |name: &str| version[name].as_u64().map(|n| n as u32).ok_or_else(|| anyhow!("the runtime version has no {name}"));
         Ok(Extrinsics { spec_version: number("specVersion")?, transaction_version: number("transactionVersion")?, chain, metadata, genesis })
     }
@@ -301,13 +304,13 @@ impl Extrinsics {
     }
 
     pub async fn nonce(&self, key: &Hotkey) -> Result<u64> {
-        let found = self.chain.rpc("system_accountNextIndex", json!([key.ss58()])).await?;
+        let found = self.chain.agreed("system_accountNextIndex", json!([key.ss58()])).await?;
         found.as_u64().ok_or_else(|| anyhow!("no nonce for {}", key.ss58()))
     }
 
-    /// Sends a signed extrinsic; returns its hash.
+    /// Sends a signed extrinsic to every endpoint, so one that drops it cannot keep it off the chain; returns its hash.
     pub async fn submit(&self, extrinsic: &[u8]) -> Result<String> {
-        let found = self.chain.rpc("author_submitExtrinsic", json!([format!("0x{}", hex(extrinsic))])).await?;
+        let found = self.chain.broadcast("author_submitExtrinsic", json!([format!("0x{}", hex(extrinsic))])).await?;
         Ok(found.as_str().unwrap_or_default().to_string())
     }
 
@@ -353,7 +356,7 @@ impl Extrinsics {
     /// A map entry's value, decoded with the runtime's types, as of block `at` or the best block.
     pub async fn storage(&self, pallet: &str, entry: &str, keys: &[Value<()>], at: Option<&str>) -> Result<Option<Value<u32>>> {
         let key = format!("0x{}", hex(&self.storage_key(pallet, entry, keys)?));
-        let found = self.chain.rpc("state_getStorage", if let Some(at) = at { json!([key, at]) } else { json!([key]) }).await?;
+        let found = self.chain.agreed("state_getStorage", if let Some(at) = at { json!([key, at]) } else { json!([key]) }).await?;
         let Some(bytes) = found.as_str().and_then(|h| decode_hex(h.trim_start_matches("0x"))) else { return Ok(None) };
         let StorageEntryType::Map { value, .. } = &self.storage_entry(pallet, entry)?.ty else { bail!("{pallet}.{entry} is not a map") };
         let decoded =
@@ -387,15 +390,34 @@ pub struct Anchoring {
 pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
     let Some(settings) = state.settings.anchor.clone() else { return Ok(()) };
     if anchoring.extrinsics.is_none() {
-        let chain = Arc::new(Chain::with(&settings.network, &state.settings.chain)?);
-        anchoring.extrinsics = Some(Extrinsics::load(chain).await?);
-        anchoring.key = Some(Hotkey::from_uri(if settings.key_uri.is_empty() { &state.settings.key_uri } else { &settings.key_uri })?);
+        anchoring.extrinsics = Some(Extrinsics::load(chain_of(state)?).await?);
+        anchoring.key = Some(Hotkey::from_uri(&settings.key_uri)?);
     }
+    send(state, anchoring, &settings).await
+}
+
+/// The anchor network, read through its own quorum and the API's other chain options.
+pub fn chain_of(state: &State) -> Result<Arc<Chain>> {
+    let settings = state.settings.anchor.as_ref().context("anchoring is off")?;
+    let options = crate::settings::ChainOptions { quorum: settings.quorum, ..state.settings.chain.clone() };
+    Ok(Arc::new(Chain::with(&settings.network, &options)?))
+}
+
+/// The anchor the chain holds for the anchoring key, at a block the endpoints agree on.
+pub async fn on_chain(state: &State) -> Result<Option<Anchored>> {
+    let settings = state.settings.anchor.as_ref().context("anchoring is off")?;
+    let extrinsics = Extrinsics::load(chain_of(state)?).await?;
+    let (_, at) = extrinsics.chain.head_hash().await?;
+    extrinsics.anchored(settings.netuid, &Hotkey::from_uri(&settings.key_uri)?.ss58(), Some(&at)).await
+}
+
+async fn send(state: &State, anchoring: &mut Anchoring, settings: &AnchorSettings) -> Result<()> {
     let (Some(extrinsics), Some(key)) = (&anchoring.extrinsics, &anchoring.key) else { return Ok(()) };
     let block = extrinsics.chain.current_block().await?;
     let account = key.ss58();
-    if let Some(on_chain) = extrinsics.anchored(settings.netuid, &account, None).await? {
-        let confirmed = on_chain.clone();
+    let (_, at) = extrinsics.chain.head_hash().await?;
+    if let Some(confirmed) = extrinsics.anchored(settings.netuid, &account, Some(&at)).await? {
+        let netuid = settings.netuid;
         state
             .db
             .run(move |conn| {
@@ -404,36 +426,37 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
                     .optional()?;
                 if pending == Some(None) {
                     conn.execute("UPDATE log_anchors SET block = ? WHERE seq = ?", params![confirmed.block, confirmed.seq])?;
-                    let input = json!({"netuid": settings.netuid, "hotkey": account, "seq": confirmed.seq, "head": confirmed.head, "block": confirmed.block});
+                    let input = json!({"netuid": netuid, "hotkey": account, "seq": confirmed.seq, "head": confirmed.head, "block": confirmed.block});
                     journal::append(conn, journal::Record::new("anchor", desearch::time::now(), input, serde_json::Value::Null))?;
                 }
                 Ok(())
             })
             .await?;
     }
-    let due = state
-        .db
-        .run(move |conn| {
-            let (seq, head) = journal::head(conn)?;
-            let last: Option<(i64, Option<i64>, i64)> = conn
-                .query_row("SELECT seq, block, sent_at FROM log_anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .optional()?;
-            let sent: i64 = conn.query_row("SELECT COUNT(*) FROM log_anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
-            let (last_seq, last_block, last_sent) = last.unwrap_or((0, Some(0), 0));
-            // A round's commitment should reach the chain before its seed block, so a round opening is anchored soon.
-            let opened: bool = conn
-                .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round', 'recommit') LIMIT 1", [last_seq], |_| Ok(()))
-                .optional()?
-                .is_some();
-            let waiting = last_block.is_none() && block < last_sent + INCLUSION_BLOCKS;
-            let wait = if opened { settings.min_blocks } else { settings.every_blocks };
-            let due = seq > last_seq && !waiting && block >= last_sent + wait && sent < settings.per_epoch;
-            Ok(due.then_some((seq, head)))
-        })
-        .await?;
-    let Some((seq, head)) = due else { return Ok(()) };
-    let extrinsic = extrinsics.commitment(key, settings.netuid, seq, &head).await?;
-    let sent = extrinsics.submit(&extrinsic).await?;
+    let due = settings.clone();
+    if !state.db.run(move |conn| due_at(conn, journal::head(conn)?.0, block, &due)).await? {
+        return Ok(());
+    }
+    // Only a published head is anchored, so a holder lost after anchoring leaves a log its successor can go on from.
+    while journal::publish(state).await?.is_some() {}
+    let due = settings.clone();
+    let Some((seq, head)) =
+        state.db.run(move |conn| Ok(journal::published_head(conn)?.filter(|(seq, _)| due_at(conn, *seq, block, &due).unwrap_or(false)))).await?
+    else {
+        return Ok(());
+    };
+    let submitted = match extrinsics.commitment(key, settings.netuid, seq, &head).await {
+        Ok(extrinsic) => extrinsics.submit(&extrinsic).await,
+        Err(error) => Err(error),
+    };
+    let sent = match submitted {
+        Ok(sent) => sent,
+        Err(error) => {
+            // A runtime upgrade changes what a signature covers: the next pass reads the chain afresh.
+            anchoring.extrinsics = None;
+            return Err(error);
+        }
+    };
     state
         .db
         .run(move |conn| {
@@ -445,6 +468,24 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
         })
         .await?;
     Ok(())
+}
+
+/// Whether entry `seq` is due for an anchor at `block`: past the last one sent, which is not still waiting to land, after the wait
+/// between anchors, and within the epoch's budget of commitments.
+fn due_at(conn: &Connection, seq: i64, block: i64, settings: &AnchorSettings) -> Result<bool> {
+    let last: Option<(i64, Option<i64>, i64)> = conn
+        .query_row("SELECT seq, block, sent_at FROM log_anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .optional()?;
+    let sent: i64 = conn.query_row("SELECT COUNT(*) FROM log_anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
+    let (last_seq, last_block, last_sent) = last.unwrap_or((0, Some(0), 0));
+    // A round's commitment should reach the chain before its seed block, so a round opening is anchored soon.
+    let opened: bool = conn
+        .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round', 'recommit') LIMIT 1", [last_seq], |_| Ok(()))
+        .optional()?
+        .is_some();
+    let waiting = last_block.is_none() && block < last_sent + INCLUSION_BLOCKS;
+    let wait = if opened { settings.min_blocks } else { settings.every_blocks };
+    Ok(seq > last_seq && !waiting && block >= last_sent + wait && sent < settings.per_epoch)
 }
 
 #[cfg(test)]

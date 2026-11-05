@@ -60,6 +60,12 @@ TEE_SETTINGS = {
     "TASK_API_CHAIN_COUNT_ON": "0",
     "TASK_API_GOV_THRESHOLD": "0.5",
     "TASK_API_GOV_TIMELOCK_BLOCKS": 50400,
+    "TASK_API_GOV_MIN_COLDKEYS": "3",
+    "TASK_API_CHAIN_QUORUM": "2",
+    "TASK_API_ANCHOR_QUORUM": "2",
+    "TASK_API_ANCHOR_NETWORK": "finney,https://bittensor-finney.api.onfinality.io/public",
+    "TASK_API_ANCHOR_KEY_URI": "${TASK_API_ANCHOR_KEY_URI}",
+    "TASK_API_UPLOAD_LOCK_S": "86400",
 }
 
 
@@ -421,6 +427,39 @@ def test_an_app_compose_other_than_the_measured_one_fails():
             ),
             "TASK_API_KEY_SOURCE",
         ),
+        (
+            app_compose(
+                docker_compose_file=docker_compose(
+                    api={
+                        "image": IMAGE,
+                        "environment": {**TEE_SETTINGS, "TASK_API_UPLOAD_LOCK_S": "0"},
+                    }
+                )
+            ),
+            "TASK_API_UPLOAD_LOCK_S is '0'",
+        ),
+        (
+            app_compose(
+                docker_compose_file=docker_compose(
+                    api={
+                        "image": IMAGE,
+                        "environment": {**TEE_SETTINGS, "TASK_API_ANCHOR_NETWORK": ""},
+                    }
+                )
+            ),
+            "TASK_API_ANCHOR_NETWORK is not set",
+        ),
+        (
+            app_compose(
+                docker_compose_file=docker_compose(
+                    api={
+                        "image": IMAGE,
+                        "environment": {**TEE_SETTINGS, "TASK_API_CHAIN_QUORUM": "1"},
+                    }
+                )
+            ),
+            "TASK_API_CHAIN_QUORUM is '1'",
+        ),
     ],
 )
 def test_the_compose_policy_refuses_what_lets_the_deployer_change_the_code_or_its_settings(
@@ -531,3 +570,7 @@ def test_the_config_hash_is_of_the_canonical_config():
         attestation.config_sha256(config)
         == hashlib.sha256(b'{"settings":{"A":"x","B":1},"version":"0.1.0"}').hexdigest()
     )
+    paused = {**config, "paused": {"reason": "an upgrade", "since": 1.0, "by": "x"}}
+    assert attestation.config_sha256(paused) == attestation.config_sha256(
+        config
+    ), "the pause is state, not a setting the quote binds"

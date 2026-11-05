@@ -2,7 +2,8 @@
 #
 # Its SHA-256, wrapped in app-compose.json by app_compose.py, is the compose hash in the TDX quote and the
 # version validators approve. So every image is named by digest and every setting is written here: the
-# only values from outside are the storage credentials, the names app-compose.json lists in allowed_envs.
+# only values from outside are credentials (storage keys and the anchor hotkey), the names app-compose.json
+# lists in allowed_envs.
 # Changing any line here makes a new version that needs validators' approval and the timelock.
 #
 # Fill in the two REPLACE_WITH_ values before a release; app_compose.py refuses to hash the file until
@@ -25,6 +26,7 @@ services:
       TASK_API_CUSTODY_POLL_S: "60"
       TASK_API_GOV_THRESHOLD: "0.5"
       TASK_API_GOV_TIMELOCK_BLOCKS: "50400"
+      TASK_API_GOV_MIN_COLDKEYS: "3"
       TASK_API_SUCCESSOR_OS: ""
       TASK_API_PCCS_URL: https://pccs.phala.network
       # The signer before custody records, whose handover to the first CVM is record 0 (docs/tee.md).
@@ -35,12 +37,12 @@ services:
       TASK_API_TLS_CERT: /tls/caddy/certificates/acme-v02.api.letsencrypt.org-directory/api-22.desearch.ai/api-22.desearch.ai.crt
       TASK_API_CLIENT_ADDRESS_HEADER: X-Client-Address
 
-      # The chain: two of three independent endpoints must agree, finalized blocks only, and time is
-      # only what the chain says, never this host's clock.
+      # The chain: endpoints of two operators must agree (the API refuses a list where one operator alone
+      # makes the quorum), finalized blocks only, and time is only what the chain says, never this host's clock.
       TASK_API_REGISTRY: chain
       TASK_API_SEEDS: chain
       TASK_API_NETUID: "22"
-      TASK_API_NETWORK: finney,https://lite.chain.opentensor.ai:443,https://bittensor-finney.api.onfinality.io/public
+      TASK_API_NETWORK: finney,https://bittensor-finney.api.onfinality.io/public
       TASK_API_CHAIN_QUORUM: "2"
       TASK_API_CHAIN_FINALIZED: "1"
       TASK_API_CHAIN_COUNT_ON: "0"
@@ -103,16 +105,21 @@ services:
       TASK_API_WRONG_REPORTS_WINDOW_S: "86400"
 
       # The storage canary and pinned upload versions (block C); a failed canary probe opens a storage outage too.
+      # Each pinned upload is locked in compliance mode for the day it can still be checked or taken back in;
+      # the API refuses to start in a CVM with less. Needs the versioned bucket with Object Lock below.
       TASK_API_CANARY_EVERY_S: "60"
-      TASK_API_UPLOAD_LOCK_S: "0"
+      TASK_API_UPLOAD_LOCK_S: "86400"
 
-      # The hash-chained log (block B). Anchoring its head needs a hotkey registered on the subnet, which
-      # this CVM's own key is not; it stays off until one is passed in as a credential.
+      # The hash-chained log (block B), its head anchored on chain through the same two operators. The anchor
+      # hotkey is registered on the subnet and handed in as a credential; it is neither this CVM's key nor the
+      # legacy signer, and the API refuses to start if it is.
       TASK_API_JOURNAL_EVERY_S: "30"
       TASK_API_JOURNAL_SHARES_EVERY_S: "600"
       TASK_API_SNAPSHOT_EVERY_S: "21600"
       TASK_API_JOURNAL_KEEP_S: "691200"
-      TASK_API_ANCHOR_NETWORK: ""
+      TASK_API_ANCHOR_NETWORK: finney,https://bittensor-finney.api.onfinality.io/public
+      TASK_API_ANCHOR_QUORUM: "2"
+      TASK_API_ANCHOR_KEY_URI: ${TASK_API_ANCHOR_KEY_URI}
       TASK_API_ANCHOR_NETUID: "22"
       TASK_API_ANCHOR_EVERY_BLOCKS: "12"
       TASK_API_ANCHOR_MIN_BLOCKS: "3"
@@ -122,7 +129,8 @@ services:
       CF_R2_ENDPOINT: https://s3.us-east-va.io.cloud.ovh.us
       CF_R2_REGION: us-east-va
       CF_R2_PUBLIC_OBJECTS: "1"
-      CF_R2_BUCKET: subnet-22
+      # Versioned, with Object Lock on (docs/witness-relays.md, docs/ops-checklist.md).
+      CF_R2_BUCKET: subnet-22-v2
       TASK_API_R2_PREFIX: ""
       CF_R2_PAGES_BUCKET: desearch-pages
       CF_R2_PAGES_PREFIX: ""

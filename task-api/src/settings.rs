@@ -53,8 +53,10 @@ impl PagesStore {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnchorSettings {
     pub network: String,
+    /// How many of the anchor network's endpoints must agree on what an anchor is signed over and what the chain holds.
+    pub quorum: usize,
     pub netuid: u16,
-    /// The hotkey that commits; the log's signing key when empty. It must be registered on the subnet.
+    /// The hotkey that commits, never the log's signing key or the legacy signer. It must be registered on the subnet.
     pub key_uri: String,
     pub every_blocks: i64,
     /// Blocks between anchors at least, when a round opened since the last.
@@ -97,6 +99,8 @@ pub struct TeeOptions {
     /// Share of the independent validators' stake that must approve a version, strictly more than.
     pub gov_threshold: f64,
     pub gov_timelock_blocks: i64,
+    /// Distinct coldkeys among the approving validators a version needs, besides their stake.
+    pub gov_min_coldkeys: usize,
     /// Measurements (`mrtd:rtmr0:rtmr1:rtmr2`) a successor may boot besides this CVM's own.
     pub successor_os: Vec<String>,
     pub pccs_url: String,
@@ -116,6 +120,7 @@ impl Default for TeeOptions {
             custody_poll_s: 60.0,
             gov_threshold: 0.5,
             gov_timelock_blocks: 50_400,
+            gov_min_coldkeys: GOV_MIN_COLDKEYS,
             successor_os: Vec::new(),
             pccs_url: PCCS_URL.into(),
             legacy_signer: String::new(),
@@ -125,6 +130,9 @@ impl Default for TeeOptions {
 }
 
 pub const DSTACK_SOCKET: &str = "/var/run/dstack.sock";
+pub const GOV_MIN_COLDKEYS: usize = 3;
+/// Seconds after its completion an upload can still be checked or taken back: its pinned version is locked at least this long in a CVM.
+pub const CHECK_WINDOW_S: f64 = crate::credit::PENALTY_WINDOW_S;
 pub const PCCS_URL: &str = "https://pccs.phala.network";
 
 #[derive(Clone, Debug)]
@@ -358,6 +366,7 @@ impl Settings {
             custody_poll_s: number("TASK_API_CUSTODY_POLL_S", 60.0)?,
             gov_threshold,
             gov_timelock_blocks: number("TASK_API_GOV_TIMELOCK_BLOCKS", 50_400)?,
+            gov_min_coldkeys: number("TASK_API_GOV_MIN_COLDKEYS", GOV_MIN_COLDKEYS)?,
             successor_os: listed(&text("TASK_API_SUCCESSOR_OS", "")),
             pccs_url: text("TASK_API_PCCS_URL", PCCS_URL),
             legacy_signer: text("TASK_API_LEGACY_SIGNER", ""),
@@ -373,7 +382,7 @@ impl Settings {
         if key_uri.is_empty() && key_source == KeySource::Uri && matches!(registry, RegistryMode::Chain { .. }) {
             bail!("TASK_API_KEY_URI must be set when TASK_API_REGISTRY=chain");
         }
-        Ok(Settings {
+        let settings = Settings {
             listen: text("TASK_API_LISTEN", "0.0.0.0:8080"),
             data: PathBuf::from(text("TASK_API_DATA", ".")),
             redis_url: text("TASK_API_REDIS", "redis://localhost:6379/15"),
@@ -432,6 +441,7 @@ impl Settings {
                 "" => None,
                 network => Some(AnchorSettings {
                     network: network.into(),
+                    quorum: number("TASK_API_ANCHOR_QUORUM", chain.quorum)?,
                     netuid: number("TASK_API_ANCHOR_NETUID", number("TASK_API_NETUID", 22)?)?,
                     key_uri: text("TASK_API_ANCHOR_KEY_URI", ""),
                     every_blocks: number("TASK_API_ANCHOR_EVERY_BLOCKS", 12)?,
@@ -455,7 +465,51 @@ impl Settings {
             embed_emission: number("TASK_API_EMBED_EMISSION", 0.5)?,
             wrong_reports: number("TASK_API_WRONG_REPORTS", 5)?,
             wrong_reports_window_s: number("TASK_API_WRONG_REPORTS_WINDOW_S", 86_400.0)?,
-        })
+        };
+        settings.check()?;
+        Ok(settings)
+    }
+
+    /// Settings that each pass alone but not together. In a CVM, whose compose validators approve, every protection is on: the
+    /// chain read through independent endpoints that must agree, finalized heads only, the log anchored by a key of its own, and
+    /// each upload locked for as long as it can still be checked.
+    pub fn check(&self) -> Result<()> {
+        if let Some(anchor) = &self.anchor {
+            let endpoints = crate::chain::endpoints(&anchor.network);
+            if anchor.quorum == 0 || anchor.quorum > endpoints.len() {
+                bail!("TASK_API_ANCHOR_QUORUM={} needs that many endpoints in TASK_API_ANCHOR_NETWORK, which names {}", anchor.quorum, endpoints.len());
+            }
+            if anchor.key_uri.is_empty() {
+                bail!("TASK_API_ANCHOR_KEY_URI must be set with TASK_API_ANCHOR_NETWORK: anchors are committed by a hotkey of their own");
+            }
+            let anchorer = desearch::hotkey::Hotkey::from_uri(&anchor.key_uri).context("TASK_API_ANCHOR_KEY_URI")?.ss58();
+            let signer = (!self.key_uri.is_empty()).then(|| desearch::hotkey::Hotkey::from_uri(&self.key_uri).map(|k| k.ss58())).transpose()?;
+            if signer.as_deref() == Some(anchorer.as_str()) || self.tee.legacy_signer == anchorer {
+                bail!("TASK_API_ANCHOR_KEY_URI is the log's signing key or the legacy signer; anchors need a key of their own");
+            }
+        }
+        if self.tee.key_source != KeySource::Cvm {
+            return Ok(());
+        }
+        let network = match (&self.registry, &self.seeds) {
+            (RegistryMode::Chain { network, .. }, _) | (_, SeedsMode::Chain { network }) => network.as_str(),
+            _ => bail!("TASK_API_KEY_SOURCE=cvm reads the chain: TASK_API_REGISTRY=chain and TASK_API_SEEDS=chain"),
+        };
+        independent("TASK_API_NETWORK", network, self.chain.quorum, "TASK_API_CHAIN_QUORUM")?;
+        if !self.chain.finalized || self.chain.count_on {
+            bail!(
+                "TASK_API_KEY_SOURCE=cvm reads finalized blocks only and never counts them on the clock: TASK_API_CHAIN_FINALIZED=1, TASK_API_CHAIN_COUNT_ON=0"
+            );
+        }
+        let Some(anchor) = &self.anchor else { bail!("TASK_API_KEY_SOURCE=cvm anchors its log: TASK_API_ANCHOR_NETWORK must be set") };
+        independent("TASK_API_ANCHOR_NETWORK", &anchor.network, anchor.quorum, "TASK_API_ANCHOR_QUORUM")?;
+        if self.upload_lock_s < CHECK_WINDOW_S {
+            bail!("TASK_API_UPLOAD_LOCK_S={} is shorter than the {CHECK_WINDOW_S} s an upload can still be checked in", self.upload_lock_s);
+        }
+        if self.tee.gov_min_coldkeys == 0 {
+            bail!("TASK_API_GOV_MIN_COLDKEYS must be at least 1");
+        }
+        Ok(())
     }
 
     /// Every setting this copy runs with, by the variable that sets it, secrets left out: what `/v1/config` serves.
@@ -540,6 +594,7 @@ impl Settings {
             ("TASK_API_CUSTODY_POLL_S", json!(self.tee.custody_poll_s)),
             ("TASK_API_GOV_THRESHOLD", json!(self.tee.gov_threshold)),
             ("TASK_API_GOV_TIMELOCK_BLOCKS", json!(self.tee.gov_timelock_blocks)),
+            ("TASK_API_GOV_MIN_COLDKEYS", json!(self.tee.gov_min_coldkeys)),
             ("TASK_API_SUCCESSOR_OS", json!(self.tee.successor_os)),
             ("TASK_API_PCCS_URL", json!(self.tee.pccs_url)),
             ("TASK_API_LEGACY_SIGNER", json!(self.tee.legacy_signer)),
@@ -564,6 +619,7 @@ impl Settings {
             ("TASK_API_SNAPSHOT_EVERY_S", json!(self.snapshot_every)),
             ("TASK_API_JOURNAL_KEEP_S", json!(self.journal_keep)),
             ("TASK_API_ANCHOR_NETWORK", json!(self.anchor.as_ref().map(|a| a.network.clone()))),
+            ("TASK_API_ANCHOR_QUORUM", json!(self.anchor.as_ref().map(|a| a.quorum))),
             ("TASK_API_ANCHOR_NETUID", json!(self.anchor.as_ref().map(|a| a.netuid))),
             ("TASK_API_ANCHOR_EVERY_BLOCKS", json!(self.anchor.as_ref().map(|a| a.every_blocks))),
             ("TASK_API_ANCHOR_MIN_BLOCKS", json!(self.anchor.as_ref().map(|a| a.min_blocks))),
@@ -591,6 +647,22 @@ impl Settings {
             "secrets_set": secrets_set,
         })
     }
+}
+
+/// At least `quorum` endpoints in `network`, and no one operator holding as many: a name's operator is its registrable domain
+/// (`opentensor.ai`), an address's is the address and port.
+fn independent(name: &str, network: &str, quorum: usize, quorum_name: &str) -> Result<()> {
+    if quorum < 2 {
+        bail!("{quorum_name}={quorum}: TASK_API_KEY_SOURCE=cvm needs at least 2 chain endpoints to agree");
+    }
+    let operators: Vec<String> = crate::chain::endpoints(network).iter().map(|url| crate::chain::operator(url)).collect();
+    if operators.len() < quorum {
+        bail!("{quorum_name}={quorum} needs that many endpoints in {name}, which names {}", operators.len());
+    }
+    if let Some(one) = operators.iter().find(|op| operators.iter().filter(|other| other == op).count() >= quorum) {
+        bail!("{name}: {one} runs {quorum_name}={quorum} or more of its endpoints, so it alone would make the quorum");
+    }
+    Ok(())
 }
 
 /// A Redis URL with any password replaced, so `/v1/config` can show where Redis is without how to get in.

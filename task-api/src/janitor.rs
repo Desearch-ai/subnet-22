@@ -118,6 +118,8 @@ impl Duty {
             Duty::Journal => journal_pass(state, due).await,
             Duty::Anchor => anchor::pass(state, &mut due.anchoring).await,
             Duty::Reclaim => lifecycle::reclaim_expired(state, state.rule_now().await?).await.map(drop),
+            // A pause settles no upload and finalizes no verdict, so nobody is paid or penalized while it lasts.
+            Duty::Settle | Duty::Finalize if state.custody.paused().is_some() => Ok(()),
             Duty::Settle => {
                 lifecycle::recheck_malformed(state).await?;
                 lifecycle::settle_seeded(state).await.map(drop)

@@ -73,15 +73,6 @@ pub fn digest(snapshot: &Value) -> String {
     sha256(&canonical(&json!({"at": snapshot["at"], "tables": snapshot["tables"]})))
 }
 
-/// Empties the accounts, as a replay does when a CVM appointed without a handover starts them afresh.
-pub fn clear(conn: &Connection) -> Result<()> {
-    for (table, _, _) in TABLES.iter().chain(&ROUNDS) {
-        conn.execute(&format!("DELETE FROM {table}"), [])?;
-    }
-    conn.execute("DELETE FROM final_verdicts", [])?;
-    Ok(())
-}
-
 /// Fills an empty store with a snapshot, as a replay starts.
 pub fn load(conn: &Connection, snapshot: &Value) -> Result<()> {
     for (part, (table, columns, _)) in TABLES.iter().map(|t| ("tables", *t)).chain(ROUNDS.iter().map(|t| ("rounds", *t))) {

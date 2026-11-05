@@ -51,19 +51,3 @@ def test_a_sample_the_validator_could_not_read_has_no_divergence():
     (detail,) = url_log([row("https://a/1", LONG)], [sample], {})
 
     assert detail["validator_snippet"] == "" and detail["diff_at"] is None
-
-
-def test_the_task_api_accepts_every_field_the_validator_logs(monkeypatch):
-    from pathlib import Path
-
-    from neurons.validators.scoring import FetchedPage, judge_sample
-
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "task-api"))
-    from app.models import UrlDetail
-
-    page = {**row("https://a/1", LONG), "title": "", "final_url": "https://a/1"}
-    sample = judge_sample(page, FetchedPage(200, f"<p>{LONG}</p>", via="own_ip"))
-    rows = [page, row("https://a/2", error="timeout", status=0)]
-
-    for detail in url_log(rows, [sample], {"https://a/1": LONG}):
-        assert UrlDetail.model_validate(detail).model_dump(exclude_unset=True) == detail

@@ -21,6 +21,8 @@ fn in_custody(socket: String) -> impl FnOnce(&mut Settings) {
         s.tee.key_source = KeySource::Cvm;
         s.tee.dstack_socket = socket;
         s.tee.custody = true;
+        // One validator approves in these tests; the rule's coldkey count is tested in governance.
+        s.tee.gov_min_coldkeys = 1;
     }
 }
 
@@ -46,6 +48,7 @@ fn approving(text: String) -> custody::SnapshotSource {
                 owner_coldkey: "owner".into(),
                 owner_hotkey: owner,
                 commitments: [(validator, (0, text))].into_iter().collect(),
+                ..Default::default()
             })
         }
         .boxed()
@@ -129,18 +132,70 @@ async fn a_standby_cvm_signs_nothing_until_appointed_then_hands_the_log_to_an_ap
 }
 
 #[tokio::test]
-async fn a_pause_stops_handing_out_tasks_and_nothing_else() {
+async fn a_pause_stops_the_accounts_is_logged_and_forgives_the_claims_alive_in_it() {
+    use task_api::{budgets, lifecycle, outages};
     let h = Harness::start().await;
     h.enqueue(urls(6)).await;
+    let held = h.miner.claim().await["tasks"][0].clone();
+    let done = h.mine(&h.rival, 0).await;
     assert_eq!(h.miner.post("/v1/admin/pause", json!({"paused": true, "reason": "x"})).await.unwrap_err().status, 403);
     assert_eq!(h.admin.post("/v1/admin/pause", json!({"paused": true})).await.unwrap_err().status, 422, "a pause needs a reason");
     h.admin.post("/v1/admin/pause", json!({"paused": true, "reason": "an upgrade"})).await.unwrap();
+
     let refused = h.miner.claim().await;
     assert_eq!((refused["refusal"]["code"].as_str(), refused["refusal"]["inputs"]["reason"].as_str()), (Some("PAUSED"), Some("an upgrade")));
     assert!(crate::receipt_verifies(&refused["receipt"], &h.state.signer()), "the refusal is signed into the log");
+    let id = harness::task_id(&held);
+    let completing =
+        h.miner.post(&format!("/v1/tasks/{id}/complete"), json!({"key": held["upload"]["key"], "rows": 1, "ok": 1, "errors": 0, "bytes": 1})).await;
+    assert_eq!(completing.unwrap_err().status, 503, "no upload is completed while paused");
+    assert_eq!(h.miner.post(&format!("/v1/tasks/{id}/abandon"), json!({})).await.unwrap_err().status, 503);
+    let (_, scored) = harness::judged(&h, &h.validator, "fail", Some(&harness::task_id(&done)), json!({})).await;
+    assert_eq!(scored.unwrap_err().status, 503, "no report is taken while paused");
     assert_eq!(h.public("/v1/custody").await.1["paused"]["reason"], "an upgrade");
+    assert_eq!(h.public("/v1/config").await.1["paused"]["reason"], "an upgrade", "the pause is shown beside the settings");
+    let open = h.public("/v1/outages").await.1;
+    assert_eq!((open["outages"][0]["cause"].as_str(), open["outages"][0]["end"].is_null()), (Some(custody::PAUSE_CAUSE), true));
+
+    // The claim held through the pause lapses at no cost to its miner.
+    let later = h.state.clock().await.unwrap().at(h.state.tick().await.unwrap().block + 100_000);
+    let reclaimed = lifecycle::reclaim_expired(&h.state, later).await.unwrap();
+    assert_eq!(reclaimed, [(id.clone(), h.miner.ss58())]);
+    let hotkey = h.miner.ss58();
+    let strikes = h.state.db.run(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [&hotkey], |row| row.get::<_, i64>(0))?)).await;
+    assert_eq!(strikes.unwrap(), 0);
+    let hotkey = h.miner.ss58();
+    let budget = h.state.db.run(move |conn| Ok(budgets::get(conn, &hotkey, budgets::CRAWL)?.budget)).await.unwrap();
+    assert_eq!(budget, budgets::START, "a lapse inside the pause takes nothing");
+
     h.admin.post("/v1/admin/pause", json!({"paused": false})).await.unwrap();
-    assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
+    assert!(h.public("/v1/config").await.1["paused"].is_null());
+    let closed = h.state.lookups.read(|conn| outages::recent(conn, 0.0, 10)).await.unwrap();
+    assert!(closed.iter().all(|o| !o["end"].is_null()), "resuming closes the pause's outage: {closed:?}");
+    // The pause, its outage and its end are in the log, so a replay forgives the same lapse.
+    let logged = h.state.db.run(|conn| task_api::journal::entries_after(conn, 0, 10_000)).await.unwrap();
+    let kinds: Vec<(String, Value)> = logged
+        .iter()
+        .map(|(e, _)| (e["kind"].as_str().unwrap_or_default().to_string(), e["input"].get("cause").or(e["input"].get("paused")).cloned().unwrap_or_default()))
+        .filter(|(kind, _)| kind == "pause" || kind == "outage")
+        .collect();
+    let named = |kind: &str, what: Value| (kind.to_string(), what);
+    assert_eq!(kinds, [named("outage", json!("pause")), named("pause", json!(true)), named("outage", json!("pause")), named("pause", json!(false))]);
+    let lapse = logged.iter().map(|(e, _)| e).find(|e| e["kind"] == "lapse").expect("the lapse is logged");
+    assert_eq!(lapse["input"]["forgiven"], "pause_outage");
+    assert_ne!(h.miner.claim().await["refusal"]["code"], "PAUSED", "resumed, claims are judged as before");
+}
+
+#[tokio::test]
+async fn a_pause_outlives_a_restart() {
+    let h = Harness::start().await;
+    h.admin.post("/v1/admin/pause", json!({"paused": true, "reason": "an incident"})).await.unwrap();
+    // What a restarted copy reads first: the pause is in SQLite, not only in this copy's memory.
+    let kept = h.state.lookups.read(custody::current_pause).await.unwrap();
+    assert_eq!(kept.map(|p| p["reason"].clone()), Some(json!("an incident")));
+    h.state.custody.note_pause(None);
+    custody::refresh_pause(&h.state).await.unwrap();
+    assert!(h.state.custody.paused().is_some(), "every copy reads it back from SQLite");
 }
 
 /// Every log file in the bucket, oldest first, and the blobs they name.
@@ -176,7 +231,13 @@ async fn the_log_goes_on_through_a_handover_and_an_appointment_and_replays_under
     custody::poll(&b).await.unwrap();
     assert_eq!(b.custody.status(), Status::Active);
     h.client_of(&b_url, RIVAL).claim().await;
+    // The rival's claim lapses under B, so B's accounts hold something A's never did.
+    let later = b.clock().await.unwrap().at(b.tick().await.unwrap().block + 100_000);
+    assert_eq!(task_api::lifecycle::reclaim_expired(&b, later).await.unwrap().len(), 2, "both claims lapse under B");
     while journal::publish(&b).await.unwrap().is_some() {}
+    let accounts = |state: Arc<State>| async move { state.lookups.read(|conn| task_api::snapshot::take(conn, 1.0e10)).await.unwrap()["tables"].clone() };
+    let before = accounts(b.clone()).await;
+    assert!(!before["strikes"].as_array().unwrap().is_empty(), "the lapses struck");
 
     let files = journal_files(&b).await;
     let handed_at = handed["journal_seq"].as_i64().unwrap();
@@ -186,12 +247,13 @@ async fn the_log_goes_on_through_a_handover_and_an_appointment_and_replays_under
     assert_eq!(first_of_b["first"].as_i64(), Some(handed_at + 1));
     assert_eq!((first_of_b["entries"][0]["kind"].as_str(), first_of_b["entries"][0]["input"]["record"]["kind"].as_str()), (Some("custody"), Some("handover")));
 
-    // A third CVM appointed afresh, as after a lost one: it goes on from the head B published, with fresh accounts.
+    // A third CVM appointed afresh, as after a lost one: it goes on from the head B published, with the accounts that log gives.
     let agent_c = FakeDstack::start(&dir_c.0).await;
     let (c, _c_url, _c_dir) = h.sibling(11, in_custody(agent_c.socket.display().to_string())).await;
     trust(&c, approving(format!("sn22tee:{version}@{}", c.signer())));
     custody::poll(&c).await.unwrap();
     assert_eq!(c.custody.status(), Status::Active);
+    assert_eq!(accounts(c.clone()).await, before, "the appointed CVM rebuilt B's accounts from the published log");
     let appointed = latest(&h).await;
     while journal::publish(&c).await.unwrap().is_some() {}
     let files = journal_files(&c).await;
@@ -204,11 +266,39 @@ async fn the_log_goes_on_through_a_handover_and_an_appointment_and_replays_under
     for file in &files {
         replay.apply_segment(file, &holders, false, &blobs).unwrap().expect("one chain from the first entry to the last, whoever signed");
     }
-    assert_eq!(replay.divergences, []);
-    assert!(replay.started().unwrap(), "after the appointment the replay started again from the snapshot that follows it");
+    assert_eq!(replay.divergences, [], "the snapshot C logged on taking the log is the replay's own accounts");
+    assert!(replay.started().unwrap(), "the replay went on through the appointment");
 
     let mut without_b = Replay::open(None).unwrap();
     let broken = files.iter().map(|file| without_b.apply_segment(file, &[a.clone(), c.signer()], false, &blobs).unwrap()).find(Result::is_err);
     assert!(matches!(broken, Some(Err(journal::Break::Signature { .. }))), "a file only an unknown key signed is refused");
     let _ = (dir_a, dir_b, dir_c);
+}
+
+#[tokio::test]
+async fn a_cvm_is_not_appointed_over_a_published_log_that_does_not_hold() {
+    use task_api::journal;
+    let (dir_a, dir_c) = (short_dir(), short_dir());
+    let agent_a = FakeDstack::start(&dir_a.0).await;
+    let h = Harness::with(in_custody(agent_a.socket.display().to_string())).await;
+    let version = fakedstack::compose_hash();
+    trust(&h.state, approving(format!("sn22tee:{version}@{}", h.state.signer())));
+    custody::poll(&h.state).await.unwrap();
+    h.enqueue(urls(6)).await;
+    h.miner.claim().await;
+    while journal::publish(&h.state).await.unwrap().is_some() {}
+    // The operator edits a published entry: the file's signature no longer holds.
+    let key = journal::segment_key(1);
+    let mut file: Value = serde_json::from_slice(&h.state.storage.get(&key).await.unwrap()).unwrap();
+    file["entries"][0]["at"] = 1.0.into();
+    task_api::storage::put_json(&h.state.storage, &key, &file, None).await.unwrap();
+
+    let agent_c = FakeDstack::start(&dir_c.0).await;
+    let (c, _c_url, _c_dir) = h.sibling(11, in_custody(agent_c.socket.display().to_string())).await;
+    trust(&c, approving(format!("sn22tee:{version}@{}", c.signer())));
+    let refused = custody::poll(&c).await.unwrap_err();
+    assert!(format!("{refused:#}").contains("does not hold"), "{refused:#}");
+    assert_eq!(c.custody.status(), Status::Standby, "it signs nothing over a log it cannot go on from");
+    assert_eq!(latest(&h).await["signer"], h.state.signer().as_str(), "and publishes no record");
+    let _ = (dir_a, dir_c);
 }

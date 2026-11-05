@@ -1,9 +1,3 @@
-fastapi==0.135.3
-uvicorn[standard]==0.44.0
-redis==7.4.0
 aiohttp==3.13.5
 pyarrow==24.0.0
-numpy==2.2.6
-boto3==1.43.56
 bittensor==11.1.0
-lxml==6.1.1

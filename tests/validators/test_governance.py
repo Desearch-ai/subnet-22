@@ -14,6 +14,12 @@ OLD = NOW - governance.TIMELOCK_BLOCKS
 TAO = 10**9
 
 
+@pytest.fixture
+def one_coldkey(monkeypatch):
+    """For tests of the stake rule alone: any one coldkey is enough."""
+    monkeypatch.setattr(governance, "MIN_COLDKEYS", 1)
+
+
 def snapshot(
     commitments: dict, stakes=None, owner="owner-cold", owner_hotkey="owner-hot"
 ) -> Snapshot:
@@ -70,6 +76,7 @@ def test_the_owners_stake_and_validators_without_a_permit_never_count():
     assert governance.total(snapshot({})) == 100 * TAO
 
 
+@pytest.mark.usefixtures("one_coldkey")
 def test_a_version_needs_more_than_half_the_independent_stake_for_the_whole_timelock():
     half = {"v2": (OLD, f"sn22tee:{H1}"), "v3": (OLD, f"sn22tee:{H1}")}
     assert not governance.approved(
@@ -81,6 +88,7 @@ def test_a_version_needs_more_than_half_the_independent_stake_for_the_whole_time
     assert governance.approved(snapshot(half), H1)
 
 
+@pytest.mark.usefixtures("one_coldkey")
 def test_a_commitment_younger_than_the_timelock_does_not_count_yet():
     young = {"v1": (OLD + 1, f"sn22tee:{H1}"), "v2": (OLD, f"sn22tee:{H1}")}
     assert (
@@ -102,6 +110,7 @@ def test_listing_a_successor_keeps_the_running_version_endorsed():
     )
 
 
+@pytest.mark.usefixtures("one_coldkey")
 def test_appointing_counts_only_commitments_naming_that_signer():
     commitments = {
         "v1": (OLD, f"sn22tee:{H1}@{SIGNER}"),
@@ -116,6 +125,78 @@ def test_appointing_counts_only_commitments_naming_that_signer():
     assert governance.approved(
         snapshot(commitments), H1
     ), "an appointment approves its version too"
+
+
+def test_a_version_needs_three_distinct_coldkeys_besides_the_stake():
+    every = {hotkey: (OLD, f"sn22tee:{H1}") for hotkey in ("v1", "v2", "v3")}
+    assert governance.approved(snapshot(every), H1)
+    assert governance.coldkeys(snapshot(every), H1, 0) == 3
+    two = {hotkey: every[hotkey] for hotkey in ("v1", "v2")}
+    assert governance.support(snapshot(two), H1, 0) == 70 * TAO
+    assert not governance.approved(snapshot(two), H1), "70% from two coldkeys"
+    assert governance.approved(snapshot(two), H1, min_coldkeys=2)
+    # One coldkey behind three hotkeys is one.
+    same = snapshot(every)
+    same = Snapshot(
+        same.block,
+        tuple(
+            Neuron(n.hotkey, "one-cold", n.permit, n.stake)
+            if n.hotkey.startswith("v")
+            else n
+            for n in same.neurons
+        ),
+        same.owner_coldkey,
+        same.owner_hotkey,
+        same.commitments,
+    )
+    assert governance.coldkeys(same, H1, 0) == 1
+    assert not governance.approved(same, H1)
+
+
+@pytest.mark.usefixtures("one_coldkey")
+def test_the_owners_delegated_stake_and_its_children_do_not_count():
+    v1 = {"v1": (OLD, f"sn22tee:{H1}")}
+    # The owner delegates 60 to v1: v1's 40 + 60 of 160 would carry it if it counted.
+    boosted = snapshot(v1, {"v1": 100, "v2": 30, "v3": 30})
+    assert governance.approved(boosted, H1)
+    left_out = Snapshot(
+        *[getattr(boosted, f) for f in ("block", "neurons", "owner_coldkey")],
+        boosted.owner_hotkey,
+        boosted.commitments,
+        owner_stake={"v1": 60 * TAO},
+    )
+    assert governance.total(left_out) == 100 * TAO
+    assert governance.support(left_out, H1, 0) == 40 * TAO
+    assert not governance.approved(left_out, H1)
+    # A validator the owner's hotkey passes stake down to is not independent at all.
+    both = {"v1": (OLD, f"sn22tee:{H1}"), "v2": (OLD, f"sn22tee:{H1}")}
+    assert governance.approved(snapshot(both), H1)
+    child = Snapshot(
+        NOW,
+        snapshot(both).neurons,
+        "owner-cold",
+        "owner-hot",
+        both,
+        owner_children=frozenset({"v1"}),
+    )
+    assert governance.total(child) == 60 * TAO
+    assert not governance.approved(child, H1), "30 of 60 is not more than half"
+
+
+def test_the_owners_positions_count_alpha_here_and_root_tao_at_the_weight():
+    def position(hotkey, netuid, rao):
+        return SimpleNamespace(
+            hotkey=hotkey, netuid=netuid, stake=SimpleNamespace(rao=rao)
+        )
+
+    quarter = governance.U64_MAX // 4
+    found = governance.stake_by_hotkey(
+        [position("v1", 22, 100), position("v1", 0, 1000), position("v2", 7, 5000)],
+        22,
+        quarter,
+    )
+    # The same numbers are asserted in task-api/src/governance.rs.
+    assert found == {"v1": 100 + 249}
 
 
 def test_with_no_independent_stake_nothing_is_approved():
@@ -152,10 +233,36 @@ def test_the_snapshot_is_read_from_the_metagraph_at_the_asked_block():
             asked.append((netuid, block, commitments))
             return graph
 
+    class View:
+        async def query(self, item, params=None):
+            asked.append(item)
+            return governance.U64_MAX // 2
+
+    view = View()
+
+    async def at(block):
+        asked.append(("at", block))
+        return view
+
+    async def stake_for_coldkey(coldkey):
+        assert coldkey == "owner-cold"
+        root = SimpleNamespace(hotkey="v1", netuid=0, stake=SimpleNamespace(rao=4))
+        return [root]
+
+    async def parents(hotkey, netuid):
+        return [(2**64 - 1, "owner-hot")] if hotkey == "v1" else []
+
+    async def hotkey_owner(hotkey):
+        return "owner-cold"
+
+    view.staking = SimpleNamespace(stake_for_coldkey=stake_for_coldkey)
+    view.delegation = SimpleNamespace(parents=parents)
+    view.neurons = SimpleNamespace(hotkey_owner=hotkey_owner)
     found = asyncio.run(
-        governance.read_snapshot(SimpleNamespace(subnets=Subnets()), 22, 1234)
+        governance.read_snapshot(SimpleNamespace(subnets=Subnets(), at=at), 22, 1234)
     )
-    assert asked == [(22, 1234, True)]
+    assert asked == [(22, 1234, True), ("at", 1234), ("SubtensorModule", "TaoWeight")]
     assert found.block == 1234 and found.commitments == {"v1": (1000, text)}
     assert found.neurons[0] == Neuron("v1", "c1", True, 5)
     assert (found.owner_coldkey, found.owner_hotkey) == ("owner-cold", "owner-hot")
+    assert found.owner_stake == {"v1": 1} and found.owner_children == {"v1"}

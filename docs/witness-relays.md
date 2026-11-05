@@ -82,7 +82,7 @@ answer lookups yields no proofs (it is down for everyone).
 | `--relay.host` | `0.0.0.0` | |
 | `--relay.publish_delay_blocks` | 5 | blocks before a record is listed publicly |
 | `--relay.check_after_blocks` | 50 | blocks after which a request missing from the log is a proof |
-| `--relay.signer` | the API's `/v1/key` | the log key proofs are checked against; pin it (block B pins it in the release) |
+| `--relay.signer` | the custody chain's signer, or the one the release pins | the log key proofs are checked against; never read from the API's `/v1/key` |
 
 The relay serves at the root of its address (the miner signs the path, so it can't sit behind a prefix). Put it
 behind your own TLS terminator if you like; a miner's limit is 2 requests a second with bursts of 10. Records and

@@ -54,7 +54,6 @@ METAGRAPH_SYNC_S = 600
 POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
-SIGNER_RETRY_S = 30
 JOURNAL_POLL_S = 60
 CUSTODY_FILE = "custody.json"
 ACCOUNT_CHECK_S = 300
@@ -314,10 +313,10 @@ class Validator:
         elif custody.fallback:
             await self.compare_with_api(custody.fallback)
         else:
-            log.warning(
-                "No task API custody records yet and no pinned signer: trusting the signer the task API names at /v1/key"
+            # Never the key the API names at /v1/key: whoever answers the domain could name any.
+            log.error(
+                "No task API custody records yet and no pinned signer: nothing the task API signs is followed"
             )
-            custody.fallback = await self.key_from_api()
         return custody
 
     async def compare_with_api(self, pinned: str) -> None:
@@ -350,31 +349,30 @@ class Validator:
             simulated=self.config.neuron.tee_simulated,
         )
 
-    async def key_from_api(self) -> str:
-        """The key the task API says it signs with, fetched once."""
-        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
-        while not self.stopping.is_set():
-            try:
-                async with self.http.get(
-                    url, timeout=SHARES_TIMEOUT, raise_for_status=True
-                ) as response:
-                    return (await response.json())["signer"]
-            except Exception as error:
-                log.warning(f"Task API signer unavailable, retrying: {error!r}")
-                await asyncio.sleep(SIGNER_RETRY_S)
-        return ""
-
     async def block_hash(self, block: int) -> str | None:
         """A block's hash from our own node; None until it exists."""
         if block > await self.subtensor.block():
             return None
         return (await self.subtensor.block_info(block)).hash
 
+    def anchor_hotkey(self) -> str:
+        """The hotkey whose commitment anchors the task API's log; never the key that signs the log, which would let one key do both."""
+        anchor = self.config.neuron.task_api_anchor
+        signers = {self.config.neuron.legacy_signer, LEGACY_SIGNER}
+        if anchor and anchor in signers:
+            log.error(
+                f"--neuron.task_api_anchor {anchor} is the task API's signer: anchors must come from a hotkey of their own, not checked"
+            )
+            return ""
+        return anchor
+
     async def journal_anchor(self) -> Anchor | None:
         """The head of the task API's log as its anchor hotkey last committed it on this subnet, from our own node."""
+        anchor = self.anchor_hotkey()
+        if not anchor:
+            return None
         record = await self.subtensor.query(
-            ("Commitments", "CommitmentOf"),
-            [self.config.netuid, self.config.neuron.task_api_anchor],
+            ("Commitments", "CommitmentOf"), [self.config.netuid, anchor]
         )
         return anchor_from_commitment(record)
 

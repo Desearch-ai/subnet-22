@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 from feeder import loop
+from feeder.canonical import canonicalize, domain_of, url_sha1
 
 from desearch.client import TaskApiError
 
@@ -185,3 +186,11 @@ def test_the_feeder_watches_only_the_crawl_queue():
             return {"queue_depth": {"crawl": 7, "embed": 900}}
 
     assert asyncio.run(loop.queue_depth(Health())) == 7
+
+
+def test_urls_are_keyed_as_the_task_api_keys_them():
+    # The same vector is asserted in crates/desearch/src/canonical.rs.
+    url = "https://WWW.Example.com/a?utm_source=x&b=2&fbclid=y&Ref=z#frag"
+    assert canonicalize(url) == "https://www.example.com/a?b=2"
+    assert url_sha1(url) == "4a6a28a07159fc9d362f31d8c17a77de5db6d2ae"
+    assert domain_of(url) == "example.com"

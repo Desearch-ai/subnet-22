@@ -372,7 +372,8 @@ async fn kept_round(h: &Harness, round_id: &str) -> task_api::rounds::Round {
 
 #[tokio::test]
 async fn with_anchoring_on_a_round_is_revealed_only_after_an_anchor_before_its_seed_block() {
-    let anchoring = AnchorSettings { network: "ws://127.0.0.1:1".into(), netuid: 22, key_uri: String::new(), every_blocks: 12, min_blocks: 3, per_epoch: 30 };
+    let anchoring =
+        AnchorSettings { network: "ws://127.0.0.1:1".into(), quorum: 1, netuid: 22, key_uri: String::new(), every_blocks: 12, min_blocks: 3, per_epoch: 30 };
     let h = Harness::with(|s| s.anchor = Some(anchoring)).await;
     let enqueued = h.admin.post("/v1/admin/enqueue", json!({"urls": urls(6)})).await.unwrap();
     let (round_id, first_seed) = (enqueued["round_id"].as_str().unwrap().to_string(), enqueued["seed_block"].as_i64().unwrap());
