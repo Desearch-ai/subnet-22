@@ -634,10 +634,16 @@ impl Settings {
             None => (None, None),
         };
         // The anchoring key is a secret; `journaled` names its address.
-        let anchored = anchor.as_ref().map(|AnchorSettings { network, quorum, netuid, key_uri: _, every_blocks, min_blocks, per_epoch }| {
-            (without_credentials(network), *quorum, *netuid, *every_blocks, *min_blocks, *per_epoch)
+        let anchored = anchor.as_ref().map(|AnchorSettings { network, quorum, netuid, key_uri: _, every_blocks, min_blocks, per_epoch }| AnchorSettings {
+            network: without_credentials(network),
+            quorum: *quorum,
+            netuid: *netuid,
+            key_uri: String::new(),
+            every_blocks: *every_blocks,
+            min_blocks: *min_blocks,
+            per_epoch: *per_epoch,
         });
-        let anchor_field = |pick: fn(&(String, usize, u16, i64, i64, i64)) -> Value| anchored.as_ref().map(pick).unwrap_or(Value::Null);
+        let anchor_field = |pick: fn(&AnchorSettings) -> Value| anchored.as_ref().map(pick).unwrap_or(Value::Null);
         [
             ("TASK_API_LISTEN", json!(listen)),
             ("TASK_API_DATA", json!(data.display().to_string())),
@@ -733,12 +739,12 @@ impl Settings {
             ("TASK_API_JOURNAL_SHARES_EVERY_S", json!(journal_shares_every)),
             ("TASK_API_SNAPSHOT_EVERY_S", json!(snapshot_every)),
             ("TASK_API_JOURNAL_KEEP_S", json!(journal_keep)),
-            ("TASK_API_ANCHOR_NETWORK", anchor_field(|a| json!(a.0))),
-            ("TASK_API_ANCHOR_QUORUM", anchor_field(|a| json!(a.1))),
-            ("TASK_API_ANCHOR_NETUID", anchor_field(|a| json!(a.2))),
-            ("TASK_API_ANCHOR_EVERY_BLOCKS", anchor_field(|a| json!(a.3))),
-            ("TASK_API_ANCHOR_MIN_BLOCKS", anchor_field(|a| json!(a.4))),
-            ("TASK_API_ANCHOR_PER_EPOCH", anchor_field(|a| json!(a.5))),
+            ("TASK_API_ANCHOR_NETWORK", anchor_field(|a| json!(a.network))),
+            ("TASK_API_ANCHOR_QUORUM", anchor_field(|a| json!(a.quorum))),
+            ("TASK_API_ANCHOR_NETUID", anchor_field(|a| json!(a.netuid))),
+            ("TASK_API_ANCHOR_EVERY_BLOCKS", anchor_field(|a| json!(a.every_blocks))),
+            ("TASK_API_ANCHOR_MIN_BLOCKS", anchor_field(|a| json!(a.min_blocks))),
+            ("TASK_API_ANCHOR_PER_EPOCH", anchor_field(|a| json!(a.per_epoch))),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))

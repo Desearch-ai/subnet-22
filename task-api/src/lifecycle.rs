@@ -686,7 +686,7 @@ pub fn forgiven_in(conn: &Connection, forgiving: &Forgiving, expiry: Option<f64>
     if let Some(cause) = outages::during(conn, from, expiry)? {
         return Ok(Some(format!("{cause}_outage")));
     }
-    Ok(witnessed_outage(conn, forgiving, from, expiry)?)
+    witnessed_outage(conn, forgiving, from, expiry)
 }
 
 /// `storage_witnessed_outage` when validators' failed storage witnesses cover any of `from..=expiry`.
