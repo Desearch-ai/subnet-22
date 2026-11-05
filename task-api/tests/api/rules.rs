@@ -383,6 +383,25 @@ async fn a_host_clock_off_the_chains_is_timed_by_the_chain_and_forgives_its_laps
 }
 
 #[tokio::test]
+async fn on_finalized_heads_the_finality_lag_is_lag_not_skew() {
+    // 12-second blocks, the finalized head two behind: 24 s the host clock must not be blamed for.
+    let fake = FakeChain::start(5_000, 12.0).await;
+    let h = Harness::start().await;
+    let mut settings = h.state.settings.clone();
+    settings.seeds = SeedsMode::Chain { network: fake.url.clone() };
+    settings.chain.finalized = true;
+    settings.clock_skew_s = 20.0;
+    settings.finality_stall_blocks = 1;
+    let state = State::new(settings, h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    janitor::watch_clock(&state, true).await.unwrap();
+    assert_eq!(state.clock_offset(), 0.0, "a host clock that agrees with the chain's, its finalized head 24 s old");
+    janitor::watch_finality(&state).await.unwrap();
+    let opened = state.db.run(|conn| outages::recent(conn, 0.0, 10)).await.unwrap();
+    let causes: Vec<Value> = opened.iter().map(|o| o["cause"].clone()).collect();
+    assert_eq!(causes, vec![json!(outages::FINALITY)], "two blocks behind the best block is past a stall of one, and no clock outage");
+}
+
+#[tokio::test]
 async fn while_the_host_clock_is_off_a_miner_whose_clock_is_right_is_let_in() {
     let h = Harness::start().await;
     h.enqueue(urls(6)).await;

@@ -279,7 +279,7 @@ pub async fn watch_clock(state: &State, log: bool) -> Result<()> {
     if limit <= 0.0 {
         return Ok(());
     }
-    let (tick, best) = (state.tick().await?, chain.current_block().await?);
+    let (tick, best) = (state.tick().await?, chain.best_head().await?);
     let Some(block_time) = chain.block_time(tick.block).await? else { return Ok(()) };
     let offset = outages::host_offset(now(), block_time, best, tick.block, state.seeds.block_seconds());
     if offset.abs() > limit {
@@ -303,9 +303,9 @@ pub async fn watch_clock(state: &State, log: bool) -> Result<()> {
 }
 
 /// Finality that falls behind the best block stops every deadline; the claims alive then lapse at no cost once it catches up.
-async fn watch_finality(state: &State) -> Result<()> {
+pub async fn watch_finality(state: &State) -> Result<()> {
     let (Seeds::Chain(chain), limit) = (&state.seeds, state.settings.finality_stall_blocks) else { return Ok(()) };
-    let (best, tick) = (chain.current_block().await?, state.tick().await?);
+    let (best, tick) = (chain.best_head().await?, state.tick().await?);
     let lag = best - tick.block;
     if lag > limit {
         let detail = format!("finalized block {} is {lag} blocks behind best {best}", tick.block);

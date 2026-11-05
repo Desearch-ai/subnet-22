@@ -249,6 +249,16 @@ impl Chain {
         self.read_best().await
     }
 
+    /// The best block itself, through the quorum and read now, even when `finalized` makes `current_block` the finalized head:
+    /// the finalized head's lag is measured against it.
+    pub async fn best_head(&self) -> Result<i64> {
+        if self.quorum <= 1 {
+            self.head_from(None, false).await
+        } else {
+            self.agreed_head(false).await
+        }
+    }
+
     fn counted(self: &Arc<Self>) -> Option<i64> {
         let (block, at) = (*self.best.lock().expect("best block"))?;
         if at.elapsed() >= self.refresh && !self.all_paused() && !self.reading.swap(true, Ordering::AcqRel) {
