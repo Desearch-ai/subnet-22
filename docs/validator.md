@@ -209,9 +209,14 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |
 | `--relay.port` | serve a relay for miners' requests on this port, signing a witness of each; 0 (the default) serves none |
-| `--relay.publish_delay_blocks`, `--relay.check_after_blocks` | blocks before a witness is listed (5), and after which a relayed request missing from the task API's log is a censorship proof (50) |
+| `--relay.publish_delay_blocks`, `--relay.check_after_blocks` | blocks before a witness is listed (5), and after which a witnessed request whose outcome the task API's anchored log lacks or contradicts is a censorship proof (50) |
+| `--relay.late_blocks` | blocks after forwarding within which the log must have judged a witnessed request (10) |
 | `--relay.signer` | the key the task API's log must be signed with; its `/v1/key` when empty |
 | `--witness.storage_off` | do not look at, and sign what storage holds for, every completed upload |
+| `--witness.probe_every_s` | seconds between this validator's own probes of storage through a link the task API hands validators (60); failures, and looks at uploads storage failed, are reported to the API, and enough validators' reports forgive the claims alive then; 0 probes nothing |
+
+**Upload log.** Each upload log file names the hash of the one before; the validator checks the links and keeps a
+signed fraud proof when a file it read is forked or one younger than a day is withheld, instead of reading past it.
 
 **Relays and witnesses.** A validator serving a relay gives miners a path to the task API outside the
 operator's network, signs a witness of every request it forwards and publishes censorship proofs for any the

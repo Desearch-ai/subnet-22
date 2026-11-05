@@ -106,6 +106,8 @@ services:
       # The storage canary and pinned upload versions (block C); a failed canary probe opens a storage outage too.
       TASK_API_CANARY_EVERY_S: "60"
       TASK_API_UPLOAD_LOCK_S: "0"
+      TASK_API_STORAGE_WITNESS_QUORUM: "3"
+      TASK_API_STORAGE_WITNESS_WINDOW_S: "300"
 
       # The hash-chained log (block B). Anchoring its head needs a hotkey registered on the subnet, which
       # this CVM's own key is not; it stays off until one is passed in as a credential.

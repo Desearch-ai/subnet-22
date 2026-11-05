@@ -47,10 +47,20 @@ held, when it was alive during an outage the API saw on its own side:
 - **clock**: the host clock more than `TASK_API_CLOCK_SKEW_S` (30 s) off the chain's, dated from the last
   check that agreed: requests refused for their timestamp before the check caught it were refused for no
   fault of their miner. The check that agrees again closes it.
+- **upload lock**: storage refused to put a completed upload's version under Object Lock, so the completion
+  was refused (`TASK_API_UPLOAD_LOCK_S` set); the next lock that holds closes it.
+
+Validators' own word opens one too, whatever the API's probes saw: each validator probes storage the way
+miners use it and looks at every completed upload, and reports each failure to the API (signed, logged as a
+`witness` entry at the block it arrived). Wherever `TASK_API_STORAGE_WITNESS_QUORUM` (3) distinct validators
+reported failures within `TASK_API_STORAGE_WITNESS_WINDOW_S` (300 s) of each other, storage was down from the
+first of them to the window's length after the last (`storage_witnessed`). This span is not opened or closed
+by the API: it follows from the logged witnesses alone, so a replay finds the same one.
 
 A claim is forgiven when any part of it, from its start to its last block, falls in an outage. Its
-receipt names the cause (`restart`, `storage_outage`, `finality_outage`, `clock_outage`). Outages are
-listed at `GET /v1/outages` and logged, so a replay forgives the same lapses.
+receipt names the cause (`restart`, `storage_outage`, `finality_outage`, `clock_outage`, `upload_lock_outage`,
+`storage_witnessed_outage`). Outages are listed at `GET /v1/outages`, validators' under `witnessed`, and
+logged, so a replay forgives the same lapses.
 
 ## Rounds
 

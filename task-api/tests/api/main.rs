@@ -96,7 +96,8 @@ async fn a_crawl_task_goes_round_trip() {
     let body = parquet(&task);
     h.put(upload["url"].as_str().unwrap(), body.clone()).await;
     let done = h.miner.post(&complete, report.clone()).await.unwrap();
-    assert_eq!(done, json!({"task_id": id, "status": "open_for_validation"}));
+    assert_eq!((done["task_id"].as_str(), done["status"].as_str()), (Some(id.as_str()), Some("open_for_validation")));
+    assert!(receipt_verifies(&done["receipt"], &signer), "the answer carries the completion's signed receipt");
     assert_eq!(h.status(&id).await, "open");
     assert_eq!(h.object(key), Some(body.clone()), "the upload stays where the miner put it");
     let etag = h.state.storage.head(key).await.unwrap().unwrap().etag;

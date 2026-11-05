@@ -183,6 +183,10 @@ pub struct Settings {
     /// Seconds each pinned upload version is put under Object Lock (compliance mode) at its completion; 0 locks
     /// none. Needs a versioned bucket with Object Lock on.
     pub upload_lock_s: f64,
+    /// Distinct validators whose failed storage witnesses within `storage_witness_window` seconds of each other make a storage
+    /// outage that forgives claims, whatever the API's own probes saw; 0 turns it off.
+    pub storage_witness_quorum: i64,
+    pub storage_witness_window: f64,
     /// Seconds between published files of the log.
     pub journal_every: f64,
     /// Seconds between the shares written into the log, for a replay to compare with its own.
@@ -274,6 +278,8 @@ impl Settings {
             "max_upload": self.max_upload,
             "canary_every": self.canary_every,
             "upload_lock_s": self.upload_lock_s,
+            "storage_witness_quorum": self.storage_witness_quorum,
+            "storage_witness_window": self.storage_witness_window,
             "registry": registry,
             "seeds": match self.seeds { SeedsMode::Chain { .. } => "chain", SeedsMode::Local { .. } => "local" },
             "block_seconds": match self.seeds { SeedsMode::Chain { .. } => crate::seeds::BLOCK_SECONDS, SeedsMode::Local { block_seconds, .. } => block_seconds },
@@ -429,6 +435,8 @@ impl Settings {
             cors_origins: listed(&text("TASK_API_CORS_ORIGINS", DEFAULT_ORIGINS)),
             canary_every: number("TASK_API_CANARY_EVERY_S", 60.0)?,
             upload_lock_s: number("TASK_API_UPLOAD_LOCK_S", 0.0)?,
+            storage_witness_quorum: number("TASK_API_STORAGE_WITNESS_QUORUM", 3i64)?,
+            storage_witness_window: number("TASK_API_STORAGE_WITNESS_WINDOW_S", 300.0)?,
             journal_every: number("TASK_API_JOURNAL_EVERY_S", 30.0)?,
             journal_shares_every: number("TASK_API_JOURNAL_SHARES_EVERY_S", 600.0)?,
             snapshot_every: number("TASK_API_SNAPSHOT_EVERY_S", 21_600.0)?,
@@ -515,6 +523,8 @@ impl Settings {
             cors_origins,
             canary_every,
             upload_lock_s,
+            storage_witness_quorum,
+            storage_witness_window,
             journal_every,
             journal_shares_every,
             snapshot_every,
@@ -661,6 +671,8 @@ impl Settings {
             ("TASK_API_WRONG_REPORTS", json!(wrong_reports)),
             ("TASK_API_WRONG_REPORTS_WINDOW_S", json!(wrong_reports_window_s)),
             ("TASK_API_UPLOAD_LOCK_S", json!(upload_lock_s)),
+            ("TASK_API_STORAGE_WITNESS_QUORUM", json!(storage_witness_quorum)),
+            ("TASK_API_STORAGE_WITNESS_WINDOW_S", json!(storage_witness_window)),
             ("TASK_API_JOURNAL_EVERY_S", json!(journal_every)),
             ("TASK_API_JOURNAL_SHARES_EVERY_S", json!(journal_shares_every)),
             ("TASK_API_SNAPSHOT_EVERY_S", json!(snapshot_every)),

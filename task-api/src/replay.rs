@@ -252,6 +252,8 @@ impl Replay {
                     self.compare(entry, "a new miner's budget", &entry["output"]["budget"], budget.into());
                 }
                 "complete" => self.complete(entry, blobs)?,
+                // A refused abandon changed nothing; it is logged so a relay's witness of it finds it.
+                "abandon" if entry["output"].get("refused").is_some() => {}
                 "abandon" | "lapse" => self.lapse(entry)?,
                 "report" => self.report(entry, blobs)?,
                 "settle" => self.settle(entry)?,
@@ -261,6 +263,7 @@ impl Replay {
                 "take_back" => self.take_back(entry)?,
                 "recheck" => self.recheck(entry)?,
                 "outage" => self.outage(entry)?,
+                "witness" => self.witness(entry, blobs)?,
                 "prune" => {
                     let at = float(&entry["at"]);
                     budgets::prune(&self.conn, KEEP_H, at)?;
@@ -493,7 +496,51 @@ impl Replay {
             }
         }
         let from = expiry - claim_ttl - 2.0 * float(&basis["block_seconds"]);
-        Ok(outages::during(&self.conn, from, expiry)?.map(|cause| format!("{cause}_outage")))
+        if let Some(cause) = outages::during(&self.conn, from, expiry)? {
+            return Ok(Some(format!("{cause}_outage")));
+        }
+        // Validators' storage witnesses the log holds, under the quorum and window the copy ran with.
+        let (quorum, window) = (basis["witness_quorum"].as_i64().unwrap_or(0), float(&basis["witness_window"]));
+        if !start.is_null() {
+            let settings = &start["settings"];
+            if settings.get("storage_witness_quorum").is_some_and(|q| q.as_i64() != Some(quorum))
+                || settings.get("storage_witness_window").is_some_and(|w| w.as_f64() != Some(window))
+            {
+                let ran = json!({"quorum": settings["storage_witness_quorum"], "window": settings["storage_witness_window"]});
+                self.diverge(entry, FRAUD, "the storage witness quorum a lapse was judged on", json!({"quorum": quorum, "window": window}), ran);
+            }
+        }
+        let basis = lifecycle::Forgiving {
+            started_at: f64::NAN,
+            claim_ttl,
+            block_seconds: float(&basis["block_seconds"]),
+            witness_quorum: quorum,
+            witness_window: window,
+        };
+        lifecycle::witnessed_outage(&self.conn, &basis, from, expiry)
+    }
+
+    /// A validator's report that storage failed it, kept so lapses are forgiven on the same witnesses the API had; one the
+    /// validator did not sign counts for nothing (the request's signature is checked for every entry).
+    fn witness(&mut self, entry: &Value, blobs: Blobs) -> Result<()> {
+        if entry["output"].get("refused").is_some() {
+            return Ok(());
+        }
+        let input = &entry["input"];
+        if input["request"]["hotkey"] != input["witness"] {
+            self.diverge(
+                entry,
+                FRAUD,
+                "a storage witness logged for another validator than the one that sent it",
+                input["witness"].clone(),
+                input["request"]["hotkey"].clone(),
+            );
+            return Ok(());
+        }
+        if journal::request_signed(&input["request"], blobs) {
+            outages::note_witness(&self.conn, text(input, "witness"), float(&input["at"]), int(&input["block"]), text(input, "detail"))?;
+        }
+        Ok(())
     }
 
     /// An outage opened or closed: one of a cause at a time, as the API keeps them.

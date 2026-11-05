@@ -239,6 +239,8 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         cors_origins: Vec::new(),
         canary_every: 0.0,
         upload_lock_s: 0.0,
+        storage_witness_quorum: 2,
+        storage_witness_window: 300.0,
         client_address_header: task_api::auth::CLIENT_ADDRESS_HEADER.into(),
         chain: Default::default(),
         tee: Default::default(),

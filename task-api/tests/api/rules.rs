@@ -373,7 +373,7 @@ async fn a_host_clock_off_the_chains_is_timed_by_the_chain_and_forgives_its_laps
     let opened = state.db.run(|conn| outages::recent(conn, 0.0, 10)).await.unwrap();
     assert_eq!((opened[0]["cause"].clone(), opened[0]["end"].clone()), (json!(outages::CLOCK), Value::Null));
     let start = opened[0]["start"].as_f64().unwrap();
-    let forgiving = lifecycle::Forgiving { started_at: 0.0, claim_ttl: 190.0, block_seconds: 12.0 };
+    let forgiving = lifecycle::Forgiving { started_at: 0.0, claim_ttl: 190.0, block_seconds: 12.0, witness_quorum: 3, witness_window: 300.0 };
     let forgiven = state.db.run(move |conn| lifecycle::forgiven_in(conn, &forgiving, Some(start + 100.0))).await.unwrap();
     assert_eq!(forgiven.as_deref(), Some("clock_outage"), "a claim alive while requests were refused for the host's clock");
     fake.set_behind(0.0);
