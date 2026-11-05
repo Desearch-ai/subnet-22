@@ -1173,7 +1173,7 @@ pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) 
     let mut active: HashSet<String> = state.validation.active_for(&state.redis, kind_of(job), now).await?.into_iter().collect();
     active.extend(voters.iter().cloned());
     let due = now >= job.get("deadline").and_then(Value::as_f64).unwrap_or(0.0);
-    if !due && !(!voters.is_empty() && active.is_subset(&voters)) {
+    if !(due || (!voters.is_empty() && active.is_subset(&voters))) {
         return Ok(None);
     }
     if voters.is_empty() {
