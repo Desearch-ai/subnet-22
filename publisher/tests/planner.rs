@@ -341,7 +341,9 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         dir,
         pages_per_hour,
         bulk_pages_per_hour: 0.0,
+        passage_texts_per_hour: 0.0,
         pages_per_input: 3,
+        texts_per_input: 0,
         chars_per_input: 3_000_000,
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
@@ -2551,7 +2553,7 @@ async fn six_held(dir: &std::path::Path, pages: &Bucket, temp: &Bucket, redis: &
 /// Notes the planner's budgets as spent, as a planner stops whose log brings more than its budget.
 fn nothing_banked(planner: &Planner) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-    planner.state.keep_budgets(now, [0.0; 3]).unwrap();
+    planner.state.keep_budgets(now, [0.0; 4]).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3524,6 +3526,97 @@ async fn a_bulk_page_planned_page_first_gets_its_passages_through_the_lane_on_it
     let page_only = |url: &str| second.state.planned_version(RECIPE_V2, &page_key(url).unwrap()).unwrap().map(|version| version.page_only);
     assert_eq!((page_only(&crawled.url), page_only(&wiki.url)), (Some(false), Some(false)), "both get their passages");
     assert_eq!((second.counts.planned, second.counts.planned_by_class.iter().sum::<u64>()), (2, 1), "the bulk page's on the lane's budget");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Texts of the inputs handed to the task API or still pending, an input at a time.
+async fn inputs_texts(redis: &mut ConnectionManager, planner: &Planner, temp: &Bucket) -> Vec<Vec<String>> {
+    let entries = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().into_iter().chain(planner.state.pending().unwrap().into_iter().map(|(_, entry)| entry));
+    let mut inputs = Vec::new();
+    for raw in entries {
+        let entry: Value = serde_json::from_str(&raw).unwrap();
+        inputs.push(input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap()));
+    }
+    inputs
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_passage_lane_plans_all_passages_of_reference_bulk_pages_planned_page_first_on_its_own_texts_budget() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("passage-lane");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let long = (0..40).map(|i| format!("## Section {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n");
+    let bulk_page = |url: &str, domain: &str, text: &str, n: usize| {
+        let mut page = v2(record(url, text, "article", "en"));
+        (page.domain, page.task_id, page.miner) = (domain.into(), format!("bulk-run-000001-{n:06}"), String::new());
+        page
+    };
+    let wiki = bulk_page("https://en.wikipedia.org/wiki/Long", "en.wikipedia.org", &long, 1);
+    let short = bulk_page("https://en.wikipedia.org/wiki/Short", "en.wikipedia.org", &article(1), 2);
+    let paper = bulk_page("https://papers.example/p/1", "papers.example", &long, 3);
+    bulk_file(&pages, 1, vec![wiki.clone(), short.clone(), paper.clone()]).await;
+    log(&pages, 1, vec![v2(record("https://news.example/story/1", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    let sites = json!({"sites": [
+        {"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia", "type": "reference"},
+        {"host": "papers.example", "rule": "bulk", "source": "papers", "type": "academic"},
+    ]});
+    std::fs::write(&set, sites.to_string()).unwrap();
+    let lane = |passages_per_hour: f64| {
+        let mut lane = settings(dir.join("state"), 0.0, 0);
+        (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start, lane.page_first) = (Some(set.clone()), None, 3600.0, Duration::from_secs(120), true);
+        lane.passage_texts_per_hour = passages_per_hour;
+        lane
+    };
+    let mut first = Planner::new(lane(0.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    first.pass().await.unwrap();
+    first.flush().await.unwrap();
+    assert_eq!((first.counts.planned, first.counts.page_only, first.counts.passage_files), (3, 2, 0), "page first, with the lane off");
+    drop(first);
+    let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.unwrap();
+
+    let mut on = Planner::new(lane(3_600_000.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    on.pass().await.unwrap();
+    on.flush().await.unwrap();
+    assert_eq!((on.counts.passages, on.counts.passage_texts, on.counts.passage_passed, on.counts.passage_files), (1, 40, 2, 1), "all forty of the reference page's, past the cap of 32");
+    assert_eq!((on.counts.planned, on.counts.parts, on.counts.planned_by_class.iter().sum::<u64>()), (1, 1, 0), "none of the page budget");
+    let page_only = |url: &str| on.state.planned_version(RECIPE_V2, &page_key(url).unwrap()).unwrap().map(|version| version.page_only);
+    assert_eq!((page_only(&wiki.url), page_only(&paper.url)), (Some(false), Some(true)), "the paper is not a reference page");
+    let inputs = inputs_texts(&mut redis, &on, &temp).await;
+    assert_eq!(inputs.iter().map(Vec::len).collect::<Vec<_>>(), [40], "passages alone, the page text planned before");
+    assert!(inputs[0].iter().enumerate().all(|(i, text)| text.starts_with(&format!("A title › Section {i}\n"))), "each led by the title and its section");
+    assert_eq!(on.state.passage_cursor().unwrap(), 1);
+    drop(on);
+
+    let mut again = Planner::new(lane(3_600_000.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    again.pass().await.unwrap();
+    assert_eq!((again.counts.passage_files, again.counts.passages), (0, 0), "a restart goes on after the last file read through");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_is_cut_at_its_text_cap() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("texts-per-input");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let long = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &(0..4).map(|i| format!("## Part {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n"), "article", "en"));
+    log(&pages, 1, (0..5).map(long).collect()).await;
+    let mut capped = settings(dir.join("state"), 3600.0, 0);
+    (capped.pages_per_input, capped.texts_per_input) = (100, 8);
+    let mut planner = Planner::new(capped, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    let mut sizes: Vec<usize> = inputs_texts(&mut redis, &planner, &temp).await.iter().map(Vec::len).collect();
+    sizes.sort();
+    assert_eq!(sizes, [5, 10, 10], "five pages of five texts: cut once a page takes an input to 8 or more");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

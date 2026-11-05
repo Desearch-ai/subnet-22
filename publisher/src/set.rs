@@ -116,6 +116,8 @@ pub struct Set {
     /// When the set was built, as its file says.
     pub built: Option<String>,
     sites: HashMap<String, (Rule, Class)>,
+    /// Listed hosts of type `reference`.
+    references: HashSet<String>,
     /// Undated news pages typed `article` are in.
     undated_articles: bool,
     /// Undated hub pages of news sites with `hubs` are in.
@@ -126,7 +128,7 @@ impl Set {
     pub fn parse(raw: &[u8]) -> Result<Set> {
         let file: Value = serde_json::from_slice(raw)?;
         let entries = file["sites"].as_array().ok_or_else(|| anyhow!("the set file has no sites"))?;
-        let mut sites = HashMap::new();
+        let (mut sites, mut references) = (HashMap::new(), HashSet::new());
         for entry in entries {
             let host = entry["host"].as_str().map(host_of).filter(|host| !host.is_empty()).ok_or_else(|| anyhow!("a set entry without a host: {entry}"))?;
             let rule = match entry["rule"].as_str() {
@@ -162,6 +164,9 @@ impl Set {
             };
             let why: Vec<&str> = entry["why"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             let class = Class::of(&rule, entry["type"].as_str(), &why);
+            if entry["type"].as_str() == Some("reference") {
+                references.insert(host.clone());
+            }
             sites.insert(host, (rule, class));
         }
         let undated_articles = match file["undated"].as_str() {
@@ -179,12 +184,17 @@ impl Set {
                 Some(HubPages { types: strings("types")?, words: strings("words")?.into_iter().collect() })
             }
         };
-        Ok(Set { built: file["built"].as_str().map(String::from), sites, undated_articles, hub_pages })
+        Ok(Set { built: file["built"].as_str().map(String::from), sites, references, undated_articles, hub_pages })
     }
 
     /// The listed host a host is, or is nearest under, and its rule.
     pub fn site(&self, host: &str) -> Option<(&str, &Rule)> {
         self.entry(host).map(|(listed, (rule, _))| (listed, rule))
+    }
+
+    /// Whether the listed host a host is, or is nearest under, is of type `reference`.
+    pub fn reference(&self, host: &str) -> bool {
+        self.entry(host).is_some_and(|(listed, _)| self.references.contains(listed))
     }
 
     /// Whether the set takes pages of some site of `class`.
