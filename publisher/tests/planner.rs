@@ -3674,6 +3674,64 @@ async fn the_passage_lane_reads_only_saved_bulk_files_and_reads_one_again_when_a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_plans_the_passages_of_reference_pages_planned_page_first_on_the_passage_budget() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-passages");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let long = (0..40).map(|i| format!("## Section {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n");
+    let page = |url: &str, domain: &str| Record { domain: domain.into(), ..v2(record(url, &long, "article", "en")) };
+    let (reference, news) = (page("https://britannica.example/topic/long", "britannica.example"), page("https://news.example/story/long", "news.example"));
+    log(&pages, 1, vec![reference.clone(), news.clone()]).await;
+    let set = dir.join("v1-set.json");
+    let sites = json!({"sites": [{"host": "britannica.example", "rule": "whole", "type": "reference"}, {"host": "news.example", "rule": "whole"}]});
+    std::fs::write(&set, sites.to_string()).unwrap();
+    let lane = |passages_per_hour: f64, backfill: bool| {
+        let mut lane = settings(dir.join("state"), 3_600_000.0, 0);
+        (lane.set_file, lane.fresh, lane.budget_at_start, lane.page_first, lane.pages_per_input) = (Some(set.clone()), None, Duration::from_secs(120), true, 100);
+        (lane.passage_texts_per_hour, lane.backfill, lane.backfill_shards) = (passages_per_hour, backfill, 0..1024);
+        lane
+    };
+    let mut first = Planner::new(lane(0.0, false), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    first.pass().await.unwrap();
+    first.flush().await.unwrap();
+    assert_eq!((first.counts.planned, first.counts.page_only), (2, 2));
+    drop(first);
+    let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.unwrap();
+    let as_row = |record: &Record| PageRow {
+        key: page_key(&record.url).unwrap(),
+        removed: false,
+        change_seq: 1,
+        version: record_version(record),
+        published_at: record.fetched_at.clone(),
+        record: record.clone(),
+    };
+    for record in [&reference, &news] {
+        let row = as_row(record);
+        shard(&current, current::shard_of(&row.key).unwrap(), vec![vec![row]]).await;
+    }
+    let page_only = |planner: &Planner, url: &str| planner.state.planned_version(RECIPE_V2, &page_key(url).unwrap()).unwrap().map(|version| version.page_only);
+
+    let mut off = Planner::new(lane(0.0, true), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    off.current = Some(current.clone());
+    sweep(&mut off, 1024).await;
+    assert_eq!((off.counts.passages, page_only(&off, &reference.url)), (0, Some(true)), "the lane off leaves page first as it is");
+    drop(off);
+
+    let mut on = Planner::new(lane(3_600_000.0, true), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    on.current = Some(current.clone());
+    sweep(&mut on, 1024).await;
+    assert_eq!((on.counts.passages, on.counts.passage_texts, on.counts.planned_by_class.iter().sum::<u64>()), (1, 40, 0), "all forty passages, none of the page budget");
+    assert_eq!((page_only(&on, &reference.url), page_only(&on, &news.url)), (Some(false), Some(true)), "only the reference page");
+    let inputs = inputs_texts(&mut redis, &on, &temp).await;
+    assert!(inputs.iter().any(|texts| texts.len() == 40 && texts.iter().all(|text| text.starts_with("A title › Section "))), "passages alone, the page text planned before");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_input_is_cut_at_its_text_cap() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");

@@ -2555,6 +2555,13 @@ impl Planner {
         Ok(true)
     }
 
+    /// Whether the backfill plans the page's passages alone on the passage budget: a reference site's page planned with its page text alone at this version, while the passage lane is on.
+    fn backfill_passages(&self, page: &PageRow) -> bool {
+        self.settings.passage_texts_per_hour > 0.0
+            && self.set.as_ref().is_some_and(|set| set.reference(&page.record.domain))
+            && matches!(self.state.planned_version(RECIPE_V2, &page.key), Ok(Some(planned)) if planned.page_only && planned.content_sha1 == page.record.content_sha1)
+    }
+
     /// Passages a page gets at most: more for a reference site's while the passage lane is on.
     fn max_passages(&self, record: &Record) -> usize {
         let reference = self.settings.passage_texts_per_hour > 0.0 && self.set.as_ref().is_some_and(|set| set.reference(&record.domain));
@@ -2591,7 +2598,8 @@ impl Planner {
                 Ok(Some(page)) => {
                     // A page goes only with a place beyond what its class leaves to the log and better classes; else the sweep waits on it, as it is the log's spare budget.
                     let class = self.class_of(&page.key);
-                    if stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
+                    let passage_waits = self.backfill_passages(&page) && !self.passage_budget.has();
+                    if passage_waits || stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
                         self.reading.as_mut().expect("a shard being read").held = Some(page);
                         return Ok(read > 0);
                     }
@@ -2706,6 +2714,7 @@ impl Planner {
         let (set, langs, from, class) = (self.set.clone(), self.settings.langs.clone(), after.clone(), self.backfill_class);
         let (state, page_first, withdrawn, tables) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone(), self.tables.clone());
         let bulk_through = (self.settings.bulk_pages_per_hour > 0.0).then_some(self.bulk_read_through);
+        let passages = self.settings.passage_texts_per_hour > 0.0;
         let done = tokio::task::spawn_blocking(move || {
             let keep = |row: &PageRow| {
                 let record = &row.record;
@@ -2720,7 +2729,7 @@ impl Planner {
                     // A version planned before is read whole only when its template lines may have changed.
                     && match state.planned_version(RECIPE_V2, &row.key) {
                         Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => {
-                            planned.page_only && !page_first
+                            planned.page_only && (!page_first || passages && set.as_ref().is_some_and(|set| set.reference(&record.domain)))
                                 || planned.stripped.is_none() && tables.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(domain_of_key(&row.key)).is_some()
                         }
                         _ => true,
@@ -2989,8 +2998,9 @@ impl Planner {
             self.counts.older += 1;
             return Considered::Passed;
         }
-        // The passage lane takes only reference pages planned with their page text alone at this version, and held nowhere yet.
+        // The passage lane takes only reference pages planned with their page text alone at this version, and held nowhere yet; so does the backfill, unless it plans the page again for its template lines.
         let passage = matches!(from, Source::Passages(_));
+        let backfill_passage = from == Source::Backfill && buffered.is_none() && self.backfill_passages(&page);
         if passage {
             let reference = self.set.as_ref().is_some_and(|set| set.reference(&record.domain));
             let page_only = already.as_ref().is_some_and(|planned| planned.page_only && planned.content_sha1 == record.content_sha1);
@@ -3011,7 +3021,7 @@ impl Planner {
                     }
                     cleaned = Some(page_cleaned);
                 }
-                if !restripped && !passage && (!page_only || self.settings.page_first || buffered.is_some()) {
+                if !restripped && !passage && !backfill_passage && (!page_only || self.settings.page_first || buffered.is_some()) {
                     self.counts.unchanged += 1;
                     return Considered::Passed;
                 }
@@ -3023,6 +3033,7 @@ impl Planner {
                 return Considered::Passed;
             }
         }
+        let passage = passage || backfill_passage && !restripped;
         let cleaned = cleaned.unwrap_or_else(|| self.cleaned(&page));
         if clean::thin(&cleaned.body, record.page_type.as_deref()) {
             self.counts.thin += 1;
@@ -3051,7 +3062,7 @@ impl Planner {
             _ => None,
         };
         // The bulk lane gives the pages it reads, in order or for notes, room itself; while it is on, any bulk-feed version is paid from its budget once planned.
-        let lane_read = matches!(from, Source::Bulk(_) | Source::Passages(_)) || (from == Source::Replan && page.change_seq < 0);
+        let lane_read = passage || matches!(from, Source::Bulk(_)) || (from == Source::Replan && page.change_seq < 0);
         let bulk_paid = !passage && page.change_seq < 0 && self.settings.bulk_pages_per_hour > 0.0;
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
         let mut fresh =
