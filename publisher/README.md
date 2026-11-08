@@ -148,7 +148,9 @@ on input writes and writing its state.
   once the inputs holding a file's pages are saved. An input saved with a reference page planned with its page text
   alone from a file the lane read past, as the bulk lane plans a page given back, sends the lane back to that file.
   A file that fails to be read three times in a row is passed by. While the lane is on, a reference site's page gets
-  up to 1,024 passages, not 32, in every lane.
+  up to 1,024 passages, not 32, in every lane. The backfill then also plans the passages alone of each reference
+  page of `current/` planned with its page text alone, on the same budget and before the lane takes its share, and
+  waits on a page while that budget is spent.
 - **Texts in an input** (`PLANNER_TEXTS_PER_INPUT`, 0 by default for no cap): an input is cut once its pages hold
   this many texts, beside `PLANNER_PAGES_PER_INPUT` and `PLANNER_CHARS_PER_INPUT`; a page is never split.
 

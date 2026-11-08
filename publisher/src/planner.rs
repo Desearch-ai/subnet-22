@@ -2179,9 +2179,10 @@ impl Planner {
         self.spent.replan += started.elapsed();
         let (replanned, stopped) = replanned?;
         let bulked = self.bulk().await?;
-        let passaged = self.passages().await?;
         // The backfill never takes a place the re-plan stopped short of for its class or a better one; past the re-plan's file cap or sweep, they share it.
         let backfilled = self.backfill(stopped).await?;
+        // The passage lane takes what the backfill leaves of the passage budget, so a sweep held on it always goes on.
+        let passaged = self.passages().await?;
         for lane in Lane::ALL {
             let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
             if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= after) {
@@ -3000,7 +3001,11 @@ impl Planner {
         }
         // The passage lane takes only reference pages planned with their page text alone at this version, and held nowhere yet; so does the backfill, unless it plans the page again for its template lines.
         let passage = matches!(from, Source::Passages(_));
-        let backfill_passage = from == Source::Backfill && buffered.is_none() && self.backfill_passages(&page);
+        let backfill_passage = from == Source::Backfill
+            && buffered.is_none()
+            && self.settings.passage_texts_per_hour > 0.0
+            && self.set.as_ref().is_some_and(|set| set.reference(&record.domain))
+            && already.as_ref().is_some_and(|planned| planned.page_only && planned.content_sha1 == record.content_sha1);
         if passage {
             let reference = self.set.as_ref().is_some_and(|set| set.reference(&record.domain));
             let page_only = already.as_ref().is_some_and(|planned| planned.page_only && planned.content_sha1 == record.content_sha1);
