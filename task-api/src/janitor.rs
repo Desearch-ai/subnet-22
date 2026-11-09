@@ -11,9 +11,9 @@ use redis::{AsyncCommands, Script};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::budgets::{self, hour_of, KEEP_H};
+use crate::budgets::{self, hour_of, EMBED, KEEP_H};
 use crate::http::ApiError;
-use crate::queues::KINDS;
+use crate::queues::{EMBED_PACE, KINDS};
 use crate::state::State;
 use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
 
@@ -78,6 +78,8 @@ struct Due {
     kept_block_at: Option<Instant>,
     listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
+    /// A rate from when release was last held to one is forgotten, so going back to one starts at its target.
+    pace_forgotten: bool,
 }
 
 fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
@@ -124,8 +126,17 @@ impl Duty {
                 Ok(())
             }
             Duty::Release => {
+                let target = state.settings.embed_release_target(now());
                 for kind in KINDS {
-                    state.tasks(kind).release_due(&state.redis, now(), RELEASE_AT_ONCE).await?;
+                    let tasks = state.tasks(kind);
+                    match target.filter(|_| kind == EMBED) {
+                        Some(target) => drop(tasks.release_paced(&state.redis, now(), target, RELEASE_AT_ONCE).await?),
+                        None => drop(tasks.release_due(&state.redis, now(), RELEASE_AT_ONCE).await?),
+                    }
+                }
+                if target.is_none() && !due.pace_forgotten {
+                    let _: i64 = state.redis.clone().del(EMBED_PACE).await?;
+                    due.pace_forgotten = true;
                 }
                 Ok(())
             }

@@ -75,6 +75,10 @@ pub struct Settings {
     pub embed_input_max_age: f64,
     /// Seconds a revealed round's tasks are released over, one by one, so miners see a steady supply rather than whole rounds at once.
     pub release_spread: f64,
+    /// Embed tasks released an hour however fast the planner hands inputs over, the rest waiting in order as a buffer; 0 leaves release to `release_spread` alone.
+    pub embed_release_per_hour: f64,
+    /// The hourly rate to go to and the Unix time to start going to it, known to miners ahead of it.
+    pub embed_release_next: Option<(f64, f64)>,
     pub task_urls: usize,
     pub embed_tasks: bool,
     pub embed_model: String,
@@ -141,6 +145,15 @@ impl Settings {
         }
     }
 
+    /// The embed tasks an hour release is going to at `at`; None while release is not held to a rate.
+    pub fn embed_release_target(&self, at: f64) -> Option<f64> {
+        let target = match self.embed_release_next {
+            Some((next, from)) if at >= from => next,
+            _ => self.embed_release_per_hour,
+        };
+        (self.embed_release_per_hour > 0.0).then_some(target)
+    }
+
     pub fn from_env() -> Result<Settings> {
         let registry = match text("TASK_API_REGISTRY", "").as_str() {
             "chain" => RegistryMode::Chain { netuid: number("TASK_API_NETUID", 22)?, network: text("TASK_API_NETWORK", "finney") },
@@ -186,6 +199,11 @@ impl Settings {
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
             embed_input_max_age: number("TASK_API_EMBED_INPUT_MAX_AGE_S", 72_000.0)?,
             release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
+            embed_release_per_hour: number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,
+            embed_release_next: match (number("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR", 0.0)?, number("TASK_API_EMBED_RELEASE_NEXT_AT", 0.0)?) {
+                (per_hour, at) if per_hour > 0.0 && at > 0.0 => Some((per_hour, at)),
+                _ => None,
+            },
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,
             embed_model,

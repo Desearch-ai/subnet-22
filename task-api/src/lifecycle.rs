@@ -33,6 +33,9 @@ pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "in
 pub const EMBED_ROUND_INPUTS: isize = 200;
 /// Kept past any input's day in storage.
 const OPENED_TTL_S: u64 = 2 * 86_400;
+/// How far before its reveal a round of the fresh lane counts as due, so it goes ahead of the tasks a fixed rate holds back.
+const FRESH_AHEAD_S: f64 = 3600.0;
+const FRESH: &str = "fresh";
 pub const FINALIZE_LOCK_S: i64 = 300;
 /// Rounds revealed per pass, so a backlog cannot hold the janitor for minutes.
 const REVEAL_AT_ONCE: i64 = 64;
@@ -197,9 +200,17 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         return Ok(None);
     }
     let mut redis = state.redis.clone();
-    let waiting: Vec<String> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
+    let mut waiting: Vec<String> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
     if waiting.is_empty() {
         return Ok(None);
+    }
+    // A round is served in its published order, so while a fixed rate lets the fresh lane go ahead, a round holds inputs of one lane.
+    let ahead = state.settings.embed_release_per_hour > 0.0;
+    if ahead {
+        let lane = |raw: &String| serde_json::from_str::<Value>(raw).is_ok_and(|entry| text(&entry, "lane") == FRESH);
+        let first = lane(&waiting[0]);
+        let run = waiting.iter().take_while(|raw| lane(raw) == first).count();
+        waiting.truncate(run);
     }
     let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()).collect();
     let opened = opened_rounds(state, &entries).await?;
@@ -212,6 +223,9 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let mut extra: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| entry.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
         extra.insert("model".into(), model.clone().into());
         extra.insert("pages".into(), keep.into());
+        if ahead && text(entry, "lane") == FRESH {
+            extra.insert("lane".into(), FRESH.into());
+        }
         let urls = pages.iter().map(|p| Url { host: text(p, "host").into(), url: text(p, "url").into() }).collect();
         batches.push(Batch::new(rounds::new_id(), urls, extra));
     }
@@ -314,7 +328,12 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
             })
             .collect();
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
-        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads, now(), state.settings.release_spread).await?;
+        // Every embed task waits its turn while a fixed rate holds them back, however release spreads a round.
+        let paced = round.kind == EMBED && state.settings.embed_release_per_hour > 0.0;
+        let spread = if paced { state.settings.release_spread.max(1.0) } else { state.settings.release_spread };
+        let fresh = paced && round.batches.iter().any(|batch| batch.extra.get("lane").and_then(Value::as_str) == Some(FRESH));
+        let at = if fresh { now() - FRESH_AHEAD_S } else { now() };
+        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads, at, spread).await?;
     }
     if !round.order.is_empty() {
         let (pages, key, lists) = (state.pages.clone(), round_urls_key(&round.round_id), round.url_lists());
@@ -351,8 +370,17 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
 
 pub async fn close_finished(state: &State) -> Result<Vec<String>> {
     let mut closed = Vec::new();
-    for round_id in state.lookups.read(roundstore::open_revealed).await? {
-        let open: i64 = state.redis.clone().scard(open_round_key(&round_id)).await?;
+    // Tasks a fixed rate holds back keep their rounds open, so the rounds are counted in one trip.
+    let rounds = state.lookups.read(roundstore::open_revealed).await?;
+    if rounds.is_empty() {
+        return Ok(closed);
+    }
+    let mut counting = redis::pipe();
+    for round_id in &rounds {
+        counting.scard(open_round_key(round_id));
+    }
+    let open: Vec<i64> = counting.query_async(&mut state.redis.clone()).await?;
+    for (round_id, open) in rounds.into_iter().zip(open) {
         if open > 0 {
             continue;
         }

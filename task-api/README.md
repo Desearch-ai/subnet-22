@@ -166,7 +166,10 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
    fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
    while `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
-2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
+2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). With
+   `TASK_API_EMBED_RELEASE_PER_HOUR` set, a revealed round's tasks wait in `queue:held:embed` and are
+   released oldest first at that rate, so what the planner does reaches miners only once the buffer
+   is gone ([fixed rate](#fixed-rate-of-embed-tasks)). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
    completion whose file is not exactly texts × dimensions × 2 bytes is refused.
@@ -199,6 +202,35 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    planner.
 
 The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
+
+### Fixed rate of embed tasks
+
+`TASK_API_EMBED_RELEASE_PER_HOUR` holds embed tasks to one rate, whatever the planner hands over. A
+planner stall, a new lane or a chain stall reaches miners only once the tasks waiting behind the rate
+are gone, and output then falls to what the planner hands over; the rate promises no task it was never
+given.
+
+- **The buffer** is the revealed tasks not released yet, in `queue:held:embed`. They count in `queue`
+  of `GET /v1/room?kind=embed`, so `TASK_API_EMBED_QUEUE_TARGET` is what bounds it: the planner hands
+  inputs over until queue, unrevealed rounds, waiting inputs and uploads awaiting a verdict reach the
+  target, and holds the rest as it always does when the API has no room. A target of 2,000 at 3,300
+  tasks an hour leaves about half an hour behind the rate. The buffer fills only while the planner hands
+  over more than the rate, so the rate belongs a little under what the planner averages; a full buffer is
+  the steady state, and the planner's surplus waits on its side.
+- **The rate** moves toward a new target by about a tenth of itself an hour, as `embed:pace` in Redis
+  keeps it across restarts and between copies of the API. It starts at the target when first set. A
+  pause in release, the API down say, comes back as ten seconds' worth at most, not as a burst.
+- **The fresh lane** goes ahead of the buffer and within the rate: its inputs get rounds of their own,
+  due at once, so a fresh page does not wait the half hour and miners see no more tasks for it. Other
+  pages reach miners about as much later as the buffer is long.
+- **Verifying a round** works as before: a round's tasks are released in its published order, and a
+  round stays open, its log unanchored, until its last task is done, so about as much longer as the
+  buffer is long. `embed_input_max_age` (20 hours) and the day inputs are kept are far beyond the buffer.
+- **Rollback** is removing the setting: the tasks held are all due, and go to the ready queue within
+  seconds, where miners take them as they have room, at no risk to anyone but a short rush.
+- **Redis** holds each waiting task's page list, so each buffered task costs what its input's pages take:
+  about 350 bytes a page, at about 600 pages an input some 200 KB a task, or some 400 MB for a buffer of
+  2,000.
 
 The planner keeps its place in the log and the version of every page it planned in RocksDB under
 `PLANNER_DIR`, reads the same bucket settings as the publisher, and is configured with:
@@ -306,7 +338,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
-| `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
+| `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal; with a fixed rate, this is what makes room for the buffer |
+| `TASK_API_EMBED_RELEASE_PER_HOUR` | 0 | embed tasks released an hour however fast the planner hands inputs over, the rest waiting as a buffer; 0 leaves release to `TASK_API_RELEASE_SPREAD_S` alone |
+| `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |

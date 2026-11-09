@@ -9,6 +9,7 @@ mod limits;
 mod load;
 mod logs;
 mod overlap;
+mod pace;
 mod punishment;
 mod queueing;
 mod reference;
