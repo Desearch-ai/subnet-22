@@ -12,6 +12,8 @@ use crate::text;
 pub const HTTPS: u8 = 1;
 pub const WWW: u8 = 2;
 pub const TIMED: u8 = 4;
+/// Found on the site's own pages, by a homepage read or a link run, and named by no sitemap.
+pub const FROM_PAGES: u8 = 8;
 
 const SAFE_PATH: &[u8] = b"/:@!$&'()*+,;=-._~%";
 const SAFE_QUERY: &[u8] = b"/:@!$&'()*+,;=-._~%?";

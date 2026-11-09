@@ -12,15 +12,18 @@ use arrow_buffer::NullBuffer;
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::ChunkReader;
 use serde::{Deserialize, Serialize};
 
 use crate::records::{record_version, Record, SOURCE};
 
 pub const SHARDS: usize = 1024;
+/// Where bulk feed pages sit in log order: before every change-log row, so a removal in the change log takes them down too; pages still go by fetch time.
+pub const BULK_ORDER: i64 = i64::MIN / 2;
 /// One lookup reads one row group.
 pub const ROW_GROUP: usize = 1000;
 const ZSTD_LEVEL: i32 = 3;
@@ -148,7 +151,7 @@ pub fn merge(rows: Vec<PageRow>, withdrawn: &Withdrawals, keep_removals: bool) -
 }
 
 /// One key's rows: the removal row that stands, if a logged one does; where everything before is hidden; and the page that wins after it.
-fn standing(group: &[Option<PageRow>], withdrawn: &Withdrawals) -> (Option<usize>, i64, Option<usize>) {
+pub(crate) fn standing(group: &[Option<PageRow>], withdrawn: &Withdrawals) -> (Option<usize>, i64, Option<usize>) {
     let row = |i: usize| group[i].as_ref().expect("a row not taken yet");
     let removal = (0..group.len()).filter(|&i| row(i).removed).max_by_key(|&i| row(i).change_seq);
     let mut barrier = removal.map_or(i64::MIN, |i| row(i).change_seq);
@@ -511,6 +514,26 @@ pub fn decode(file: Bytes) -> Result<Vec<PageRow>> {
 
 pub type Wanted = Box<dyn Fn(&str) -> bool + Send>;
 
+/// The rows of some row groups of a pages file, with only the projected columns set in each record; `wanted` picks keys before the rest of a row is decoded.
+pub fn rows_in<R: ChunkReader + 'static>(
+    reader: R,
+    metadata: ArrowReaderMetadata,
+    groups: Vec<usize>,
+    projection: ProjectionMask,
+    wanted: Option<&(dyn Fn(&str) -> bool + Send)>,
+) -> Result<Vec<PageRow>> {
+    let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, metadata)
+        .with_row_groups(groups)
+        .with_projection(projection)
+        .with_batch_size(READ_BATCH)
+        .build()?;
+    let mut rows = Vec::new();
+    for batch in reader {
+        rows.extend(Columns::new(batch?)?.page_rows(wanted)?);
+    }
+    Ok(rows)
+}
+
 /// The rows of a pages file in file order, decoded a row group at a time; `wanted` picks keys before the rest of a row is decoded.
 pub fn rows(file: Bytes, wanted: Option<Wanted>) -> Result<Rows> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.with_batch_size(READ_BATCH).build()?;
@@ -566,6 +589,9 @@ pub struct Retired {
 pub struct Manifest {
     pub shard: usize,
     pub through_seq: i64,
+    /// How far into the bulk feed the shard's files reach.
+    #[serde(default)]
+    pub through_bulk: i64,
     /// Where the base was last rewritten; a task withdrawn before it is out of every file of the shard.
     pub merged_through: i64,
     pub base: Option<FileRef>,

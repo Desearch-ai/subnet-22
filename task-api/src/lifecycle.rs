@@ -22,14 +22,17 @@ use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::{self, Batch, Round, Url};
 use crate::sampling;
+use crate::settings::Settings;
 use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
 use crate::{checks, hours, outcomes, py, roundstore};
 
-pub const EMBED_FIELDS: [&str; 6] = ["model", "texts", "chars", "input_key", "input_sha256", "pages"];
+pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
+/// Kept past any input's day in storage.
+const OPENED_TTL_S: u64 = 2 * 86_400;
 pub const FINALIZE_LOCK_S: i64 = 300;
 /// Rounds revealed per pass, so a backlog cannot hold the janitor for minutes.
 const REVEAL_AT_ONCE: i64 = 64;
@@ -198,9 +201,11 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     if waiting.is_empty() {
         return Ok(None);
     }
+    let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()).collect();
+    let opened = opened_rounds(state, &entries).await?;
     let model = state.settings.embed_model.clone();
     let mut batches = Vec::new();
-    for entry in waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
+    for entry in entries.iter().filter(|entry| !opened.contains(text(entry, "input_key"))) {
         let pages = entry["pages"].as_array().cloned().unwrap_or_default();
         let keep: Vec<Value> =
             pages.iter().map(|p| json!({"page_key": p["page_key"], "content_sha1": p["content_sha1"], "url": p["url"], "host": p["host"]})).collect();
@@ -215,6 +220,13 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let target = state.seeds.target_block().await?;
         let round = rounds::open_batches(batches, target, EMBED, now());
         let sealed = round.sealed();
+        // Marked before the round is saved, so inputs read again after a crash past the save are not opened twice.
+        let mut marks = redis::pipe();
+        for batch in &round.batches {
+            let input_key = batch.extra.get("input_key").and_then(Value::as_str).unwrap_or_default();
+            marks.set_ex(opened_key(input_key), &sealed.round_id, OPENED_TTL_S).ignore();
+        }
+        let _: () = marks.query_async(&mut redis).await?;
         queues::stage(&state.redis, &sealed.round_id, &queues::pack_job(&round.url_lists())).await?;
         let saved = sealed.clone();
         state.db.run(move |conn| roundstore::save(conn, &saved)).await?;
@@ -223,6 +235,32 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     // Trimmed only once the round is saved, so a crash re-reads the inputs.
     let _: () = redis.ltrim(queues::EMBED_INPUTS, waiting.len() as isize, -1).await?;
     Ok(opened)
+}
+
+fn opened_key(input_key: &str) -> String {
+    format!("embed:opened:{input_key}")
+}
+
+/// The input keys among `entries` already in a saved round.
+async fn opened_rounds(state: &State, entries: &[Value]) -> Result<HashSet<String>> {
+    if entries.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let keys: Vec<String> = entries.iter().map(|entry| opened_key(text(entry, "input_key"))).collect();
+    let marked: Vec<Option<String>> = redis::cmd("MGET").arg(&keys).query_async(&mut state.redis.clone()).await?;
+    let mut saved = HashSet::new();
+    for round_id in marked.iter().flatten().collect::<HashSet<_>>() {
+        let looked_up = round_id.clone();
+        if state.lookups.read(move |conn| roundstore::get(conn, &looked_up)).await?.is_some() {
+            saved.insert(round_id.clone());
+        }
+    }
+    Ok(entries
+        .iter()
+        .zip(&marked)
+        .filter(|(_, round_id)| round_id.as_ref().is_some_and(|r| saved.contains(r)))
+        .map(|(entry, _)| text(entry, "input_key").to_string())
+        .collect())
 }
 
 pub async fn reveal_pending(state: &State) -> Result<usize> {
@@ -406,6 +444,52 @@ pub fn crashed_on_most(votes: &[Value]) -> bool {
     crashed * 2 > votes.len()
 }
 
+/// A task that goes no further: its receipt, and its URLs or pages handed back.
+pub async fn drop_task(state: &State, task_id: &str, job: &Value, hotkey: &str, cause: &str, seq: i64) -> Result<()> {
+    let round_id = text(job, "round_id").to_string();
+    state
+        .record_one(Receipt {
+            round_id: round_id.clone(),
+            hotkey: hotkey.into(),
+            outcome: "dropped",
+            seq,
+            task_id: Some(task_id.into()),
+            cause: Some(cause.into()),
+            ..Receipt::default()
+        })
+        .await?;
+    finish_task(state, &round_id, task_id).await?;
+    if kind_of(job) == CRAWL {
+        report_outcomes(state, &urls_of(job), OUTCOME_DROPPED, task_id).await;
+    } else {
+        let dropped = json!({"input_key": job["input_key"], "pages": job["pages"]});
+        let _: i64 = state.redis.clone().rpush(queues::EMBED_DROPPED, dropped.to_string()).await?;
+    }
+    Ok(())
+}
+
+/// Why an embed task just claimed goes no further: its input is near the end of its day in storage, or miners handed it back too often.
+pub fn spent(settings: &Settings, payload: &Value, handbacks: i64, at: f64) -> Option<&'static str> {
+    let written_at = payload.get("written_at").and_then(Value::as_f64);
+    if written_at.is_some_and(|written_at| at - written_at > settings.embed_input_max_age) {
+        Some("input_expired")
+    } else if handbacks >= settings.max_handbacks {
+        Some("handed_back")
+    } else {
+        None
+    }
+}
+
+/// Drops a task its claimer has not been given yet, at no cost to that miner; false when the claim is no longer theirs.
+pub async fn drop_claimed(state: &State, task_id: &str, payload: &Value, hotkey: &str, cause: &str, seq: i64) -> Result<bool> {
+    if !state.tasks(kind_of(payload)).discard(&state.redis, task_id, hotkey).await? {
+        return Ok(false);
+    }
+    eprintln!("dropped {task_id} at its claim: {cause}");
+    drop_task(state, task_id, payload, "", cause, seq).await?;
+    Ok(true)
+}
+
 pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> Result<()> {
     let kind = kind_of(job).to_string();
     let attempts = number(job, "attempts") + 1;
@@ -413,25 +497,7 @@ pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> 
     let miner = text(job, "miner").to_string();
     if attempts >= state.settings.max_attempts {
         let seq = state.next_seq().await?;
-        state
-            .record_one(Receipt {
-                round_id: round_id.clone(),
-                hotkey: miner,
-                outcome: "dropped",
-                seq,
-                task_id: Some(task_id.into()),
-                cause: Some(cause.into()),
-                ..Receipt::default()
-            })
-            .await?;
-        finish_task(state, &round_id, task_id).await?;
-        if kind == CRAWL {
-            report_outcomes(state, &urls_of(job), OUTCOME_DROPPED, task_id).await;
-        } else {
-            let dropped = json!({"input_key": job["input_key"], "pages": job["pages"]});
-            let _: i64 = state.redis.clone().rpush(queues::EMBED_DROPPED, dropped.to_string()).await?;
-        }
-        return Ok(());
+        return drop_task(state, task_id, job, &miner, cause, seq).await;
     }
     let mut payload: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| job.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
     payload.insert("kind".into(), kind.clone().into());

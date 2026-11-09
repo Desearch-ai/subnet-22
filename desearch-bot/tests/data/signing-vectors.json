@@ -44,8 +44,8 @@
   {
    "host": "www.example.co.uk",
    "registrable": "example.co.uk",
-   "group": "other_cctld",
-   "reason": "non_english_tld"
+   "group": "en_cctld",
+   "reason": null
   },
   {
    "host": "a.b.c.blogspot.com",

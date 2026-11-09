@@ -165,6 +165,24 @@ pub async fn read_body(response: &mut reqwest::Response, limit: usize) -> reqwes
     Ok(body)
 }
 
+/// Whether the connection itself failed: refused, or timed out while connecting; a slow answer, a DNS or a TLS failure never is.
+pub fn connect_failed(error: &reqwest::Error) -> bool {
+    if !error.is_connect() {
+        return false;
+    }
+    let mut cause = error.source();
+    while let Some(current) = cause {
+        if current.downcast_ref::<std::io::Error>().is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut)) {
+            return true;
+        }
+        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<rustls::Error>() {
+            return false;
+        }
+        cause = current.source();
+    }
+    error.is_timeout()
+}
+
 /// The name aiohttp gives the same failure; `connecting` is the connect timeout while no answer has arrived yet.
 pub fn failure(error: &reqwest::Error, elapsed: Duration, connecting: Option<Duration>) -> &'static str {
     if error.is_builder() {
@@ -211,6 +229,26 @@ pub fn failure(error: &reqwest::Error, elapsed: Duration, connecting: Option<Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_a_refused_connection_or_a_connect_timeout_is_a_connect_failure() {
+        let client = reqwest::Client::builder().timeout(Duration::from_millis(300)).connect_timeout(Duration::from_millis(200)).build().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let error = client.get(format!("http://{closed}/")).send().await.unwrap_err();
+        assert!(connect_failed(&error), "refused: {error:?}");
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = silent.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                held.push(socket);
+            }
+        });
+        let started = std::time::Instant::now();
+        let error = client.get(format!("http://{addr}/")).send().await.unwrap_err();
+        assert_eq!(failure(&error, started.elapsed(), Some(Duration::from_millis(200))), "ConnectionTimeoutError", "named as aiohttp names it");
+        assert!(!connect_failed(&error), "connected, then no answer: {error:?}");
+    }
 
     #[test]
     fn global_matches_python() {

@@ -1,7 +1,7 @@
 # desearch-bot
 
-The DesearchBot crawl loop. For every domain it owns, it reads robots.txt and the sitemaps on a
-schedule, keeps every URL they list, and reports each visit to the registry. It also sends new and
+The DesearchBot crawl loop. For every domain it owns, it reads robots.txt, the sitemaps and the feeds
+on a schedule, keeps every URL they list, and reports each visit to the registry. It also sends new and
 changed pages to the subnet's task API and learns from the API what became of them. One process uses
 every core.
 
@@ -28,7 +28,7 @@ RocksDB is compiled from source, which needs `clang` and a C++ toolchain.
 
 ```bash
 python tools/export_langid.py data/langid.bin   # once: the language model homepages are judged with
-python tools/crawl_list.py --out domains.json   # the --domains list, from the registry's states and site types
+python tools/crawl_list.py --out domains.json   # --domains, from the registry
 MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets --data-dir data
 ```
 
@@ -41,8 +41,12 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--no-registry` | off | crawl without Postgres |
 | `--discovery-share` | 30 | percent of the visit slots kept for domains never checked |
 | `--backlog-share` | 20 | percent kept for sitemaps found but not read yet; re-checks of known sites get the rest |
+| `--heavy-slots` | 16 | visits at once to domains with more than 2,000 sitemap records |
+| `--follow-links` | `thin` | which listed sites have their links followed: `off`, `thin` (sitemaps listing under 1,000 pages, or none) or `all` (those, and every whole or news site) |
+| `--links-slots` | 32 | link runs at once; 0, like `--follow-links off`, turns them off |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
+| `--urls-per-hour` | 0 | URLs sent in an hour at most, at a steady pace; 0 sends what the task API has room for |
 | `--per-domain-hourly` | 2000 | URLs one domain may send in an hour |
 | `--new-share` | 50 | percent of each domain's sends kept for pages never sent |
 | `--retry-share` | 10 | percent kept for retries and scheduled re-crawls; changed pages get the rest |
@@ -51,8 +55,11 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap, hourly, backlog}`, read again when it changes; others are crawled but not queued |
-| `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of domains new to `--domains`; 0 turns it off |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth, hubs}`, read again when it changes; others are crawled but not queued |
+| `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
+| `--stock-per-sec` | `--join-per-sec` | sent records the refresh stock keeper's threads read per second together |
+| `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
+| `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
@@ -65,10 +72,81 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `FEEDER_KEY_URI` | the task API admin hotkey, as a Substrate secret URI, needed with `--task-api` |
 | `MALLOC_ARENA_MAX=2` | stops glibc from holding on to memory RocksDB has freed |
 
+## Visits
+
 Visits share their slots between re-checks of known sites, sitemap backlogs and domains never
-checked. Each kind can count on its share, slots one leaves unused go to the others, and due domains
-go best ranked first. A sitemap read again looks up only the entries it did not list the same way
-last time, from a compact fingerprint set kept per sitemap.
+checked. Each kind can count on its share, and slots one leaves unused go to the others. Due domains
+go listed news sites first, then the rest of the list, then unlisted domains, by rank within each.
+Domains with more than 2,000 sitemap records take one of `--heavy-slots`, handed out from a waiting
+queue in the same order, where each hour of waiting moves a site up a class. A registry row set back
+to `new` has its site checked again. If that check fails on a site that answered before, because the
+site doesn't answer, its sitemaps answer with a rate limit or a server error, or its homepage refuses
+us, it is tried again after 15 minutes, 2 hours and 12 hours, each up to half as long again at random,
+before it is judged as it would have been. Meanwhile its registry row stays `new` with the reason. The
+crawl list keeps a site that fails to answer and leaves out one whose homepage refuses us.
+
+A site whose sitemaps list pages has its homepage read once for its language. A page of under 1,500
+characters that is a browser check (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), says to enable
+JavaScript or says that access is denied is a bot wall; the scripts and labels firewalls and forms put
+on ordinary pages count only on a page of under 200. A homepage of under 200 characters is judged by
+its own description with its text, since on such a site it is a menu or an app shell: with no
+description, or a declaration of another language, it stays out. A longer page that declares English is
+believed where the model gives no verdict or reads it as a class English is misread as (no language,
+Latin, a pidgin or creole), unless it is placeholder text. Comments, scripts and styles are taken out in
+one pass, and a body cut at the read limit inside a script reads only the text before it. Cookies a
+redirect sets go with the later hops of that chain only: back to their own host, or to the domain they
+name within the host's registrable domain.
+
+A sitemap read again looks up only the entries it did not list the same way last time, from a compact
+fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
+are read again within 30 minutes.
+
+A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
+the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
+still answers, the bot tries `/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage,
+where robots.txt answered, or where the homepage was last read when the visit skips robots.txt;
+an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as a list of itself and
+the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
+relative links taken from where it answered; it counts as changed only when those pages change, and
+is read again at most hourly. It never stands in for a sitemap: the guesses are tried again on later
+visits. A site with a `depth` or `hubs` has its homepage read this way beside whatever sitemaps it has. A site
+found without sitemaps on a visit made while the list did not name it is visited again within a day
+of the list naming it, since only a listed site's feed and homepage are tried.
+
+A listed site, landing sites aside, whose sitemaps list under 1,000 pages or none, has its links
+followed from the homepage: three levels down, at most
+150 fetches and 10 minutes a run, on its own host and its `www.` host only, HTML pages only, no
+queries, files, feeds or forms, within its robots.txt rules and crawl delay, not past a page marked
+`nofollow`, and no redirect off the site or onto a disallowed path; a redirect to its other host is
+asked only once the run holds that host's addresses too. A refusal, a rate limit or a 503
+ends the run and link work on the site, and is kept on the domain, where a failed resend sees it as
+it sees a homepage refusal: a rate limit or a 503 for a week, a refusal for 60 days. A run reads robots.txt again once a day has passed; when it bars us,
+refuses us or names a sitemap on the site it lets us read and not kept yet, the site is visited at
+once instead, and that visit decides it. Link work a run or such a visit sets comes ten minutes
+later at the soonest. The crawl's status line counts these hand-offs, and robots.txt requests over the
+last hour. The pages found are kept as one listing. Runs come weekly while they find new pages, then half
+as often down to every 60 days; with `--follow-links all`, every whole or news site the list weights
+3 or more gets a run monthly. A run that finds every slot taken, or another run on the address its
+site answers from, waits a random time up to its interval. Runs on one address, whichever sites
+share it, keep their fetches a second apart, and three failed connections to it in a row stop runs
+there for a day. A visit or link run that comes right after another on the same site waits out the site's
+crawl delay from the last one's last request. A visit waits in place at most a minute: a longer delay
+ends it undecided, and the site is due again once the delay has passed, going on where it stopped.
+A redirect chain is one request, and a try that never reached the server (no address, refused, no
+TLS) spends no turn.
+
+A listed subdomain with a registry record of its own is crawled on its own host, under its own
+robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not
+at all while it is blocked, excluded or ineligible. In any other state, and while its homepage is
+missing, they stay with its parent. While it sends, the new and changed pages its listed parents list
+on its host go to it as they list them, and one with no working sitemap of its own takes in, once,
+those they held for it before and never sent. The bot reads which subdomains stand on their own before its first send and every 10 minutes.
+
+With `--inbox DIR`, each `<host>.txt` in the directory, a URL a line with optionally a tab and its
+date, is taken in as that host's listing, in parts of 50,000 URLs, the way a sitemap's pages come in.
+The bot looks every 5 minutes and takes only files changed since it last took them; each file's time
+is kept in the store, so a restart reads nothing again. A file for a host without a registry record
+waits for the record, and a file that can't be read is skipped.
 
 ## Feeding the task API
 
@@ -89,32 +167,99 @@ changed pages), kept even across passes, and what one lane leaves unused goes to
 Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
 `--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
-least), so a site sees a steady stream rather than its hour in one burst. The hourly pace starts empty and saves at most five minutes of sends, so a restart
-or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
-a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
-sitemap protocol's limit, are never sent.
+least), so a site sees a steady stream rather than its hour in one burst. A site whose robots.txt
+names a Crawl-delay gets one page per delay, however long the delay (up to 41 days): each pass sends
+the pages the delay allows since its sends last used it, never one early, saving at most one pass gap,
+and each site's place is kept in the store so a restart carries it on (`--claim-window` adds seconds to
+each delay, none by default). The hourly pace starts empty and saves at most five minutes of sends, so a
+restart or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent
+again after a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048
+characters, the sitemap protocol's limit, are never sent.
 
 A sent page with a lastmod goes again when its sitemap lists a newer one. A page without one goes
-again `--recrawl-days` after it was sent, or after its domain's own interval. The outcome feed
-`outcomes/seq/<n>.json` is read from its newest file on, up to 8 files at a time, and skips to the
-newest when it falls an hour behind. Each file adds its published and failed pages to their domain's
-yield, counted twice: fading over a day and over an hour. The dispatcher gives domains whose pages
-rarely come back fewer slots, down to an hourly probe, by the lower of the two, so a domain that
-starts refusing slows within hours. A failed page goes again after its domain's interval, and after two failures in a row waits
-`--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
-A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
+again `--recrawl-days` after it was sent, or after its domain's interval in `--recrawl-overrides`,
+which the bot reads when it starts. The outcome feed `outcomes/seq/<n>.json` is read from its newest
+file on, up to 8 files at a time, and skips to the newest when it falls an hour behind. Each file adds
+its published and failed pages to their domain's yield, counted twice: fading over a day and over an
+hour. The dispatcher gives domains whose pages rarely come back fewer slots, down to an hourly probe,
+by the lower of the two, so a domain that starts refusing slows within hours. A failed page goes again
+after its domain's interval, and after two failures in a row waits `--gone-days`; each failed send
+counts once when its outcome comes, against the send in flight when it failed: the latest, or the one
+before it while the latest has not come back published, however often the failure is reported. It is
+kept in a count of its own beside the
+sent record's, which keeps the meaning earlier versions read; a send that comes back
+published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
+within the hourly budget. A number still missing after two minutes, or whose file expired, is
+skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
 
-With `--domains`, each listed domain may carry a `weight` (1 to 4), a `send_cap`, an `hourly` limit
-and a `backlog`. A domain's turn is worth its rank's slots times its weight, and `hourly` replaces
-`--per-domain-hourly` for it. The bot counts the distinct pages it has sent for each domain; at its
-`send_cap` the domain sends no new pages, and only changed pages and re-crawls go on. A walker
-queues the pages each listed domain stored before it joined the list, newest first, as many as its
-cap leaves or, for a domain without a cap, up to its `backlog`, smallest domains first and the higher
-weight first among domains of a size. It walks a domain again when its cap
-changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
-already sending is only counted, since its pages are queued already, on a second walker beside the
-first, so counting and clearing never hold back new domains.
+Room the lists leave in a pass goes to refreshes: pages already sent, of listed domains with nothing
+waiting whose pages come back (at least 200 outcomes judged, and no slowing for yield), oldest send
+first. A background keeper keeps a stock of each such domain's pages sent longest ago (a quarter of
+its hourly limit, 1,000 at least) and chooses it again when a pass finds it empty, reading at most
+200,000 sent records a choice from where the last one stopped. It runs eight threads, each choosing
+the stocks of the domains in its own share of the buckets, which read `--stock-per-sec` sent records
+a second together, and time spent idle saves no reads for later; a pass reads
+only the stock, never the sent records. A page sent within the last day stays, and a stocked page
+that went out again or is now failing, requeued or changed leaves the stock unsent. A pass offers
+room to 2,000 domains in turn, and refreshes stay within each domain's hourly limit and its
+two-minute spread.
+
+## The crawl list
+
+With `--domains`, each listed domain may carry a `type`, a `weight` (1 to 4), a `send_cap`, an
+`hourly` limit, a `backlog`, a `since` date, a `resend_before` date, a `depth` and `hubs`. A domain's turn is worth its
+rank's slots times its weight, and `hourly` replaces `--per-domain-hourly` for it. A domain typed
+`news` gets the news visit order and re-reads above.
+
+**Caps.** The bot counts the distinct pages it has sent for each domain; at its `send_cap` the domain
+sends no new pages, and only changed pages and re-crawls go on. A walker queues the pages each listed
+domain stored before it joined the list, newest first, as many as its cap leaves or, for a domain
+without a cap, up to its `backlog`, smallest domains first and the higher weight first among domains
+of a size. It reads `--join-per-sec` records a second and stops mid-domain when the bot stops. A
+domain already sending is counted when its cap falls, so the cap applies at once, and walked again
+when its cap rises or its floor falls, keeping the pages found while the walk ran.
+
+**Date floors.** `since` is the oldest page date a domain sends. A page's date is its lastmod, with a
+day's grace for time zones, or else a date in its path (`/2025/03/14/`, `/2025/03/`, `2025-03-14` or
+`20250314`); an undated page goes. Pages dated before the floor are left unqueued at sitemap reads,
+in the walk and in the backfill, and stay out of the refresh stock; pages already waiting are dropped
+as they would go, which the status line counts. A floor that only rises needs no walk.
+
+**Depth.** A landing site's `depth` is the most path levels its pages may have, a leading English
+locale (`/en/`, `/en-us/`) not counted, as the v1 set's landing rule reads them. Deeper pages, pages
+with a query, pages under another locale (`/de-de/`) and pages of other hosts stay unsent, wherever
+the date floor leaves pages out, and its cap counts only the pages its depth lets go. A deeper depth,
+or none, walks the domain again.
+
+**Hubs.** An established news outlet's `hubs` is how many seconds after a send its hub pages go again,
+an hour at least.
+Its homepage is read as a list of pages on every visit, no more often than that, and its tag and
+category pages are queued like any other. Its hubs are its homepage and its pages on its own host with
+no query and no date in the path that have a category, topic or tag level, or a level of up to four
+words naming data (scores, scoreboard, fixtures, results, table, tables, standings, schedule,
+leaderboard, rankings, polls, markets). At most 60 of an outlet's hubs go again on its interval in each
+interval, and never later than the domain's re-crawl interval; the rest, and its other pages, keep
+that interval. A hub that fails is tried again within the same interval.
+
+**Resends.** `resend_before` sends a domain's pages last sent before it once more, as after an
+extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at
+`--resend-per-sec` a second, newest lastmod first, on a resend list apart from the lanes; a list
+built again with the same value walks nothing. Failing pages, pages robots.txt disallows and pages
+dated before the floor stay off. A site with a `depth` goes again only up to its `send_cap`, its
+shallowest pages first, so its homepage leads. Resends take only the room the lanes leave, before refreshes, within
+the domain's hourly limit and Crawl-delay, and refreshes pass a domain by while its resends wait. A
+failed resend is retried as any failed page is, in the retries lane and counted in the domain's yield,
+unless the site's robots.txt or homepage last refused us or limited our rate. Resent pages' outcomes stay out of the yields that pace the
+domain, also across a restart: the pages lately resent are kept in `resent-pages.bin` beside the
+stores. With the bot stopped, `desearch-bot unresend` takes every waiting resend back, clears the
+pages' marks and forgets each domain's walked value; install a list without `resend_before` first.
+
+`tools/crawl_list.py` builds the list from the registry. `tools/v1_set.py` writes the v1 set, each
+v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under their caps and floors.
+`tools/resend_waves.py` splits the sites with pages to send again into waves, and `crawl_list.py
+--resend-before DATE --resend-hosts FILE` gives the hosts of the waves applied so far their
+`resend_before`. `tools/build-v1.sh` runs the three on the bot box.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:
@@ -139,3 +284,18 @@ The parity tests replay fixed vectors for URL keys, joins, dates, signatures and
 byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/world.rs` crawls a
 small local web end to end, and `tests/dispatch.rs` runs the queue, its lanes, the outcome feed and
 the dispatcher against a fake task API.
+
+The dispatcher also runs on copies of real stores. `copy-buckets` copies chosen buckets key by key
+from the running bot's, read-only beside it, and `replay` runs passes on a simulated clock against a
+task API in the process, with the list walker, the resend walk and the stock keeper running beside
+them. Outcomes are drawn from a real day's per host and hour, each listed domain's sitemap is read
+about once a day with a few pages re-dated and a few new, and one site re-dates its whole sitemap
+every hour. `--switch-at` and `--switch-domains` change the crawl list mid-run. Each hour it reports
+sends by kind, pass times, the walks' progress, memory, and any site over its hourly limit or
+two-minute spread.
+
+```bash
+desearch-bot copy-buckets --from /var/lib/desearch-bot/buckets --to /mnt/replay/buckets --buckets 1,5,41
+desearch-bot replay --buckets-dir /mnt/replay/buckets --buckets 1,5,41 --domains domains.json \
+  --outcomes day-rates.tsv --start "$(date +%s)" --hours 8 --per-hour 234375 --log replay.txt
+```

@@ -16,6 +16,7 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::bulk;
 use crate::changes::{self, Body, Change, Kind};
 use crate::index::{Current, VersionIndex};
 use crate::outcomes;
@@ -24,7 +25,7 @@ use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
 use crate::vectors;
 use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, CHANGED, EMBED};
-use desearch::feeds::{Feed, CHANGES, OUTCOMES};
+use desearch::feeds::{Feed, BULK, CHANGES, OUTCOMES};
 use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
@@ -208,6 +209,46 @@ impl ChangeFeed for R2Changes {
             CHANGES.number(&self.pages, &self.redis, &key, rows).await
         })
     }
+}
+
+/// The bulk feed in the pages bucket, numbered in Redis as the change log is, each file filed under the day it is written.
+pub struct BulkFeed {
+    pages: Bucket,
+    redis: ConnectionManager,
+    handle: Handle,
+}
+
+impl ChangeFeed for BulkFeed {
+    fn append(&self, file: Vec<u8>, rows: usize) -> Result<u64> {
+        let key = format!("{}/dt={}/{}.parquet", BULK.name, day(now_us()), uuid::Uuid::new_v4().simple());
+        self.handle.block_on(async {
+            self.pages
+                .put_in_parts(&key, Bytes::from(file), PARQUET, CHANGE_PART_BYTES, CHANGE_PARTS_AT_ONCE)
+                .await
+                .with_context(|| format!("writing {key}"))?;
+            BULK.number(&self.pages, &self.redis, &key, rows).await
+        })
+    }
+}
+
+/// `bulk::publish_run` on the run in `dir`, into the bulk feed with the storage and Redis `serve` uses.
+pub async fn bulk_from_env(dir: PathBuf, settings: bulk::Settings) -> Result<()> {
+    let redis_url = Settings::from_env()?.redis_url;
+    let (_, pages) = buckets_from_env(Arc::default())?;
+    pages.check().await?;
+    let redis = redis::Client::open(redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
+    let filled = BULK.fill_holes(&pages, &redis).await?;
+    if filled > 0 {
+        println!("indexed {filled} bulk numbers left by an earlier run");
+    }
+    let feed = BulkFeed { pages, redis, handle: Handle::current() };
+    println!("publishing the bulk run in {} to {}/{}{}", dir.display(), feed.pages.bucket, feed.pages.prefix, BULK.name);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let report = bulk::publish_run(&dir, &feed, &settings, &now_us)?;
+        println!("{} files, {} pages, bulk files {:?}", report.files, report.pages, report.change_files);
+        Ok(())
+    })
+    .await?
 }
 
 pub struct Claimed {

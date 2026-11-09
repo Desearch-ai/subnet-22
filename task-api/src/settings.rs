@@ -62,6 +62,8 @@ pub struct Settings {
     pub max_upload: u64,
     pub max_backlog: f64,
     pub max_attempts: i64,
+    /// Times an embed task may be handed back before it is dropped at its next claim.
+    pub max_handbacks: i64,
     pub ledger_delay: f64,
     pub check_share: f64,
     pub checks_per_hour: f64,
@@ -69,6 +71,8 @@ pub struct Settings {
     pub embed_checks_per_hour: f64,
     pub queue_target: i64,
     pub embed_queue_target: i64,
+    /// Seconds after the planner wrote an embed input that its task is dropped at its next claim; inputs are kept a day.
+    pub embed_input_max_age: f64,
     /// Seconds a revealed round's tasks are released over, one by one, so miners see a steady supply rather than whole rounds at once.
     pub release_spread: f64,
     pub task_urls: usize,
@@ -172,6 +176,7 @@ impl Settings {
             max_upload: number("TASK_API_MAX_UPLOAD_BYTES", 100_000_000)?,
             max_backlog: number("TASK_API_MAX_BACKLOG_S", 21_600.0)?,
             max_attempts: number("TASK_API_MAX_ATTEMPTS", 3)?,
+            max_handbacks: number("TASK_API_MAX_HANDBACKS", 5)?,
             ledger_delay: number("TASK_API_LEDGER_DELAY_S", 0.0)?,
             check_share: number("TASK_API_CHECK_SHARE", SHARE)?,
             checks_per_hour: number("TASK_API_CHECKS_PER_HOUR", CHECKS_PER_HOUR)?,
@@ -179,6 +184,7 @@ impl Settings {
             embed_checks_per_hour: number("TASK_API_EMBED_CHECKS_PER_HOUR", EMBED_CHECKS_PER_HOUR)?,
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
+            embed_input_max_age: number("TASK_API_EMBED_INPUT_MAX_AGE_S", 72_000.0)?,
             release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,

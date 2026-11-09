@@ -6,7 +6,7 @@ use crate::buckets::{sitemap_id, Json};
 use crate::churn;
 use crate::crawl::DomainWrite;
 use crate::robots::Paths;
-use crate::schedule::{Trust, DEFAULT_INTERVAL, SECOND};
+use crate::schedule::{Trust, DAY, DEFAULT_INTERVAL, SECOND};
 use crate::states::State;
 use crate::visit::{Known, KnownSitemap, SitemapUpdate};
 
@@ -14,6 +14,14 @@ use crate::visit::{Known, KnownSitemap, SitemapUpdate};
 pub fn int(value: Option<&Value>) -> Option<i64> {
     let value = value?;
     value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))
+}
+
+/// When a site that asks for a delay may next be asked, after a visit at `now` whose requests are not known, in microseconds.
+pub fn quiet_after(delay: Option<f64>, now: i64) -> i64 {
+    match delay.filter(|delay| delay.is_finite() && *delay > 0.0) {
+        Some(delay) => now.saturating_add((delay.min(crate::robots::MAX_CRAWL_DELAY) * SECOND as f64) as i64),
+        None => now,
+    }
 }
 
 /// A stored Unix timestamp as epoch microseconds.
@@ -53,6 +61,24 @@ pub fn new_domain(
     record.as_object().cloned().unwrap_or_default()
 }
 
+/// A registry row set back to `new` while the store holds another state: someone asked for the domain to be checked afresh.
+/// An exclusion stays, except one the bot made itself from the domain's top-level name, whose rule can change.
+pub fn wants_recheck(registry_state: &str, record: &Json) -> bool {
+    let stored = record.get("state").and_then(Value::as_str);
+    let by_name = record.get("reason").and_then(Value::as_str) == Some("non_english_tld");
+    registry_state == State::New.as_str() && stored.is_some_and(|state| state != State::New.as_str() && (state != State::Excluded.as_str() || by_name))
+}
+
+/// A domain to check afresh: new and due now, through the discovery lane, with its homepage read again.
+pub fn reset_for_recheck(record: &mut Json, now_micros: i64) {
+    record.insert("state".into(), State::New.as_str().into());
+    record.insert("reason".into(), Value::Null);
+    record.insert("failures".into(), 0.into());
+    let quiet = int(record.get("quiet")).map_or(0, |quiet| quiet.saturating_mul(SECOND));
+    record.insert("due".into(), seconds(Some(now_micros.max(quiet))));
+    record.remove("lang");
+}
+
 /// What a visit needs to know about a domain before it starts.
 pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<Known> {
     Some(Known {
@@ -63,6 +89,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         robots_checked_at: moment(domain.get("robots")),
         robots_allows: domain.get("allows").and_then(Value::as_bool),
         robots_paths: robots_paths(domain),
+        robots_status: int(domain.get("robots_status")).and_then(|status| u16::try_from(status).ok()),
         crawl_delay: domain.get("delay").and_then(Value::as_f64),
         language: text(domain.get("lang")),
         categories: domain
@@ -72,6 +99,11 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
             .unwrap_or_default(),
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
+        reason: text(domain.get("reason")),
+        paced: domain.get("paced").and_then(Value::as_bool) == Some(true),
+        quiet_at: moment(domain.get("quiet")),
+        www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
+        links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()).zip(moment(domain.get("links_status_at"))),
     })
 }
 
@@ -104,24 +136,46 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         index_lastmod: text(record.get("index_lastmod")),
         url_count: int(record.get("urls")).unwrap_or(0),
         ok: record.get("status").and_then(Value::as_str) == Some("ok"),
+        dead: match record.get("status").and_then(Value::as_str) {
+            Some("gone") => true,
+            Some("error") => text(record.get("error")).is_none_or(|error| !error.starts_with("http_") && error != "invalid"),
+            _ => false,
+        },
+        refused: record.get("status").and_then(Value::as_str) == Some("error") && text(record.get("error")).is_some_and(|error| matches!(error.as_str(), "http_401" | "http_402" | "http_403" | "http_429")),
         suspect_at: moment(record.get("suspect")),
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),
+        google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
+        fetched_at: moment(record.get("fetched")),
     })
+}
+
+/// How long a refusal a link run drew holds: a rate limit or a busy server a week, a refusal 60 days.
+pub fn links_refusal_holds(status: u16) -> i64 {
+    if matches!(status, 429 | 503) {
+        7 * DAY
+    } else {
+        60 * DAY
+    }
+}
+
+/// The refusal a link run drew on the domain, while it holds at `now`, in microseconds.
+pub fn links_refusal(domain: &Json, now: i64) -> Option<u16> {
+    let status = u16::try_from(int(domain.get("links_status"))?).ok()?;
+    let at = moment(domain.get("links_status_at"))?;
+    (now - at < links_refusal_holds(status)).then_some(status)
 }
 
 /// The domain record after a visit: robots fields only when robots was read.
 pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> Json {
     let visit = &write.visit;
     let mut record = previous.clone();
-    record.insert("state".into(), write.state.as_str().into());
-    record.insert("reason".into(), write.reason.clone().into());
-    record.insert("failures".into(), write.failures.into());
-    record.insert("due".into(), seconds(write.next_due_at));
-    record.insert("ok".into(), seconds(write.last_ok_at));
-    record.insert("checked".into(), seconds(Some(write.checked_at)));
-    record.insert("canonical".into(), write.canonical_host.clone().into());
-    record.insert("urls".into(), url_count.into());
+    if !visit.links_only {
+        record.insert("due".into(), seconds(write.next_due_at));
+    }
+    if let Some(quiet) = visit.quiet_until {
+        record.insert("quiet".into(), quiet.div_euclid(SECOND).saturating_add(1).into());
+    }
     if visit.robots_read {
         record.insert("robots".into(), seconds(Some(write.checked_at)));
         record.insert("robots_status".into(), visit.robots_status.into());
@@ -134,6 +188,26 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
             record.insert("rules".into(), json!({"allow": paths.allow, "disallow": paths.disallow}));
         }
     }
+    if let Some(status) = visit.links_refused {
+        record.insert("links_status".into(), status.into());
+        record.insert("links_status_at".into(), seconds(Some(write.checked_at)));
+    }
+    // Link work alone leaves the domain's standing and due time as they were.
+    if visit.links_only {
+        return record;
+    }
+    if visit.paced {
+        record.insert("paced".into(), true.into());
+    } else {
+        record.remove("paced");
+    }
+    record.insert("state".into(), write.state.as_str().into());
+    record.insert("reason".into(), write.reason.clone().into());
+    record.insert("failures".into(), write.failures.into());
+    record.insert("ok".into(), seconds(write.last_ok_at));
+    record.insert("checked".into(), seconds(Some(write.checked_at)));
+    record.insert("canonical".into(), write.canonical_host.clone().into());
+    record.insert("urls".into(), url_count.into());
     if let Some(language) = &visit.language {
         record.insert("lang".into(), language.clone().into());
     }
@@ -143,7 +217,27 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     if let Some(chars) = visit.home_chars {
         record.insert("chars".into(), chars.into());
     }
+    if let Some(status) = visit.home_status {
+        record.insert("home_status".into(), status.into());
+    }
+    match visit.www_only {
+        Some(true) => {
+            record.insert("www".into(), true.into());
+        }
+        Some(false) => {
+            record.remove("www");
+        }
+        None => {}
+    }
+    if let Some(listed) = visit.on_list {
+        record.insert("listed".into(), listed.into());
+    }
     record
+}
+
+/// A listed domain whose last visit, made while the list did not name it, found no sitemap: only a listed domain's visit reads its feed and homepage, so it is due again soon.
+pub fn listed_unread(record: &Json) -> bool {
+    record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str()) && record.get("listed").and_then(Value::as_bool) != Some(true)
 }
 
 /// The sitemap record after a read; its counts change only when its content did.
@@ -176,6 +270,11 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
     if let Some(kind) = &update.kind {
         record.insert("kind".into(), kind.clone().into());
     }
+    if update.google_news {
+        record.insert("gnews".into(), true.into());
+    } else if update.changed {
+        record.remove("gnews");
+    }
     if update.changed {
         record.insert("urls".into(), update.url_count.into());
         record.insert("children".into(), update.child_count.into());
@@ -200,7 +299,91 @@ pub fn unread_sitemap(url: &str, depth: i64, parent: Option<i64>) -> Json {
     record.as_object().cloned().unwrap_or_default()
 }
 
-/// URLs a domain lists across the sitemaps that last answered.
+/// URLs a domain lists across the sitemaps that last answered; a link run's pages are queued, never counted.
 pub fn url_count<'a>(sitemaps: impl Iterator<Item = &'a Json>) -> i64 {
-    sitemaps.filter(|s| s.get("status").and_then(Value::as_str) == Some("ok")).map(|s| int(s.get("urls")).unwrap_or(0)).sum()
+    sitemaps
+        .filter(|s| s.get("status").and_then(Value::as_str) == Some("ok") && s.get("kind").and_then(Value::as_str) != Some("links"))
+        .map(|s| int(s.get("urls")).unwrap_or(0))
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_google_news_sitemap_keeps_its_flag_through_quiet_reads() {
+        let read = SitemapUpdate {
+            id: 1,
+            url: "https://example.com/news.xml".into(),
+            kind: Some("urlset".into()),
+            depth: 1,
+            parent_id: None,
+            status: "ok",
+            error: None,
+            etag: None,
+            last_modified: None,
+            content_hash: Some("h".into()),
+            changed: true,
+            url_count: 10,
+            child_count: 0,
+            interval: DEFAULT_INTERVAL,
+            next_check_at: None,
+            trust: Trust::Unknown,
+            index_lastmod: None,
+            suspect_at: None,
+            sketch: Vec::new(),
+            generated_until: None,
+            google_news: true,
+        };
+        let first = written_sitemap(None, &read, 1_000 * SECOND);
+        let known = known_sitemap(&read.url, &first).unwrap();
+        assert!(known.google_news);
+        let quiet = SitemapUpdate { changed: false, google_news: known.google_news, ..read.clone() };
+        let second = written_sitemap(Some(&first), &quiet, 2_000 * SECOND);
+        assert!(known_sitemap(&read.url, &second).unwrap().google_news, "a 304 or an unchanged hash keeps it");
+        let plain = SitemapUpdate { google_news: false, ..read.clone() };
+        assert!(!known_sitemap(&read.url, &written_sitemap(Some(&second), &plain, 3_000 * SECOND)).unwrap().google_news, "a read that finds no Google News markup clears it");
+    }
+
+    #[test]
+    fn a_row_set_back_to_new_checks_the_domain_afresh_with_its_homepage_read_again() {
+        let mut record = new_domain(Some(5), Some("big_generic"), &[], State::Ineligible, Some("not_english"), None);
+        record.insert("lang".into(), "fr".into());
+        record.insert("failures".into(), 2.into());
+        assert!(wants_recheck("new", &record));
+        assert!(!wants_recheck("ineligible", &record), "the bot's own state coming back is no request");
+        reset_for_recheck(&mut record, 1_700_000_000 * SECOND);
+        assert_eq!((record["state"].as_str(), record["reason"].is_null(), record["failures"].as_i64(), record["due"].as_i64()), (Some("new"), true, Some(0), Some(1_700_000_000)));
+        assert!(!record.contains_key("lang"));
+        assert!(!wants_recheck("new", &record), "already new");
+        let excluded = new_domain(None, None, &[], State::Excluded, Some("hand"), None);
+        assert!(!wants_recheck("new", &excluded), "an excluded domain stays out");
+        let by_name = new_domain(None, Some("other_cctld"), &[], State::Excluded, Some("non_english_tld"), None);
+        assert!(wants_recheck("new", &by_name), "an exclusion by top-level name lifts when asked");
+    }
+
+    #[test]
+    fn the_www_host_a_visit_answered_on_is_kept_with_the_domain() {
+        let record = new_domain(Some(5), Some("big_generic"), &[], State::New, None, None);
+        let write = |www_only| {
+            let visit = crate::visit::Visit { www_only, ..crate::visit::Visit::new("a.test") };
+            DomainWrite {
+                host: "a.test".into(),
+                state: State::Active,
+                reason: None,
+                failures: 0,
+                next_due_at: None,
+                last_ok_at: None,
+                canonical_host: None,
+                checked_at: 1_700_000_000 * SECOND,
+                backlog: false,
+                visit,
+            }
+        };
+        let www = written_domain(&record, &write(Some(true)), 0);
+        assert!(known("a.test", &www, &[]).unwrap().www_only);
+        assert!(known("a.test", &written_domain(&www, &write(None), 0), &[]).unwrap().www_only, "a visit that read neither keeps it");
+        assert!(!known("a.test", &written_domain(&www, &write(Some(false)), 0), &[]).unwrap().www_only, "the bare host answering again clears it");
+    }
 }

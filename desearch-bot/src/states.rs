@@ -76,6 +76,8 @@ impl Outcome {
 
 const RETRY: [i64; 5] = [15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 4 * HOUR];
 const DOWN_AFTER: i64 = 7 * DAY;
+/// When a site that answered before, set back to new for a recheck, is tried again after each failed visit, before it waits a month: past a short outage and a firewall's block of a busy hour.
+const RECHECK_RETRY: [i64; 3] = [15 * MINUTE, 2 * HOUR, 12 * HOUR];
 /// Spread rechecks so domains visited together do not all fall due in the same second.
 pub const JITTER: f64 = 0.1;
 
@@ -126,12 +128,20 @@ fn failed(previous: State, failures: i64, last_ok_at: Option<i64>, now: i64, rng
             Decision { state: State::Failing, failures, next_check_at: Some(now + retry) }
         }
         State::Down => down(rng),
-        _ => Decision {
-            state: State::Unreachable,
-            failures,
-            next_check_at: Some(after(now, recheck(State::Unreachable), rng)),
-        },
+        // One timeout or error page on a recheck must not park a site that answered before for a month.
+        State::New if last_ok_at.is_some() => recheck_retry(failures - 1, now, rng).unwrap_or_else(|| unreachable(failures, now, rng)),
+        _ => unreachable(failures, now, rng),
     }
+}
+
+fn unreachable(failures: i64, now: i64, rng: &mut impl Rng) -> Decision {
+    Decision { state: State::Unreachable, failures, next_check_at: Some(after(now, recheck(State::Unreachable), rng)) }
+}
+
+/// The next try of a recheck that failed `failures` times before, kept new; None once its retries are spent. Each comes at a random point of its wait and half again, so rechecks that failed together don't come back together.
+pub fn recheck_retry(failures: i64, now: i64, rng: &mut impl Rng) -> Option<Decision> {
+    let wait = *RECHECK_RETRY.get(usize::try_from(failures).ok()?)?;
+    Some(Decision { state: State::New, failures: failures + 1, next_check_at: Some(now + wait + rng.gen_range(0..=wait / 2)) })
 }
 
 fn after(now: i64, interval: i64, rng: &mut impl Rng) -> i64 {
@@ -155,5 +165,15 @@ mod tests {
         let new = decide(State::New, Outcome::Unreachable, 0, None, now, &mut rng);
         assert_eq!(new.state, State::Unreachable);
         assert!(new.next_check_at.unwrap() >= now + 27 * DAY);
+        let recheck = decide(State::New, Outcome::Unreachable, 0, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!((recheck.state, recheck.failures), (State::New, 1), "a recheck of a site that answered before tries again soon");
+        assert!((now + 15 * MINUTE..=now + 15 * MINUTE * 3 / 2).contains(&recheck.next_check_at.unwrap()));
+        let third = decide(State::New, Outcome::Unreachable, 2, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!(third.state, State::New);
+        assert!((now + 12 * HOUR..=now + 18 * HOUR).contains(&third.next_check_at.unwrap()));
+        let parked = decide(State::New, Outcome::Unreachable, 3, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!(parked.state, State::Unreachable, "after its retries it waits like any other");
+        assert_eq!(recheck_retry(0, now, &mut rng).map(|d| (d.state, d.failures)), Some((State::New, 1)));
+        assert_eq!(recheck_retry(3, now, &mut rng), None);
     }
 }

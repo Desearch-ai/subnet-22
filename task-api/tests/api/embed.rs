@@ -131,6 +131,11 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
     let round_id = embed_round(&h, input()).await;
     assert_eq!(h.miner.claim().await["refusal"]["code"], "QUEUE_EMPTY", "crawl sees no embed work");
 
+    let asked = round_id.clone();
+    let stored: String =
+        h.state.db.run(move |conn| Ok(conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [asked], |row| row.get(0))?)).await.unwrap();
+    assert!(!stored.contains("page_key") && stored.contains("input_sha256"), "a queued round keeps its input but no page list");
+
     let task = embed_task(&h, &h.miner).await;
     assert_eq!((task["kind"].clone(), task["round_id"].clone()), (json!("embed"), json!(round_id)));
     assert_eq!((task["model"].clone(), task["texts"].clone()), (json!(h.state.settings.embed_model), json!(6)));
@@ -330,6 +335,95 @@ async fn an_embed_task_dropped_after_its_last_attempt_hands_its_pages_back_to_th
     let planned: Vec<(Value, Value)> = pages().as_array().unwrap().iter().map(|p| (p["page_key"].clone(), p["content_sha1"].clone())).collect();
     assert_eq!(given, planned);
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "QUEUE_EMPTY");
+}
+
+/// The strike reasons a hotkey has, in either pool.
+async fn reasons(h: &Harness, hotkey: String) -> Vec<String> {
+    h.state
+        .db
+        .run(move |conn| {
+            Ok(conn
+                .prepare("SELECT reason FROM strikes WHERE hotkey = ? ORDER BY id")?
+                .query_map([hotkey], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap()
+}
+
+async fn dropped_inputs(h: &Harness) -> Vec<Value> {
+    let dropped: Vec<String> = h.redis.clone().lrange(EMBED_DROPPED, 0, -1).await.unwrap();
+    dropped.iter().map(|raw| serde_json::from_str(raw).unwrap()).collect()
+}
+
+#[tokio::test]
+async fn an_embed_task_whose_input_is_near_its_expiry_is_dropped_at_claim_at_no_cost_and_the_miner_draws_the_next() {
+    let h = embedding().await;
+    let (mut old, mut fresh) = (inputs(2).remove(0), inputs(2).remove(1));
+    old["written_at"] = (now() - h.state.settings.embed_input_max_age - 60.0).into();
+    fresh["written_at"] = now().into();
+    embed_round(&h, old.clone()).await;
+    embed_round(&h, fresh.clone()).await;
+
+    let answer = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap();
+    let tasks = answer["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0]["input"]["url"].as_str().unwrap().contains("crawl-1.parquet"), "the fresh input is issued");
+
+    let dropped = dropped_inputs(&h).await;
+    assert_eq!(dropped.len(), 1);
+    assert_eq!((dropped[0]["input_key"].clone(), dropped[0]["pages"].as_array().unwrap().len()), (old["input_key"].clone(), 2));
+    assert!(reasons(&h, h.miner.ss58()).await.is_empty());
+    let miner = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
+    assert_eq!(miner["pools"]["embed"]["in_flight"], json!(1));
+    let receipt: (String, String) = h
+        .state
+        .db
+        .run(|conn| Ok(conn.query_row("SELECT hotkey, cause FROM entries WHERE outcome = 'dropped'", [], |row| Ok((row.get(0)?, row.get(1)?)))?))
+        .await
+        .unwrap();
+    assert_eq!(receipt, (String::new(), "input_expired".to_string()));
+}
+
+#[tokio::test]
+async fn an_embed_task_handed_back_too_often_is_dropped_at_its_next_claim_and_strikes_stay_with_those_who_handed_it_back() {
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.max_handbacks = 2;
+    })
+    .await;
+    embed_round(&h, input()).await;
+    let task = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
+    h.miner.post(&format!("/v1/tasks/{}/abandon", task_id(&task)), json!({})).await.unwrap();
+    let again = h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
+    assert_eq!(task_id(&again), task_id(&task), "one hand-back is not enough to drop it");
+    lifecycle::reclaim_expired(&h.state, now() + h.state.settings.embed_claim_ttl + 60.0).await.unwrap();
+
+    let third = h.client("//third-miner-api-test", &h.url);
+    assert_eq!(third.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "QUEUE_EMPTY");
+    let dropped = dropped_inputs(&h).await;
+    assert_eq!((dropped.len(), dropped[0]["input_key"].clone()), (1, input()["input_key"].clone()));
+    assert_eq!(reasons(&h, h.miner.ss58()).await, ["abandoned"]);
+    assert_eq!(reasons(&h, h.rival.ss58()).await, ["claim_expired"]);
+    assert!(reasons(&h, third.ss58()).await.is_empty());
+    let kept: bool = h.redis.clone().exists(format!("task:{}", task_id(&task))).await.unwrap();
+    assert!(!kept, "nothing of the task is left to claim");
+}
+
+#[tokio::test]
+async fn inputs_read_again_after_their_round_was_saved_are_not_opened_twice() {
+    let h = embedding().await;
+    let (first, second) = (inputs(2).remove(0), inputs(2).remove(1));
+    embed_round(&h, first.clone()).await;
+    for entry in [&first, &second] {
+        let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    }
+
+    let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round for the input not opened before");
+    assert_eq!(round.batches.len(), 1);
+    assert_eq!(round.batches[0].extra["input_key"], second["input_key"]);
+    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(left, 0, "the input already opened is trimmed with the rest");
 }
 
 #[tokio::test]

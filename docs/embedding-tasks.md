@@ -22,9 +22,9 @@ its model, and your miner claims only tasks for the model it runs.
 
 ## What a task holds
 
-Every page gives one **page text**: its title, description and text. An article over 2,000 characters
-also gives up to 16 **passages** of its paragraphs, split at its section headings, each starting with the
-title and the section's heading.
+Every page gives one **page text**: its title, description and the start of its text. A page over 2,000
+characters can also give up to 32 **passages**, split at its headings, each starting with the title and the
+section's heading. A task may hold page texts alone.
 
 A task holds the texts of up to 1,000 pages and 3 million characters. Upload its vectors within
 5 minutes of claiming it.

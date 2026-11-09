@@ -4,21 +4,42 @@ import argparse
 import csv
 import gzip
 import json
+import math
 import os
+import shlex
 import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 JEV = "jev-1.14/types-2"
 QUERY = (
-    "COPY (SELECT d.host, d.rank, d.state, d.state_reason, d.url_count, t.outcome, t.site_type, t.confidence"
+    "COPY (SELECT d.host, d.rank, d.state, d.state_reason, d.url_count, t.outcome, t.site_type, t.confidence, d.canonical_host"
     " FROM bot.domains d LEFT JOIN bot.site_types t ON t.host = d.host AND t.source = '"
     + JEV
     + "')"
     " TO STDOUT WITH (FORMAT csv)"
 )
+
+# libpq reads the connection from these, so psql's command line, which any process listing shows, holds no password.
+PG_ENV = {
+    "host": "PGHOST",
+    "hostaddr": "PGHOSTADDR",
+    "port": "PGPORT",
+    "dbname": "PGDATABASE",
+    "user": "PGUSER",
+    "password": "PGPASSWORD",
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "application_name": "PGAPPNAME",
+    "options": "PGOPTIONS",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+}
 
 TIERS = {
     "news": 1,
@@ -52,6 +73,8 @@ CRAWLED_STATES = {"active", "no_sitemap", "failing"}
 # Only these list pages from their sitemaps, so only these go in the bot's list; the decisions file has the rest.
 SENDING_STATES = {"active", "failing"}
 RECHECKED = {"no_text", "homepage_error"}
+# Homepage checks a recheck that read the site as the bot does (recheck_hosts.py) can overrule.
+MISFIRES = RECHECKED | {"not_english"}
 TOP_RANK = 10_000
 LOW_CAP = 10_000
 UNSURE_CAP = 100_000
@@ -60,6 +83,63 @@ CRAWL_PER_INDEX = 3
 HOURLY_TOP = 20_000
 HOURLY = 5_000
 MIN_DOMAINS = 50_000
+# A judged site with most sampled pages substantive earns a bigger cap; one with few keeps that share of its cap, at least the low cap.
+JUDGED_MIN = 10
+EARNED_SHARE = 0.8
+FAILED_SHARE = 0.4
+EARNED = 5
+EARNING_TYPES = {
+    "news",
+    "reference",
+    "media",
+    "community",
+    "academic",
+    "public",
+    "docs",
+}
+# With a v1 set, its sites send first and the rest of the list fills the room they leave.
+V1_NEWS_WEIGHT = 4
+V1_WEIGHT = 3
+NODE2_WEIGHT = 2
+# A v1 site taken whole: every stored page may go, up to this many.
+V1_WHOLE_CAP = 5_000_000
+# A landing site sends its homepage and first-level pages only (the bot's `depth`), a few an hour.
+LANDING_CAP = 100
+LANDING_HOURLY = 20
+LANDING_DEPTH = 1
+# A landing site the set takes deeper sends more; a site taken whole for its rank more again, shallowest first.
+DEEP_LANDING_CAP = 2_000
+DEEP_LANDING_HOURLY = 200
+RANK_WHOLE_CAP = 20_000
+RANK_WHOLE_HOURLY = 2_000
+RANK_WHOLE_DEPTH = 5
+# Seconds before an established outlet's homepage and hub pages go again: the top-ranked hourly, the rest daily.
+HUB_EVERY_TOP = 3_600
+HUB_EVERY = 86_400
+# Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
+SOFT_OUTS = {"unlabelled", "shop", "junk"}
+# A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
+FEED_STATES = {"no_sitemap"}
+SERVER_ERRORS = {str(status) for status in range(500, 600)}
+# The names the bot (net.rs, visit.rs) gives a site that doesn't answer; any other reason is not a failure.
+NETWORK_ERRORS = {
+    "InvalidUrlClientError",
+    "ConnectionTimeoutError",
+    "TimeoutError",
+    "SocketTimeoutError",
+    "ClientConnectorDNSError",
+    "ClientConnectorCertificateError",
+    "ClientConnectorSSLError",
+    "ServerDisconnectedError",
+    "ClientConnectorError",
+    "ClientPayloadError",
+    "ClientOSError",
+    "OSError",
+    "ValueError",
+    "CancelledError",
+    "TooManyRedirects",
+    "unknown",
+}
 
 
 @dataclass
@@ -72,6 +152,7 @@ class Row:
     homepage: str
     site_type: str
     confidence: float | None
+    canonical_host: str = ""
 
 
 @dataclass
@@ -95,6 +176,9 @@ class Decision:
     send_cap: int | None = None
     backlog: int | None = None
     hourly: int = 0
+    since: str | None = None
+    depth: int | None = None
+    hubs: int | None = None
 
 
 @dataclass
@@ -106,8 +190,54 @@ class Hand:
         return host in self.exact or any(part in host for part in self.parts)
 
 
+@dataclass
+class Judged:
+    pages: int
+    substantive: int
+
+
+@dataclass
+class V1:
+    rule: str
+    site_type: str = ""
+    since: str | None = None
+    depth: int | None = None
+    hubs: bool = False
+    why: tuple[str, ...] = ()
+
+    def by_rank(self) -> bool:
+        """A site taken whole for its rank, not for a backing."""
+        return self.rule == "whole" and self.why == ("rank",)
+
+
+def failure(reason: str) -> bool:
+    """Whether the bot's reason is a site failing to answer: a network error, a 5xx, or a sitemap rate limit. Refusals and crashes are not."""
+    kind, _, status = reason.partition("_")
+    if kind in ("robots", "homepage", "sitemap"):
+        return status in SERVER_ERRORS or (kind == "sitemap" and status == "429")
+    return reason in NETWORK_ERRORS
+
+
+def state_of(row: Row) -> str:
+    """The row's state for the list: a new row the bot is retrying after a failure is listed as a failing site, as it was before."""
+    if row.state == "new" and row.state_reason and failure(row.state_reason):
+        return "failing"
+    return row.state
+
+
 def out(reason: str) -> Decision:
     return Decision(False, reason)
+
+
+def judged_cap(cap: int, site_type: str, judged: Judged | None) -> int:
+    if judged is None or judged.pages < JUDGED_MIN:
+        return cap
+    share = judged.substantive / judged.pages
+    if share >= EARNED_SHARE and site_type in EARNING_TYPES:
+        return cap * EARNED
+    if share <= FAILED_SHARE:
+        return min(cap, max(LOW_CAP, int(cap * share)))
+    return cap
 
 
 def type_cap(site_type: str, rank: int | None, backed: bool, sure: bool) -> int:
@@ -130,7 +260,12 @@ def type_cap(site_type: str, rank: int | None, backed: bool, sure: bool) -> int:
 
 
 def decide(
-    row: Row, backing: Backing, override: str = "", hand: Hand | None = None
+    row: Row,
+    backing: Backing,
+    override: str = "",
+    hand: Hand | None = None,
+    judged: Judged | None = None,
+    rechecked: bool = False,
 ) -> Decision:
     if override.startswith("out:"):
         return out(override[4:])
@@ -140,13 +275,18 @@ def decide(
         return out(row.state_reason or "excluded")
     if row.state == "blocked" or row.state_reason == "bot_wall":
         return out("refuses")
-    if row.state_reason == "not_english" or row.homepage == "not_english":
+    cleared = rechecked and (row.state != "ineligible" or row.state_reason in MISFIRES)
+    if not cleared and (
+        row.state_reason == "not_english" or row.homepage == "not_english"
+    ):
         return out("not_english")
-    if row.state == "ineligible" and not (
-        row.state_reason in RECHECKED and row.homepage == "ok"
+    if (
+        row.state == "ineligible"
+        and not cleared
+        and not (row.state_reason in RECHECKED and row.homepage == "ok")
     ):
         return out(f"ineligible:{row.state_reason}")
-    if row.state not in CRAWLED_STATES | {"ineligible"}:
+    if state_of(row) not in CRAWLED_STATES | {"ineligible"}:
         return out(f"state:{row.state}")
     if row.homepage in REFUSALS and override != "keep":
         return out("refuses")
@@ -167,6 +307,7 @@ def decide(
             cap = min(cap, LOW_CAP)
         elif confidence < 0.8:
             cap = min(cap, UNSURE_CAP)
+    cap = judged_cap(cap, site_type, judged)
     tier = TIERS[site_type]
     crawl = cap * CRAWL_PER_INDEX
     top = row.rank is not None and row.rank <= TOP_RANK
@@ -185,12 +326,104 @@ def decide(
     )
 
 
+def v1_weight(site_type: str) -> int:
+    return V1_NEWS_WEIGHT if site_type == "news" else V1_WEIGHT
+
+
+def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decision:
+    if v1 is None or v1.rule == "landing":
+        return (
+            replace(base, weight=min(base.weight, NODE2_WEIGHT))
+            if base.listed
+            else base
+        )
+    if v1.rule == "out":
+        return out("v1")
+    lifted = not base.listed and not forced_out and base.reason in SOFT_OUTS
+    if v1.rule not in ("news", "whole") or not (base.listed or lifted):
+        return replace(base, weight=v1_weight(base.site_type)) if base.listed else base
+    site_type = v1.site_type if v1.site_type in TIERS else base.site_type
+    if site_type not in TIERS:
+        return base
+    top = row.rank is not None and row.rank <= TOP_RANK
+    hourly = HOURLY_TOP if top else HOURLY
+    if site_type == "news":
+        cap = (
+            base.cap
+            if base.listed and base.site_type == "news"
+            else type_cap("news", row.rank, True, True)
+        )
+        return Decision(
+            True,
+            "",
+            "news",
+            TIERS["news"],
+            V1_NEWS_WEIGHT,
+            cap,
+            backlog=cap * CRAWL_PER_INDEX,
+            hourly=hourly,
+            since=v1.since if v1.rule == "news" else None,
+            hubs=(HUB_EVERY_TOP if top else HUB_EVERY)
+            if v1.rule == "news" and v1.hubs
+            else None,
+        )
+    if v1.by_rank():
+        return Decision(
+            True,
+            "",
+            site_type,
+            TIERS[site_type],
+            V1_WEIGHT,
+            RANK_WHOLE_CAP,
+            send_cap=RANK_WHOLE_CAP,
+            hourly=RANK_WHOLE_HOURLY,
+            depth=RANK_WHOLE_DEPTH,
+        )
+    return Decision(
+        True,
+        "",
+        site_type,
+        TIERS[site_type],
+        V1_WEIGHT,
+        V1_WHOLE_CAP,
+        send_cap=V1_WHOLE_CAP * CRAWL_PER_INDEX,
+        hourly=hourly,
+    )
+
+
+def pg_env(dsn: str) -> dict[str, str]:
+    """libpq's environment for a URI or keyword=value connection string."""
+    parts = urlsplit(dsn)
+    if parts.scheme in ("postgres", "postgresql"):
+        found = {
+            "host": parts.hostname,
+            "port": parts.port,
+            "user": unquote(parts.username or ""),
+            "password": unquote(parts.password or ""),
+            "dbname": unquote(parts.path.lstrip("/")),
+            **dict(parse_qsl(parts.query)),
+        }
+    else:
+        found = dict(item.split("=", 1) for item in shlex.split(dsn))
+    unknown = sorted(set(found) - set(PG_ENV))
+    if unknown:
+        sys.exit(
+            f"DESEARCH_DB has settings this tool can't pass to psql: {', '.join(unknown)}"
+        )
+    return {
+        PG_ENV[key]: str(value)
+        for key, value in found.items()
+        if value not in (None, "")
+    }
+
+
 def registry_rows(csv_path: str | None) -> csv.reader:
     if csv_path:
         return csv.reader(open_text(csv_path))
+    env = {key: value for key, value in os.environ.items() if key != "DESEARCH_DB"}
+    env.update(pg_env(os.environ["DESEARCH_DB"]))
     command = [
         "psql",
-        os.environ["DESEARCH_DB"],
         "-X",
         "-q",
         "-v",
@@ -200,12 +433,23 @@ def registry_rows(csv_path: str | None) -> csv.reader:
         "-c",
         QUERY,
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env)
     return csv.reader(process.stdout)
 
 
 def parse_row(fields: list[str]) -> Row:
-    host, rank, state, state_reason, url_count, homepage, site_type, confidence = fields
+    # Registry dumps made before canonical_host was read have eight columns.
+    (
+        host,
+        rank,
+        state,
+        state_reason,
+        url_count,
+        homepage,
+        site_type,
+        confidence,
+        canonical_host,
+    ) = (fields + [""])[:9]
     return Row(
         host,
         int(rank) if rank else None,
@@ -215,6 +459,7 @@ def parse_row(fields: list[str]) -> Row:
         homepage,
         site_type,
         float(confidence) if confidence else None,
+        canonical_host,
     )
 
 
@@ -249,6 +494,44 @@ def read_overrides(path: str | None) -> dict[str, str]:
         }
 
 
+def read_judged(path: str | None) -> dict[str, Judged]:
+    if not path:
+        return {}
+    with open_text(path) as source:
+        return {
+            r["host"]: Judged(int(r["judged"]), int(r["substantive"]))
+            for r in csv.DictReader(source, delimiter="\t")
+        }
+
+
+def read_rechecked(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    with open_text(path) as source:
+        verdicts = {
+            r["host"]: r["verdict"] for r in csv.DictReader(source, delimiter="\t")
+        }
+    return {host for host, verdict in verdicts.items() if verdict == "ok"}
+
+
+def read_v1_set(path: str | None) -> dict[str, V1] | None:
+    if not path:
+        return None
+    with open_text(path) as source:
+        sites = json.load(source)["sites"]
+    return {
+        site["host"]: V1(
+            site["rule"],
+            site.get("type", ""),
+            site.get("since"),
+            site.get("depth"),
+            site.get("hubs") is True,
+            tuple(site.get("why", ())),
+        )
+        for site in sites
+    }
+
+
 def read_hand(path: str | None) -> Hand:
     hand = Hand()
     if not path:
@@ -268,39 +551,177 @@ def build(
     overrides: dict[str, str],
     hand: Hand,
     decisions=None,
+    judged: dict[str, Judged] | None = None,
+    v1: dict[str, V1] | None = None,
+    resend_before: str | None = None,
+    resend_hosts: set[str] | None = None,
+    node2_hours: float | None = None,
+    node2_min_weight: int = 1,
+    rejoin_hosts: set[str] | None = None,
+    rechecked: set[str] | None = None,
+    widened_before: str | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
-        decision = decide(
-            row, backing.get(row.host, Backing()), overrides.get(row.host, ""), hand
+        override = overrides.get(row.host, "")
+        base = decide(
+            row,
+            backing.get(row.host, Backing()),
+            override,
+            hand,
+            (judged or {}).get(row.host),
+            row.host in (rechecked or set()),
         )
+        entry_v1 = (v1 or {}).get(row.host)
+        decision = (
+            base
+            if v1 is None
+            else apply_v1(row, base, entry_v1, override.startswith("out:"))
+        )
+        landing = entry_v1 is not None and entry_v1.rule == "landing"
+        # A landing site the list sends for node 2 already keeps those terms; any other sends its landing pages only.
+        if (
+            landing
+            and decision.listed
+            and not (
+                decision.weight >= node2_min_weight and state_of(row) in SENDING_STATES
+            )
+        ):
+            depth = entry_v1.depth or LANDING_DEPTH
+            deep = depth > LANDING_DEPTH
+            decision = replace(
+                decision,
+                weight=V1_WEIGHT,
+                send_cap=DEEP_LANDING_CAP if deep else LANDING_CAP,
+                backlog=None,
+                hourly=DEEP_LANDING_HOURLY if deep else LANDING_HOURLY,
+                since=None,
+                depth=depth,
+            )
+        node2 = v1 is not None and (
+            entry_v1 is None or (landing and decision.depth is None)
+        )
+        if node2 and decision.listed and decision.weight < node2_min_weight:
+            decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
-        if decision.listed and row.state in SENDING_STATES:
+        feed = (
+            entry_v1 is not None
+            and entry_v1.rule in ("news", "whole", "landing")
+            and state_of(row) in FEED_STATES
+        )
+        if decision.listed and (state_of(row) in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
                 "type": decision.site_type,
                 "weight": decision.weight,
                 "hourly": decision.hourly,
             }
+            if node2_hours and node2:
+                bound = decision.send_cap or decision.backlog or row.url_count
+                entry["hourly"] = min(
+                    decision.hourly,
+                    max(1, math.ceil(min(row.url_count, bound) / node2_hours)),
+                )
             if decision.send_cap is not None:
-                entry["send_cap"] = decision.send_cap
+                # A cap that changes makes the list walker walk the site again, queuing pages an earlier walk left out.
+                entry["send_cap"] = decision.send_cap + (
+                    row.host in (rejoin_hosts or set())
+                )
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
-            ranked.append((row.rank is None, row.rank or 0, row.host, entry))
+            if decision.since is not None:
+                entry["since"] = decision.since
+            if decision.depth is not None:
+                entry["depth"] = decision.depth
+            if decision.hubs is not None:
+                entry["hubs"] = decision.hubs
+            # A landing site's pages sent before the cutoff go again, as many as its cap, so they reach the index re-read.
+            if resend_before and (
+                decision.depth is not None
+                or (
+                    row.host in (resend_hosts or set())
+                    and entry_v1 is not None
+                    and entry_v1.rule in ("news", "whole")
+                )
+            ):
+                entry["resend_before"] = resend_before
+            # A site the set takes deeper than before sends its pages sent before then again, up to its cap.
+            if widened_before and (decision.depth or 0) > LANDING_DEPTH:
+                entry["resend_before"] = max(
+                    entry.get("resend_before", ""), widened_before
+                )
+            ranked.append(
+                (
+                    row.rank is None,
+                    row.rank or 0,
+                    row.host,
+                    entry,
+                    landing and feed and state_of(row) not in SENDING_STATES,
+                )
+            )
+        # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
                 [
                     row.host,
                     row.rank or "",
                     row.state,
-                    int(decision.listed),
-                    decision.reason,
-                    decision.site_type,
-                    decision.cap,
+                    int(base.listed),
+                    base.reason,
+                    base.site_type,
+                    base.cap,
+                    entry_v1.rule if entry_v1 else "",
+                    row.canonical_host,
                 ]
             )
+    # A landing subdomain listed only for its feed would take its pages from its parent's lists and leave them unsent; a whole or news one sends them itself, and a landing parent sends none of them.
+    hosts = {item[2] for item in ranked if "depth" not in item[3]}
+    ranked = [
+        item for item in ranked if not (item[4] and parent_listed(item[2], hosts))
+    ]
     ranked.sort(key=lambda item: item[:3])
     return [item[3] for item in ranked], counts
+
+
+def parent_listed(host: str, hosts: set[str]) -> bool:
+    labels = host.split(".")
+    return any(".".join(labels[at:]) in hosts for at in range(1, len(labels) - 1))
+
+
+def read_hosts(paths: list[str]) -> dict[str, set[str]]:
+    files = {
+        path: {
+            line.strip() for line in Path(path).read_text().splitlines() if line.strip()
+        }
+        for path in paths
+    }
+    for path, hosts in files.items():
+        if not hosts:
+            sys.exit(f"{path} lists no hosts; nothing written")
+    return files
+
+
+def matched(
+    entries: list[dict],
+    resend_files: dict[str, set[str]],
+    rejoin_files: dict[str, set[str]],
+    out: str,
+) -> tuple[set[str], set[str]]:
+    """The listed hosts that took resend_before and the rejoin bump; exits when a host file matches none."""
+    rejoin_hosts = set().union(*rejoin_files.values())
+    resent = {e["host"] for e in entries if "resend_before" in e}
+    rejoined = {
+        e["host"] for e in entries if e["host"] in rejoin_hosts and "send_cap" in e
+    }
+    for path, hosts in resend_files.items():
+        if not hosts & resent:
+            sys.exit(
+                f"no listed v1 site in {path} took resend_before; {out} left as it was"
+            )
+    for path, hosts in rejoin_files.items():
+        if not hosts & rejoined:
+            sys.exit(f"no listed site with a send_cap in {path}; {out} left as it was")
+    return resent, rejoined
 
 
 def write_list(entries: list[dict], path: str) -> None:
@@ -335,27 +756,125 @@ def main(argv: list[str] | None = None) -> None:
         "--decisions", help="TSV (.gz allowed) of every domain's decision"
     )
     parser.add_argument(
+        "--judged",
+        help="TSV of host, judged, substantive: sampled pages a judge read, and how many had content of their own",
+    )
+    parser.add_argument(
+        "--v1-set",
+        help="v1-set.json: its sites send first under its caps, and the rest of the list at lower weights",
+    )
+    parser.add_argument(
+        "--resend-before",
+        help="an ISO date: the pages of the v1 sites in --resend-hosts last sent before it go once more (extraction changed)",
+    )
+    parser.add_argument(
+        "--resend-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
+    )
+    parser.add_argument(
+        "--node2-hours",
+        type=float,
+        help="with --v1-set, each site outside it sends at most its stored pages under its cap divided by this many hours in an hour, at least one, so the v1 sites keep the rest of the cap",
+    )
+    parser.add_argument(
+        "--node2-min-weight",
+        type=int,
+        default=1,
+        help="with --v1-set, sites outside it weighted below this stay off the list; 2 leaves out companies, organizations and personal sites",
+    )
+    parser.add_argument(
+        "--rejoin-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again (unqueued.py lists them)",
+    )
+    parser.add_argument(
+        "--rechecked",
+        help="recheck_hosts.py's TSV of host and verdict: a host it read as ok passes the homepage language, text and error checks",
+    )
+    parser.add_argument(
+        "--widened-before",
+        help="an ISO date: the sites the v1 set takes deeper than their first level, or whole for their rank, send their pages last sent before it once more, up to their cap",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
     args = parser.parse_args(argv)
     rows = (parse_row(fields) for fields in registry_rows(args.registry_csv))
-    backing, overrides, hand = (
+    backing, overrides, hand, judged, v1 = (
         read_backing(args.backing),
         read_overrides(args.overrides),
         read_hand(args.excluded),
+        read_judged(args.judged),
+        read_v1_set(args.v1_set),
     )
+    resend_files, rejoin_files = (
+        read_hosts(args.resend_hosts),
+        read_hosts(args.rejoin_hosts),
+    )
+    resend_hosts = set().union(*resend_files.values())
+    rejoin_hosts = set().union(*rejoin_files.values())
+    rechecked = read_rechecked(args.rechecked)
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
-                ["host", "rank", "state", "listed", "reason", "type", "cap"]
+                [
+                    "host",
+                    "rank",
+                    "state",
+                    "listed",
+                    "reason",
+                    "type",
+                    "cap",
+                    "v1",
+                    "canonical",
+                ]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer)
+            entries, counts = build(
+                rows,
+                backing,
+                overrides,
+                hand,
+                writer,
+                judged,
+                v1,
+                args.resend_before,
+                resend_hosts,
+                args.node2_hours,
+                args.node2_min_weight,
+                rejoin_hosts,
+                rechecked,
+                args.widened_before,
+            )
     else:
-        entries, counts = build(rows, backing, overrides, hand)
+        entries, counts = build(
+            rows,
+            backing,
+            overrides,
+            hand,
+            judged=judged,
+            v1=v1,
+            resend_before=args.resend_before,
+            resend_hosts=resend_hosts,
+            node2_hours=args.node2_hours,
+            node2_min_weight=args.node2_min_weight,
+            rejoin_hosts=rejoin_hosts,
+            rechecked=rechecked,
+            widened_before=args.widened_before,
+        )
+    resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
+    print(
+        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin, {sum('depth' in e for e in entries)} landing sites with depth"
+    )
+    print(
+        f"{sum(e.get('depth', 0) > LANDING_DEPTH for e in entries)} deeper than {LANDING_DEPTH}, {sum('hubs' in e for e in entries)} with hubs ({sum(e.get('hubs') == HUB_EVERY_TOP for e in entries)} hourly)"
+    )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
 

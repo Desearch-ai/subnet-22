@@ -26,6 +26,8 @@ use crate::records::{Row, EXTRACTION_V2, MAX_US, MIN_US, ROW_COLUMNS, ROW_COLUMN
 
 pub const MAGIC: &[u8; 4] = b"PAR1";
 pub const MAX_FOOTER_BYTES: u64 = 2_000_000;
+/// For files of the current state, which the compactor writes and whose base files hold thousands of row groups.
+pub const MAX_CURRENT_FOOTER_BYTES: u64 = 256 << 20;
 pub const MAX_ROW_BYTES: i64 = 6_000_000;
 pub const MAX_ROW_GROUP_BYTES: i64 = 512_000_000;
 /// The footer and its length are read in one request whenever the footer is this small.
@@ -143,12 +145,17 @@ pub fn changed(error: &io::Error) -> bool {
 
 /// The footer's length when both magic markers are present and the footer is small enough to parse.
 pub fn footer_length(size: u64, head: &[u8], tail: &[u8]) -> Option<u64> {
+    footer_length_at_most(size, head, tail, MAX_FOOTER_BYTES)
+}
+
+/// `footer_length` with a footer of up to `most` bytes.
+pub fn footer_length_at_most(size: u64, head: &[u8], tail: &[u8], most: u64) -> Option<u64> {
     if size < 12 || head != MAGIC || tail.len() < 8 || &tail[tail.len() - 4..] != MAGIC {
         return None;
     }
     let at = tail.len() - 8;
     let length = u64::from(u32::from_le_bytes(tail[at..at + 4].try_into().ok()?));
-    (length > 0 && length <= MAX_FOOTER_BYTES.min(size - 12)).then_some(length)
+    (length > 0 && length <= most.min(size - 12)).then_some(length)
 }
 
 /// The columns read from a file: `ROW_COLUMNS`, and `ROW_COLUMNS_V2` too for a v2 upload, the one kind of file with `extraction`.
@@ -227,7 +234,7 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
     Ok(decode(Prefetched { size, ranges }, metadata, assigned))
 }
 
-fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
+pub(crate) fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
     chunks.sort_by_key(|r| r.start);
     let mut merged: Vec<Range<u64>> = Vec::new();
     for chunk in chunks.into_iter().filter(|c| !c.is_empty()) {
@@ -242,12 +249,18 @@ fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
 }
 
 /// The byte ranges fetched for one file, served to the Parquet decoder.
-struct Prefetched {
+#[derive(Clone)]
+pub(crate) struct Prefetched {
     size: u64,
     ranges: Vec<(u64, Bytes)>,
 }
 
 impl Prefetched {
+    /// Ranges of a file of `size` bytes, each given by its start.
+    pub(crate) fn new(size: u64, ranges: Vec<(u64, Bytes)>) -> Prefetched {
+        Prefetched { size, ranges }
+    }
+
     fn find(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
         let i = self.ranges.partition_point(|(s, _)| *s <= start);
         let (s, data) = i.checked_sub(1).map(|i| &self.ranges[i]).ok_or_else(|| ParquetError::EOF("outside the fetched ranges".into()))?;

@@ -5,8 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use desearch::feeds::Feed;
 
+use crate::compactor::{LocalStore, Store};
 use crate::reading::{Counted, LocalFile, RangeRead, Traffic};
+use crate::service::{day, now_us};
 use crate::worker::{ChangeFeed, Fault, Job, Uploads};
 
 /// Each job's upload as `<task_id>.parquet` in one folder.
@@ -51,6 +55,35 @@ impl ChangeFeed for LocalFeed {
         let seq = self.next.fetch_add(1, Ordering::SeqCst);
         let path = self.dir.join(format!("{seq:012}.parquet"));
         std::fs::write(&path, file).with_context(|| format!("writing {}", path.display()))?;
+        Ok(seq)
+    }
+}
+
+/// A numbered feed in a folder laid out as the pages bucket holds it, numbered after its newest file, so the compactor's `LocalStore` reads it.
+pub struct LocalLog {
+    pub store: LocalStore,
+    feed: &'static Feed,
+    next: AtomicU64,
+}
+
+impl LocalLog {
+    pub fn open(root: impl Into<PathBuf>, feed: &'static Feed) -> Result<Self> {
+        let store = LocalStore { root: root.into() };
+        let latest = match store.get(&feed.latest_key())? {
+            Some(raw) => serde_json::from_slice::<serde_json::Value>(&raw)?["seq"].as_u64().context("a latest.json without a seq")?,
+            None => 0,
+        };
+        Ok(LocalLog { store, feed, next: AtomicU64::new(latest + 1) })
+    }
+}
+
+impl ChangeFeed for LocalLog {
+    fn append(&self, file: Vec<u8>, rows: usize) -> Result<u64> {
+        let seq = self.next.fetch_add(1, Ordering::SeqCst);
+        let key = format!("{}/dt={}/{seq:012}.parquet", self.feed.name, day(now_us()));
+        self.store.put(&key, Bytes::from(file))?;
+        self.store.put(&self.feed.seq_key(seq), Bytes::from(serde_json::json!({"key": key, "rows": rows}).to_string()))?;
+        self.store.put(&self.feed.latest_key(), Bytes::from(format!("{{\"seq\": {seq}}}")))?;
         Ok(seq)
     }
 }

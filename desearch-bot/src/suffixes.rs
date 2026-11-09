@@ -73,13 +73,23 @@ impl PublicSuffixList {
     }
 }
 
+/// Names reserved for local and private networks, never delegated on the public internet.
+const SPECIAL_USE: [&str; 13] = ["alt", "arpa", "corp", "example", "home", "internal", "intranet", "invalid", "lan", "local", "localhost", "onion", "test"];
+
+/// The group of a registrable domain's public suffix; a top-level name longer than a country code is generic.
 pub fn tld_group(domain: &str) -> &'static str {
     let suffix = domain.split_once('.').map_or("", |(_, suffix)| suffix);
+    let under_english = || suffix.match_indices('.').any(|(i, _)| RULES.english_market.contains(&suffix[i + 1..]));
+    let gtld = suffix.len() > 2
+        && !suffix.contains('.')
+        && !suffix.starts_with("xn--")
+        && suffix.bytes().all(|b| b.is_ascii_lowercase())
+        && !SPECIAL_USE.contains(&suffix);
     if RULES.big_generic.contains(suffix) {
         "big_generic"
-    } else if RULES.english_market.contains(suffix) {
+    } else if RULES.english_market.contains(suffix) || under_english() {
         "en_cctld"
-    } else if RULES.generic.contains(suffix) {
+    } else if RULES.generic.contains(suffix) || gtld {
         "new_generic"
     } else {
         "other_cctld"
@@ -100,5 +110,21 @@ mod tests {
         assert_eq!(list.registrable("co.uk"), None);
         assert_eq!(list.registrable("localhost"), None);
         assert_eq!(tld_group("example.com"), "big_generic");
+    }
+
+    #[test]
+    fn groups_top_level_names_beyond_the_lists() {
+        assert_eq!(tld_group("ms.now"), "new_generic");
+        assert_eq!(tld_group("world.rugby"), "new_generic");
+        assert_eq!(tld_group("last.fm"), "new_generic");
+        assert_eq!(tld_group("www.nhs.uk"), "en_cctld");
+        assert_eq!(tld_group("www.vic.gov.au"), "en_cctld");
+        assert_eq!(tld_group("example.de"), "other_cctld");
+        assert_eq!(tld_group("example.xn--p1ai"), "other_cctld");
+        assert_eq!(tld_group("foo.github.io"), "other_cctld");
+        assert_eq!(tld_group("a.s3.amazonaws.com"), "other_cctld");
+        for host in ["mysite.local", "foo.test", "foo.localhost", "intranet.corp", "site.internal", "x.onion", "router.lan"] {
+            assert_eq!(tld_group(host), "other_cctld", "{host}");
+        }
     }
 }

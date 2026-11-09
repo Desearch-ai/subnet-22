@@ -1,13 +1,17 @@
 //! One visit to one domain: read its rules, read its sitemaps, keep what is new.
 
 use std::borrow::Cow;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use flate2::{Decompress, FlushDecompress, Status};
 use indexmap::IndexMap;
+use rand::Rng;
+use regex::Regex;
+use reqwest::dns::{Name, Resolve};
 use reqwest::header::HeaderMap;
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -17,19 +21,25 @@ use crate::buckets::{sitemap_id, Buckets};
 use crate::churn;
 use crate::listed::fingerprint;
 use crate::robots::{self, Paths};
-use crate::schedule::{self, Trust, DAY, SECOND};
+use crate::schedule::{self, Trust, DAY, HOUR, SECOND};
 use crate::signing::Signer;
 use crate::sitemaps::{self, Entry};
 use crate::states::{Outcome, State, JITTER};
 use crate::suffixes::PublicSuffixList;
 use crate::urls::{self, Listing, Normaliser};
-use crate::{homepage, isodate, net};
+use crate::{homepage, isodate, net, records};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
-/// Some sites ask for hours between requests; past this we slow down no further.
-const MAX_CRAWL_DELAY: f64 = 60.0;
+/// The longest a visit waits in place for its next request; a longer Crawl-delay ends the visit, and the domain is due again once the delay has passed.
+pub const MAX_WAIT_IN_VISIT: f64 = 60.0;
+/// What a request made while the visit's next turn was further off than `MAX_WAIT_IN_VISIT` answers instead of going.
+pub const PACED: &str = "paced";
 const MAX_REDIRECTS: usize = 5;
 const SITEMAP_GUESSES: [&str; 2] = ["/sitemap.xml", "/sitemap_index.xml"];
+/// Tried after the sitemap guesses, on listed domains only: a feed names a site's newest pages when it lists no sitemap.
+const FEED_GUESSES: [&str; 2] = ["/feed", "/rss.xml"];
+/// Tried last on listed domains, and read on every visit of a landing site whatever sitemaps it has: the homepage, as a list of itself and the pages it links to.
+const HOMEPAGE: &str = "/";
 const MAX_DEPTH: i64 = 3;
 const MAX_FILES: usize = 40;
 /// The most unread sitemap files one visit records for the visits after it.
@@ -40,6 +50,63 @@ const MIN_URLS: i64 = 10;
 const ROBOTS_EVERY: i64 = DAY;
 const MAX_ROBOTS_BYTES: usize = 512 * 1024;
 const MAX_HOMEPAGE_BYTES: usize = 512 * 1024;
+/// The kind a homepage read as a list of pages is stored under.
+const HOMEPAGE_KIND: &str = "homepage";
+/// A homepage listing is read again at most this often.
+const HOMEPAGE_INTERVAL: i64 = schedule::HOUR;
+/// The kind the pages found by following a site's links from its homepage are stored under, as one listing.
+pub const LINKS_KIND: &str = "links";
+/// A listed site whose sitemaps list fewer pages than this has its links followed too.
+pub const THIN_URLS: i64 = 1_000;
+/// Pages one run fetches at most, and how long it may take.
+const LINKS_FETCHES: usize = 150;
+const LINKS_TIME: Duration = Duration::from_secs(600);
+/// Link levels below the homepage a run reaches: pages on the last level are kept, not fetched.
+const LINKS_DEPTH: u8 = 3;
+const LINKS_MOST: usize = 5_000;
+/// A run is repeated this often while it finds pages new to the store, and less often, down to the longest interval, while it finds none.
+const LINKS_INTERVAL: i64 = 7 * DAY;
+const LINKS_INTERVAL_MAX: i64 = 60 * DAY;
+/// With `--follow-links all`, a site whose sitemaps list many pages has its links followed this often, if the list weights it as one of its own picks: a whole or news site.
+const LINKS_ALL_INTERVAL: i64 = 30 * DAY;
+const LINKS_ALL_WEIGHT: u8 = 3;
+/// A run that found every slot taken, or its address held by another run, is tried again at a random time between these, so waiting runs spread out.
+const LINKS_WAIT: (i64, i64) = (10 * 60 * SECOND, 2 * HOUR);
+/// How much of a page's start is searched for a robots meta tag.
+const HEAD_BYTES: usize = 65_536;
+/// Link-run fetches to one address, across runs and sites, are this far apart at least.
+const PEER_GAP: Duration = Duration::from_secs(1);
+/// Failed connections in a row to one address, across runs, that stop link runs there, and for how long.
+const PEER_FAILURES: u8 = 3;
+const PEER_REST: Duration = Duration::from_secs(24 * 3600);
+const PEER_PRUNE_EVERY: Duration = Duration::from_secs(3600);
+const MAX_PATH_SEGMENTS: usize = 12;
+/// Files, feeds and forms: never fetched to follow their links.
+static NOT_PAGES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)/(search|login|logout|sign-?in|sign-?up|register|cart|checkout|account|wp-json|wp-admin|feeds?|rss|print|amp|attachment|cdn-cgi)(/|$)",
+        r"|\.(pdf|jpe?g|png|gif|webp|svg|ico|bmp|tiff?|zip|gz|tgz|bz2|xz|7z|rar|tar|mp[34]|m4[av]|mov|avi|wmv|webm|ogg|wav|flac|css|js|json|xml|rss|atom|txt|csv|xlsx?|docx?|pptx?|odt|ods|epub|exe|dmg|apk|iso|woff2?|ttf|eot)$",
+    ))
+    .expect("a valid pattern")
+});
+static NOFOLLOW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r#"(?is)<meta\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b[^>]*\bcontent\s*=\s*["']?(?:[^"'>]*[,\s])?(?:nofollow|none)\b"#,
+        r#"|<meta\b[^>]*\bcontent\s*=\s*["']?(?:[^"'>]*[,\s])?(?:nofollow|none)\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b"#,
+    ))
+    .expect("a valid pattern")
+});
+/// Which listed sites, landing sites aside, have their links followed from the homepage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum FollowLinks {
+    Off,
+    /// Those whose sitemaps list few pages or none.
+    #[default]
+    Thin,
+    /// Those too, and every whole or news site, less often.
+    All,
+}
+
 /// The sitemap protocol caps a file at 50 MB uncompressed, and so do we.
 pub const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 
@@ -70,9 +137,17 @@ pub struct KnownSitemap {
     pub url_count: i64,
     /// The file answered last time, so its URLs count toward the domain's total.
     pub ok: bool,
+    /// It answered 404 or 410 last time, or never answered at all; a refusal, a rate limit or a server error is an answer.
+    pub dead: bool,
+    /// It answered 401, 402, 403 or 429 last time.
+    pub refused: bool,
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    /// A Google News sitemap when last read, so a quiet read keeps its news pace.
+    pub google_news: bool,
+    /// When it was last fetched.
+    pub fetched_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,11 +159,23 @@ pub struct Known {
     pub robots_checked_at: Option<i64>,
     pub robots_allows: Option<bool>,
     pub robots_paths: Paths,
+    /// How robots.txt answered when last read.
+    pub robots_status: Option<u16>,
     pub crawl_delay: Option<f64>,
     pub language: Option<String>,
     pub categories: Vec<String>,
     pub sitemaps: IndexMap<String, KnownSitemap>,
     pub canonical_host: Option<String>,
+    /// The bare host had no DNS record when last read and its www host answered.
+    pub www_only: bool,
+    /// The status a link run was refused with, and when, which ends link work on the site while it holds.
+    pub links_refused: Option<(u16, i64)>,
+    /// The reason the record gives its state, which a visit that decides nothing keeps.
+    pub reason: Option<String>,
+    /// The last visit stopped for the site's Crawl-delay, so this one goes on from where it stopped.
+    pub paced: bool,
+    /// When the site's Crawl-delay lets the next request go, as its record keeps it, in microseconds.
+    pub quiet_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +200,7 @@ pub struct SitemapUpdate {
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    pub google_news: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,6 +217,7 @@ pub struct Visit {
     pub language: Option<String>,
     pub declared_lang: Option<String>,
     pub home_chars: Option<i64>,
+    pub home_status: Option<u16>,
     pub sitemaps: Vec<SitemapUpdate>,
     pub listed: i64,
     pub new: i64,
@@ -136,6 +225,42 @@ pub struct Visit {
     pub requests: i64,
     pub deferred: Vec<(String, i64, Option<i64>)>,
     pub cut_short: bool,
+    /// Sitemap reads stopped for the disk with files still due, so the visit asked less than it would have.
+    pub paused: bool,
+    /// The homepage refused us or limited our rate on a recheck of a site that answered before: tried again soon before it counts.
+    pub passing: bool,
+    /// Which host answered robots.txt or the homepage, when either was read: the www host or the bare one.
+    pub www_only: Option<bool>,
+    /// Whether the list named the domain when the visit started; None when no visit ran.
+    pub on_list: Option<bool>,
+    /// When a link run due on this visit, which found every slot taken, is tried again.
+    pub links_wait: Option<i64>,
+    /// Requests made for link work, which never count as the site answering.
+    pub aside: i64,
+    /// Why link work failed on our side; the verdict stands.
+    pub links_error: Option<String>,
+    /// The status a link run was refused or limited with, kept on the domain so resends see it.
+    pub links_refused: Option<u16>,
+    /// The visit came for link work alone and leaves the site's verdict as it was.
+    pub links_only: bool,
+    /// Link work read a robots.txt that bars us or names sitemaps not kept yet: a visit decides the site now instead.
+    pub revisit: bool,
+    /// Requests for robots.txt, each scheme and host tried.
+    pub robots_requests: i64,
+    /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
+    pub links_at: Option<LinksAt>,
+    /// A request waited for a Crawl-delay longer than a visit waits: the visit stopped there and left the rest for later.
+    pub paced: bool,
+    /// When the site's Crawl-delay lets the next request go, in microseconds; the domain is not due before it.
+    pub quiet_until: Option<i64>,
+}
+
+/// When a site's link work comes, which never moves its visits: a first run, spread over days; a run at a time; or none, as it no longer qualifies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinksAt {
+    First,
+    At(i64),
+    Never,
 }
 
 impl Visit {
@@ -153,6 +278,8 @@ impl Visit {
             language: None,
             declared_lang: None,
             home_chars: None,
+            home_status: None,
+            links_refused: None,
             sitemaps: Vec::new(),
             listed: 0,
             new: 0,
@@ -160,6 +287,19 @@ impl Visit {
             requests: 0,
             deferred: Vec::new(),
             cut_short: false,
+            paused: false,
+            passing: false,
+            www_only: None,
+            on_list: None,
+            links_wait: None,
+            aside: 0,
+            links_error: None,
+            links_only: false,
+            revisit: false,
+            robots_requests: 0,
+            links_at: None,
+            paced: false,
+            quiet_until: None,
         }
     }
 }
@@ -171,18 +311,115 @@ pub struct Answer {
     pub url: String,
     /// Held until the body is parsed, when it was fetched under the sitemap budget.
     pub permit: Option<OwnedSemaphorePermit>,
+    /// The address the answer came from.
+    pub peer: Option<IpAddr>,
 }
 
-/// A fixed number of permits, and how many are taken.
+/// A fixed number of permits, and how many are taken; for link runs, also which addresses they go to.
 #[derive(Clone)]
 pub struct Slots {
     permits: Arc<Semaphore>,
     size: usize,
+    peers: Arc<Mutex<Peers>>,
+}
+
+/// The addresses link runs went to lately, and when the ones idle for a while were last dropped.
+#[derive(Default)]
+struct Peers {
+    map: HashMap<IpAddr, Peer>,
+    pruned: Option<Instant>,
+}
+
+impl Peers {
+    fn entry(&mut self, ip: IpAddr) -> &mut Peer {
+        let peer = self.map.entry(ip).or_default();
+        peer.touched = Some(Instant::now());
+        peer
+    }
+
+    /// Drops addresses with no run, no stop and no fetch for longer than a stop lasts, at most once an hour.
+    fn prune(&mut self, now: Instant) {
+        if self.pruned.is_some_and(|at| now < at + PEER_PRUNE_EVERY) {
+            return;
+        }
+        self.pruned = Some(now);
+        self.map.retain(|_, peer| peer.running || peer.stopped_until.is_some_and(|until| until > now) || peer.touched.is_some_and(|touched| now < touched + PEER_REST + PEER_PRUNE_EVERY));
+    }
+}
+
+/// Link runs at one address: whether one runs there, when its last fetch went, connections that failed in a row, and until when runs there stop.
+#[derive(Default)]
+struct Peer {
+    running: bool,
+    touched: Option<Instant>,
+    last: Option<Instant>,
+    failures: u8,
+    stopped_until: Option<Instant>,
+}
+
+/// The one link run an address takes at a time, given back when the run ends.
+struct PeerClaim {
+    ip: IpAddr,
+    peers: Arc<Mutex<Peers>>,
+}
+
+impl Drop for PeerClaim {
+    fn drop(&mut self) {
+        if let Some(peer) = self.peers.lock().unwrap_or_else(|e| e.into_inner()).map.get_mut(&self.ip) {
+            peer.running = false;
+        }
+    }
 }
 
 impl Slots {
     pub fn new(size: usize) -> Self {
-        Slots { permits: Arc::new(Semaphore::new(size)), size }
+        Slots { permits: Arc::new(Semaphore::new(size)), size, peers: Arc::default() }
+    }
+
+    /// The address for a link run, unless one runs there already or runs there are stopped.
+    fn claim(&self, ip: IpAddr) -> Option<PeerClaim> {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.prune(Instant::now());
+        let peer = peers.entry(ip);
+        if peer.running || peer.stopped_until.is_some_and(|until| until > Instant::now()) {
+            return None;
+        }
+        peer.running = true;
+        Some(PeerClaim { ip, peers: self.peers.clone() })
+    }
+
+    /// Waits until a link fetch may go to any of a run's addresses, the one it will use not being known before, and books it on all of them.
+    async fn turn(&self, ips: &[IpAddr]) {
+        let wait = {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let at = ips.iter().filter_map(|ip| peers.entry(*ip).last).map(|last| last + PEER_GAP).fold(Instant::now(), Instant::max);
+            for ip in ips {
+                peers.entry(*ip).last = Some(at);
+            }
+            at
+        };
+        tokio::time::sleep_until(wait).await;
+    }
+
+    /// Books a fetch that went to an address a run had not used yet.
+    fn book(&self, ip: IpAddr) {
+        self.peers.lock().unwrap_or_else(|e| e.into_inner()).entry(ip).last = Some(Instant::now());
+    }
+
+    /// Notes how a link fetch to the address went; enough failed connections in a row stop runs there for a while.
+    fn connected(&self, ip: IpAddr, connected: bool) {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let peer = peers.entry(ip);
+        if connected {
+            peer.failures = 0;
+            return;
+        }
+        peer.failures = peer.failures.saturating_add(1);
+        if peer.failures >= PEER_FAILURES && peer.stopped_until.is_none_or(|until| until <= Instant::now()) {
+            peer.stopped_until = Some(Instant::now() + PEER_REST);
+            println!("[rs] link runs to {ip} stop for a day: {} connections to it in a row failed", peer.failures);
+            peer.failures = 0;
+        }
     }
 
     pub fn busy(&self) -> usize {
@@ -201,6 +438,20 @@ impl Slots {
     pub async fn take(&self) -> Result<OwnedSemaphorePermit, Crash> {
         self.permits.clone().acquire_owned().await.map_err(|_| Crash::new("CancelledError"))
     }
+}
+
+/// Claims for a run each address it has not claimed yet; false when another run holds one, or runs there are stopped.
+fn hold(slots: &Slots, claims: &mut Vec<PeerClaim>, ips: &[IpAddr]) -> bool {
+    for ip in ips {
+        if claims.iter().any(|claim| claim.ip == *ip) {
+            continue;
+        }
+        match slots.claim(*ip) {
+            Some(claim) => claims.push(claim),
+            None => return false,
+        }
+    }
+    true
 }
 
 /// One host's request clock, so a slow host never shares a budget with a fast one.
@@ -228,15 +479,26 @@ impl Pacer {
 
     /// Hold the next request back at least this long from now.
     fn rest(&mut self, seconds: f64) {
-        let until = Instant::now() + Duration::from_secs_f64(seconds.clamp(0.0, MAX_CRAWL_DELAY));
+        let until = Instant::now() + Duration::from_secs_f64(seconds.clamp(0.0, MAX_WAIT_IN_VISIT));
         self.next = Some(self.next.map_or(until, |next| next.max(until)));
     }
 
-    async fn wait(&mut self) {
+    /// Wait for the next request's turn and book the one after; false, without waiting, when the turn is further off than a visit waits.
+    async fn wait(&mut self) -> bool {
         if let Some(next) = self.next {
+            if next.saturating_duration_since(Instant::now()).as_secs_f64() > MAX_WAIT_IN_VISIT {
+                return false;
+            }
             tokio::time::sleep_until(next).await;
         }
         self.next = Some(Instant::now() + Duration::from_secs_f64(self.interval));
+        true
+    }
+
+    /// When the next request may go, in microseconds since the epoch, once a request went.
+    fn next_at(&self) -> Option<i64> {
+        let left = self.next?.saturating_duration_since(Instant::now());
+        Some(chrono::Utc::now().timestamp_micros().saturating_add(i64::try_from(left.as_micros()).unwrap_or(i64::MAX)))
     }
 }
 
@@ -259,18 +521,51 @@ pub struct Visitor {
     pub pause: Arc<AtomicBool>,
     /// Visits at once to domains with thousands of sitemap records, which each hold those records in memory.
     pub heavy: Slots,
+    /// Visits at once following a site's links, which each hold their visit slot for minutes.
+    pub links: Slots,
+    pub follow_links: FollowLinks,
+    /// Looks up the addresses a link run will ask before it asks them; without it a run learns them from its answers.
+    pub resolver: Option<Arc<dyn Resolve>>,
+    /// Parsing for link work, apart from the visits' own.
+    pub links_cpu: Slots,
 }
 
 impl Visitor {
     /// Visit one domain and report everything the visit learned.
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
-        let mut run = Run {
+        let mut run = self.run(known, now);
+        let done = run.go().await;
+        run.keep_clock();
+        done?;
+        run.note_quiet();
+        Ok(run.result)
+    }
+
+    /// Link work alone for a site taken off the link queue: its standing is checked again before any request.
+    pub async fn links(&self, known: Arc<Known>, now: i64) -> Visit {
+        let mut run = self.run(known, now);
+        run.result.links_only = true;
+        run.link_work().await;
+        run.keep_clock();
+        run.note_quiet();
+        run.result
+    }
+
+    fn run(&self, known: Arc<Known>, now: i64) -> Run<'_> {
+        let www_only = known.www_only;
+        let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
+        let listed = self.buckets.lists(&known.host);
+        let mut pacer = Pacer::new(known.crawl_delay, self.floor);
+        // The host's clock as the last run left it, or after a restart as its record keeps it, so no request comes before the delay allows.
+        pacer.next = self.buckets.store_for(&known.host).and_then(|store| store.next_ask(&known.host)).or_else(|| known.quiet_at.and_then(instant_at));
+        Run {
             visitor: self,
-            pacer: Pacer::new(known.crawl_delay, self.floor),
+            pacer,
             result: Visit {
                 robots_allows: known.robots_allows,
                 robots_paths: known.robots_paths.clone(),
                 crawl_delay: known.crawl_delay,
+                on_list: Some(listed),
                 ..Visit::new(&known.host)
             },
             known,
@@ -282,14 +577,36 @@ impl Visitor {
             kept: 0,
             answered: false,
             network_error: None,
-        };
-        run.go().await?;
-        Ok(run.result)
+            base: home.clone(),
+            home,
+            transient: None,
+            www_only,
+            listed,
+            following: false,
+            link_claims: Vec::new(),
+            asked_ips: Vec::new(),
+            home_known: false,
+            site_peer: None,
+            refused: false,
+            home_refused: None,
+            connect_failed: false,
+            home_read: None,
+            stored_home: false,
+            names_new: false,
+        }
     }
 
     async fn cpu<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
-        let _permit = self.cpu.take().await?;
+        Self::on(&self.cpu, work).await
+    }
+
+    async fn on<T: Send + 'static>(slots: &Slots, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
+        let _permit = slots.take().await?;
         tokio::task::spawn_blocking(work).await.map_err(|_| Crash::new("RuntimeError"))
+    }
+
+    async fn links_cpu<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
+        Self::on(&self.links_cpu, work).await
     }
 }
 
@@ -308,6 +625,37 @@ struct Run<'a> {
     kept: i64,
     answered: bool,
     network_error: Option<String>,
+    /// The homepage's address, which a landing site lists its first-level pages from.
+    home: String,
+    /// Where guessed sitemap paths are asked for: the scheme and host robots.txt answered on, after its redirects.
+    base: String,
+    /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
+    transient: Option<String>,
+    /// The bare host had no DNS record and its www host answered, on this visit or the last one that read either.
+    www_only: bool,
+    listed: bool,
+    /// Set while a link run fetches: its redirects stay on the site, within its robots rules.
+    following: bool,
+    /// The addresses a link run holds; a redirect to another host is fetched only once its addresses are held too.
+    link_claims: Vec<PeerClaim>,
+    /// The addresses a link run's last request went to, which a failed connection counts against.
+    asked_ips: Vec<IpAddr>,
+    /// The homepage's address came from robots.txt read on this visit or a homepage read before, not from a guess at its scheme.
+    home_known: bool,
+    /// The address the site's own host last answered from on this visit.
+    site_peer: Option<IpAddr>,
+    /// A sitemap, guess or homepage read on this visit was refused or rate limited.
+    refused: bool,
+    /// How the homepage refused link work's language check.
+    home_refused: Option<u16>,
+    /// The last request that failed never connected: refused, or timed out while connecting.
+    connect_failed: bool,
+    /// The homepage as this visit read it, kept for link work to read again without asking.
+    home_read: Option<(String, Vec<u8>, HeaderMap)>,
+    /// Link work found the homepage's address in a homepage read before, not only in robots.txt.
+    stored_home: bool,
+    /// The robots.txt read names a sitemap the store does not hold.
+    names_new: bool,
 }
 
 impl Run<'_> {
@@ -321,31 +669,162 @@ impl Run<'_> {
             self.roots(&[])?
         };
         self.walk(roots).await?;
+        // Link work never runs in a visit and never decides its verdict: the visit only says when it is due.
+        let read = self.result.outcome == Outcome::Sitemap;
         self.settle();
         if self.result.outcome == Outcome::Sitemap && self.needs_language() {
             self.language().await?;
         }
+        if read && matches!(self.result.outcome, Outcome::Sitemap | Outcome::NoSitemap) {
+            self.result.links_at = self.links_at();
+        }
         Ok(())
+    }
+
+    /// When this site's link work is due, as this visit leaves it: never once it no longer qualifies; None with links not followed or the disk low.
+    fn links_at(&self) -> Option<LinksAt> {
+        if self.visitor.follow_links == FollowLinks::Off || self.visitor.pause.load(Ordering::Relaxed) {
+            return None;
+        }
+        if self.links_allowed().is_none() {
+            return Some(LinksAt::Never);
+        }
+        Some(match self.known.sitemaps.get(&links_url(&self.known.host)).and_then(|s| s.next_check_at) {
+            Some(next) => LinksAt::At(next.max(self.now)),
+            None => LinksAt::First,
+        })
+    }
+
+    /// Link work for a site taken off the link queue, on what earlier visits read; a site that no longer qualifies is asked nothing.
+    async fn link_work(&mut self) {
+        let homes: Vec<&KnownSitemap> = self.known.sitemaps.values().filter(|s| s.depth == 0 && s.kind.as_deref() != Some(LINKS_KIND) && self.is_homepage(&s.url, Some(s))).collect();
+        self.stored_home = !homes.is_empty();
+        // A site never read as a homepage has its address from robots.txt, read again when its run starts.
+        self.home_known = self.stored_home || self.known.robots_status.is_some();
+        if let Some(home) = homes.iter().rev().max_by_key(|s| (s.ok, s.fetched_at)).map(|s| s.url.clone()) {
+            self.home = home;
+        }
+        if self.visitor.pause.load(Ordering::Relaxed) {
+            self.wait_for_turn();
+            return;
+        }
+        let Some(every) = self.links_allowed() else {
+            self.result.links_at = Some(LinksAt::Never);
+            return;
+        };
+        let url = links_url(&self.known.host);
+        if let Some(next) = self.known.sitemaps.get(&url).filter(|s| !due(s, self.now)).and_then(|s| s.next_check_at) {
+            self.result.links_at = Some(LinksAt::At(next));
+            return;
+        }
+        if let Err(Crash(error)) = self.links(every).await {
+            self.result.links_error = Some(error);
+        }
+        if self.result.links_wait.is_some() {
+            return;
+        }
+        let next = self.result.sitemaps.iter().find(|u| u.url == url).and_then(|u| u.next_check_at);
+        self.result.links_at = Some(match (self.links_allowed(), next) {
+            (Some(_), Some(next)) => LinksAt::At(next),
+            _ => LinksAt::Never,
+        });
     }
 
     fn robots_due(&self) -> bool {
         // The daily recheck can land up to 10% early and should still read robots.txt.
-        self.known.state != State::Active
-            || self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= ROBOTS_EVERY as f64 * (1.0 - JITTER))
+        // A site asking a day or more between requests keeps its robots.txt two delays, so its visits get past it to its sitemaps and homepage.
+        let every = (ROBOTS_EVERY as f64).max(2.0 * crawl_delay(self.known.crawl_delay) * SECOND as f64);
+        let stale = self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= every * (1.0 - JITTER));
+        // After a visit the site's delay stopped, robots.txt read that day stands, or each visit would spend its one request on it.
+        stale || (self.known.state != State::Active && !self.known.paced)
     }
 
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
-        let base = format!("https://{}/", self.known.host);
+        let mut base = self.base.clone();
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
-        let known = self.known.sitemaps.values().filter(|s| s.depth == 0).map(|s| s.url.clone());
-        let mut seen = HashSet::new();
-        let roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
-        if !roots.is_empty() {
-            return Ok(roots);
+        // A homepage read as a list is no root, nor are the pages found by following links: the sitemaps and feeds a site names or answers later still come first.
+        let (homes, known): (Vec<&KnownSitemap>, Vec<&KnownSitemap>) = self
+            .known
+            .sitemaps
+            .values()
+            .filter(|s| s.depth == 0 && s.kind.as_deref() != Some(LINKS_KIND))
+            .partition(|s| self.is_homepage(&s.url, Some(s)));
+        let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
+        self.home_known = self.result.robots_read || !homes.is_empty();
+        // The homepage last read, of those stored under either scheme or host.
+        if let Some(home) = homes.iter().rev().max_by_key(|s| (s.ok, s.fetched_at)).map(|s| s.url.clone()) {
+            // A visit that skips robots.txt guesses where the homepage was last read.
+            if !self.result.robots_read && self.own_host(&home) {
+                base = urls::join(&home, HOMEPAGE).unwrap_or(base);
+            }
+            self.home = home;
         }
-        let guesses = SITEMAP_GUESSES.iter().map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
-        self.guesses = guesses.iter().cloned().collect();
-        Ok(guesses)
+        let mut seen = HashSet::new();
+        let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
+        // A landing site's or an outlet's homepage is no guess: it is read even when a sitemap answers.
+        let terms = self.visitor.buckets.terms(&self.known.host);
+        let reads_home = terms.depth.is_some() || terms.hubs.is_some();
+        // Gone or unanswered sitemaps hide no guesses, unless robots.txt named sitemaps, which a visit skipping it cannot tell, or limited our rate; a refusal is a wall.
+        let mut stored = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref()) && !self.is_homepage(&s.url, Some(s)));
+        let limited = self.result.robots_status.or(self.known.robots_status) == Some(429);
+        let open = if self.result.robots_read && !limited { stored.all(|s| s.dead) } else { stored.next().is_none() };
+        let walled = self.result.robots_status.or(self.known.robots_status).is_some_and(|status| matches!(status, 401 | 402 | 403));
+        if !walled && named.is_empty() && open {
+            for path in guess_paths(self.listed) {
+                let url = if path == HOMEPAGE { self.home.clone() } else { urls::join(&base, path).map_err(|_| Crash::new("ValueError"))? };
+                if seen.insert(url.clone()) {
+                    if !(reads_home && url == self.home) {
+                        self.guesses.insert(url.clone());
+                    }
+                    roots.push(url);
+                }
+            }
+        }
+        if reads_home && seen.insert(self.home.clone()) {
+            roots.push(self.home.clone());
+        }
+        Ok(roots)
+    }
+
+    /// Whether a stored sitemap or homepage refused us or asked us to slow down when last read, and this visit read it no better; a refused link run waits for its own retry.
+    fn refused_before(&self) -> bool {
+        let read: HashSet<&str> = self.result.sitemaps.iter().filter(|u| u.status == "ok").map(|u| u.url.as_str()).collect();
+        self.known.sitemaps.values().any(|s| s.refused && s.kind.as_deref() != Some(LINKS_KIND) && !read.contains(s.url.as_str()))
+    }
+
+    /// Whether robots.txt, as read on this visit or last, refused us or asked us to slow down.
+    fn robots_refused(&self) -> bool {
+        self.result.robots_status.or(self.known.robots_status).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429))
+    }
+
+    /// Whether a root is the homepage read as a list: stored as one, or `/` on the site's host or its `www.` host, which a failed read leaves without a kind.
+    fn is_homepage(&self, url: &str, stored: Option<&KnownSitemap>) -> bool {
+        match stored.and_then(|s| s.kind.as_deref()) {
+            Some(HOMEPAGE_KIND) => return true,
+            Some(LINKS_KIND) => return false,
+            _ => {}
+        }
+        let Ok(parts) = urls::split(url) else {
+            return false;
+        };
+        let host = parts.hostname().unwrap_or_default();
+        host.strip_prefix("www.").unwrap_or(&host) == self.bare_host() && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none() && parts.fragment.is_none()
+    }
+
+    /// The domain's name without a `www.` it may be listed with, as its pages' store keys name their host.
+    fn bare_host(&self) -> &str {
+        self.known.host.strip_prefix("www.").unwrap_or(&self.known.host)
+    }
+
+    /// Whether an address is on the domain's own host or its `www.` host, the hosts the robots.txt read covers.
+    fn own_host(&self, url: &str) -> bool {
+        let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
+        host.strip_prefix("www.").unwrap_or(&host) == self.bare_host()
+    }
+
+    /// Whether an address is on the site its robots.txt covers: its own host or `www.` host, on the default port.
+    fn on_site(&self, url: &str) -> bool {
+        self.own_host(url) && urls::split(url).is_ok_and(|parts| parts.port().ok().flatten().is_none_or(|port| port == 80 || port == 443))
     }
 
     /// Read robots.txt; None means the visit ends here.
@@ -368,6 +847,13 @@ impl Run<'_> {
             (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
         }
+        // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to; so are guessed sitemaps, on the site's own hosts.
+        if let Ok(home) = urls::join(&answer.url, HOMEPAGE) {
+            if self.own_host(&home) {
+                self.base = home.clone();
+            }
+            self.home = home;
+        }
         let allowed = paths.allows("/");
         self.result.robots_allows = Some(allowed);
         self.result.robots_paths = paths;
@@ -377,6 +863,8 @@ impl Run<'_> {
             self.stop(Outcome::Blocked, Some("robots_disallow".into()));
             return Ok(None);
         }
+        // Only a sitemap a visit would read is news: on the site, where robots.txt lets us.
+        self.names_new = named.iter().filter_map(|name| urls::join(&self.base, name).ok()).any(|url| self.on_site(&url) && self.robots_allow(&url) && !self.known.sitemaps.contains_key(&url));
         self.roots(&named).map(Some)
     }
 
@@ -387,11 +875,11 @@ impl Run<'_> {
             known.sitemaps.values().filter(|s| s.depth > 0 && due(s, self.now)).map(|s| (s.url.clone(), s.depth, s.parent_id, None, false)),
         );
         let mut seen: HashSet<String> = HashSet::new();
-        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.visitor.pause.load(Ordering::Relaxed) {
+        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.result.paced && !self.visitor.pause.load(Ordering::Relaxed) {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
                 break;
             };
-            if seen.contains(&url) || (self.found && self.guesses.contains(&url)) {
+            if seen.contains(&url) || ((self.found || self.refused) && self.guesses.contains(&url)) {
                 continue;
             }
             seen.insert(url.clone());
@@ -406,6 +894,7 @@ impl Run<'_> {
             queue.extend(children);
         }
         self.result.cut_short = self.failed_in_row >= MAX_FAILURES_IN_ROW;
+        self.result.paused = self.visitor.pause.load(Ordering::Relaxed) && !queue.is_empty();
         for (url, depth, parent, _, _) in queue {
             if self.result.deferred.len() >= MAX_DEFERRED {
                 break;
@@ -420,18 +909,7 @@ impl Run<'_> {
 
     /// Whether robots.txt lets us fetch this URL; the file we read covers the domain and its www host only.
     fn robots_allow(&self, url: &str) -> bool {
-        let Ok(parts) = urls::split(url) else {
-            return true;
-        };
-        let host = parts.hostname().unwrap_or_default();
-        if host.strip_prefix("www.").unwrap_or(&host) != self.known.host || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
-            return true;
-        }
-        let target = match &parts.query {
-            Some(query) => format!("{}?{query}", parts.path),
-            None => parts.path.clone(),
-        };
-        self.result.robots_paths.allows(&urls::tidy_target(if target.is_empty() { "/" } else { &target }))
+        robots_allow(&self.result.robots_paths, self.bare_host(), url)
     }
 
     /// Read one sitemap file and return the child sitemaps worth reading next.
@@ -446,8 +924,18 @@ impl Run<'_> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
         let budget = Some(self.visitor.bodies.clone());
-        let (answer, error) = match self.get(&url, MAX_SITEMAP_BYTES, validators, budget).await {
+        let reads_home = url == self.home || self.is_homepage(&url, stored);
+        let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
+        let (answer, error) = match self.get(&url, limit, validators, budget).await {
             Ok(answer) => (Some(answer), None),
+            Err(error) if error == PACED => {
+                // Not read: a stored file stays due, a new one waits with the rest of the walk.
+                self.result.paced = true;
+                if stored.is_none() && !self.guesses.contains(&url) && self.result.deferred.len() < MAX_DEFERRED {
+                    self.result.deferred.push((url, depth, parent));
+                }
+                return Ok(Vec::new());
+            }
             Err(error) => {
                 self.network_error = Some(error.clone());
                 (None, Some(error))
@@ -455,6 +943,11 @@ impl Run<'_> {
         };
         let failing = answer.as_ref().is_none_or(|a| a.status >= 500 || a.status == 429);
         self.failed_in_row = if failing { self.failed_in_row + 1 } else { 0 };
+        if failing && self.transient.is_none() {
+            self.transient = Some(answer.as_ref().map_or_else(|| error.clone().unwrap_or_else(|| "unknown".into()), |a| format!("sitemap_{}", a.status)));
+        }
+        // A site that refuses a read, or asks us to slow down, gets no more guesses and no link work.
+        self.refused |= answer.as_ref().is_some_and(|a| matches!(a.status, 401 | 402 | 403 | 429));
         if self.guesses.contains(&url) && answer.as_ref().is_none_or(|a| a.status != 200) {
             return Ok(Vec::new());
         }
@@ -489,9 +982,14 @@ impl Run<'_> {
             sketch: s.sketch.clone(),
             generated_until: s.generated_until,
         });
+        let homepage = reads_home.then(|| answer.url.clone());
+        let unfollowed = reads_home && nofollow(&answer.headers, &answer.body);
         let job = FileJob {
             _permit: answer.permit,
+            homepage,
             body: answer.body,
+            prepared: None,
+            nofollow: unfollowed,
             standing,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
             now: self.now,
@@ -508,23 +1006,43 @@ impl Run<'_> {
                 self.unchanged(i, stored);
                 return Ok(Vec::new());
             }
+            Digested::Invalid if stored.is_none() && self.guesses.contains(&url) => {
+                // A guess answered with a page that isn't a sitemap is no root, so the next visit guesses again.
+                self.result.sitemaps.remove(i);
+                return Ok(Vec::new());
+            }
             Digested::Invalid => {
                 self.failed(i, Some("invalid".into()));
                 return Ok(Vec::new());
             }
             Digested::Read(read) => read,
         };
-        self.found = true;
         let news = read.news || url.to_lowercase().contains("news") || self.known.categories.iter().any(|c| c == "news");
-        let update = &mut self.result.sitemaps[i];
-        update.kind = Some(read.kind.to_string());
-        update.content_hash = Some(read.hash);
-        update.changed = true;
-        update.trust = read.trust;
-        update.interval = match stored {
-            Some(_) => schedule::next_interval(update.interval, true),
+        let listed_news = self.listed_news();
+        let interval = match stored {
+            Some(_) => schedule::next_interval(self.result.sitemaps[i].interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
+        let mut interval = schedule::reread_within(interval, listed_news, depth, read.kind == "index", read.news);
+        if read.kind == HOMEPAGE_KIND {
+            // An outlet's homepage is read for its hubs no more often than they go again.
+            let hubs = self.visitor.buckets.terms(&self.known.host).hubs.map_or(0, |every| i64::from(every) * SECOND);
+            interval = interval.max(HOMEPAGE_INTERVAL).max(hubs);
+        }
+        self.take_read(i, &mut read, stored, interval, &url);
+        Ok(std::mem::take(&mut read.children))
+    }
+
+    /// Keep what a read found on its update: kind, hash and dates, when it is due again, and what it lists unless the read is held back.
+    fn take_read(&mut self, i: usize, read: &mut Read, stored: Option<&KnownSitemap>, interval: i64, url: &str) {
+        self.found = true;
+        let update = &mut self.result.sitemaps[i];
+        update.kind = Some(read.kind.to_string());
+        update.content_hash = Some(read.hash.clone());
+        update.changed = true;
+        update.trust = read.trust;
+        update.google_news = read.news;
+        update.interval = interval;
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -553,13 +1071,392 @@ impl Run<'_> {
         }
         if read.kind == "index" {
             update.child_count = read.entries as i64;
-            return Ok(read.children);
+            return;
         }
         update.url_count = read.listing.listed as i64;
         self.result.listed += read.listing.listed as i64;
         self.result.new += read.listing.new as i64;
         self.result.moved += read.listing.moved as i64;
-        Ok(Vec::new())
+    }
+
+    /// URLs the site's own sitemaps list, as stored and as read on this visit; a homepage or link listing is no sitemap.
+    fn sitemap_urls(&self) -> i64 {
+        let updated: HashMap<&str, &SitemapUpdate> = self.result.sitemaps.iter().map(|u| (u.url.as_str(), u)).collect();
+        let stored = self.known.sitemaps.values().filter(|s| !updated.contains_key(s.url.as_str()) && s.ok && is_sitemap(s.kind.as_deref())).map(|s| s.url_count);
+        let read = self
+            .result
+            .sitemaps
+            .iter()
+            .filter(|u| u.status == "ok" && is_sitemap(u.kind.as_deref()))
+            .map(|u| if u.changed { u.url_count } else { self.known.sitemaps.get(&u.url).map_or(0, |s| s.url_count) });
+        stored.chain(read).sum()
+    }
+
+    /// A listed site whose sitemaps list few pages or none, while links are followed at all: neither off nor without slots.
+    fn thin(&self) -> bool {
+        self.visitor.follow_links != FollowLinks::Off && self.visitor.links.size() > 0 && self.listed && self.sitemap_urls() < THIN_URLS
+    }
+
+    /// How often this site's links are followed, the one rule `--follow-links` switches; None when they are not.
+    fn links_every(&self) -> Option<i64> {
+        let terms = self.visitor.buckets.terms(&self.known.host);
+        if terms.depth.is_some() || self.visitor.links.size() == 0 {
+            return None;
+        }
+        if self.thin() {
+            return Some(LINKS_INTERVAL);
+        }
+        (self.visitor.follow_links == FollowLinks::All && self.listed && terms.weight >= LINKS_ALL_WEIGHT).then_some(LINKS_ALL_INTERVAL)
+    }
+
+    /// How often this site's links are followed, while it qualifies: none once its robots.txt or sitemaps refuse us or ask us to slow down.
+    fn links_allowed(&self) -> Option<i64> {
+        if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.result.robots_allows == Some(false) {
+            return None;
+        }
+        if self.result.links_refused.is_some() || self.known.links_refused.is_some_and(|(status, at)| self.now - at < records::links_refusal_holds(status)) {
+            return None;
+        }
+        self.links_every()
+    }
+
+    /// The visit's link work, which never decides its verdict: whether the site answered is judged without it.
+    async fn links(&mut self, every: i64) -> Result<(), Crash> {
+        let (requests, answered) = (self.result.requests, self.answered);
+        let done = self.follow_links(every).await;
+        self.result.aside += self.result.requests - requests;
+        self.answered = answered;
+        if let Err(Crash(error)) = &done {
+            self.links_failed(every, error);
+        }
+        done
+    }
+
+    /// Link work that failed on our side is kept as a failed run, due after its interval, so the site is not visited again at once.
+    fn links_failed(&mut self, every: i64, error: &str) {
+        let url = links_url(&self.known.host);
+        let known = self.known.clone();
+        let stored = known.sitemaps.get(&url);
+        let i = match self.result.sitemaps.iter().position(|u| u.url == url) {
+            Some(i) => i,
+            None => self.update(&url, 0, None, None, stored),
+        };
+        let interval = stored.map_or(every, |s| s.interval).clamp(every, LINKS_INTERVAL_MAX);
+        let update = &mut self.result.sitemaps[i];
+        update.kind = Some(LINKS_KIND.into());
+        update.status = "error";
+        update.error = Some(format!("crashed: {error}"));
+        update.interval = interval;
+        update.next_check_at = Some(self.now + interval);
+    }
+
+    /// Whether the homepage answers as readable English, which a site not yet judged must before a run; the verdict itself comes later, as without one.
+    async fn homepage_passes(&mut self) -> Result<bool, Crash> {
+        let answer = match self.home_read.clone() {
+            Some((url, body, headers)) => Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer },
+            None => {
+                let home = self.home.clone();
+                let Ok(answer) = self.get(&home, MAX_HOMEPAGE_BYTES, None, None).await else {
+                    return Ok(false);
+                };
+                self.keep_home(&answer);
+                answer
+            }
+        };
+        if !self.on_site(&answer.url) {
+            return Ok(false);
+        }
+        if answer.status != 200 {
+            self.home_refused = matches!(answer.status, 401 | 402 | 403 | 429).then_some(answer.status);
+            return Ok(false);
+        }
+        let (body, detect) = (answer.body, self.visitor.language.clone());
+        let cut = body.len() >= MAX_HOMEPAGE_BYTES;
+        Ok(self.visitor.links_cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
+    }
+
+    /// Link work that cannot start yet comes back within hours, at no cost to the site meanwhile.
+    fn wait_for_turn(&mut self) {
+        self.result.links_wait = Some(self.now + rand::thread_rng().gen_range(LINKS_WAIT.0..=LINKS_WAIT.1));
+    }
+
+    /// The addresses a URL's host has, as the resolver finds them; none without one.
+    async fn addresses(&self, url: &str) -> Vec<IpAddr> {
+        let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
+        let (Some(resolver), Ok(name)) = (&self.visitor.resolver, host.parse::<Name>()) else {
+            return Vec::new();
+        };
+        match resolver.resolve(name).await {
+            Ok(found) => found.map(|addr| addr.ip()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Keeps a homepage that answered on the site while link work may follow.
+    fn keep_home(&mut self, answer: &Answer) {
+        if self.visitor.follow_links != FollowLinks::Off && self.listed && answer.status == 200 && self.on_site(&answer.url) {
+            self.home_read = Some((answer.url.clone(), answer.body.clone(), answer.headers.clone()));
+        }
+    }
+
+    /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
+    async fn follow_links(&mut self, every: i64) -> Result<(), Crash> {
+        let done = self.follow(every).await;
+        self.following = false;
+        self.link_claims.clear();
+        done
+    }
+
+    async fn follow(&mut self, every: i64) -> Result<(), Crash> {
+        let slots = self.visitor.links.clone();
+        // Sites whose sitemaps list some pages leave a quarter of the slots to those that list none.
+        let permit = if self.sitemap_urls() == 0 || slots.busy() * 4 < slots.size() * 3 { slots.try_take() } else { None };
+        // One run at a time on the address the site answered from, whichever sites share it.
+        let Some(ip) = self.site_peer.or(self.addresses(&self.home.clone()).await.first().copied()) else {
+            self.wait_for_turn();
+            return Ok(());
+        };
+        let (Some(_permit), Some(claim)) = (permit, slots.claim(ip)) else {
+            self.wait_for_turn();
+            return Ok(());
+        };
+        self.link_claims = vec![claim];
+        // Link work reads robots.txt again once a day has passed, or for the homepage address no homepage read left, and runs only where it still lets us in.
+        if self.result.links_only && (!self.stored_home || self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY)) {
+            slots.turn(&[ip]).await;
+            let read = self.robots().await?.is_some();
+            // What a visit would decide differently from here, a visit decides.
+            if self.result.robots_allows == Some(false) || self.robots_refused() || (read && self.names_new) {
+                self.result.revisit = true;
+                return Ok(());
+            }
+            if !read {
+                return Ok(());
+            }
+        }
+        // A site not judged on its homepage yet, as one without sitemaps is not, must read as English first.
+        if self.needs_language() && self.result.language.is_none() {
+            if self.home_read.is_none() {
+                slots.turn(&[ip]).await;
+            }
+            if !self.homepage_passes().await? {
+                return match self.home_refused {
+                    Some(status) => self.links_listing(Vec::new(), 0, Some(status), every).await,
+                    None => Ok(()),
+                };
+            }
+        }
+        let Ok(normaliser) = Normaliser::new(self.bare_host()) else {
+            return Ok(());
+        };
+        let home = self.home.clone();
+        let Some(key) = self.followable(&normaliser, &home) else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        let mut seen: HashSet<Vec<u8>> = HashSet::from([key]);
+        let mut found = vec![home.clone()];
+        let mut queue: VecDeque<(String, u8)> = VecDeque::from([(home, 0)]);
+        let (requests, mut read, mut failing, mut refused) = (self.result.requests, 0, 0, None);
+        // Pages fetched that did not answer as pages: never queued; those gone or moved off the site come off the ready list too.
+        let mut unread: HashSet<String> = HashSet::new();
+        let mut taken_back: Vec<String> = Vec::new();
+        self.following = true;
+        while let Some((page, depth)) = queue.pop_front() {
+            // Every request counts against the budget, each redirect hop too.
+            let spent = (self.result.requests - requests) as usize;
+            if found.len() >= LINKS_MOST || spent >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
+                break;
+            }
+            let kept = self.home_read.take().filter(|_| depth == 0 && page == self.home);
+            if kept.is_none() {
+                // An address the page will be asked on is claimed and booked before it is asked.
+                let ips = self.addresses(&page).await;
+                if !hold(&slots, &mut self.link_claims, &ips) {
+                    // Another run on an address the site answers from is a wait, never a failed run.
+                    if read == 0 {
+                        self.following = false;
+                        self.wait_for_turn();
+                        return Ok(());
+                    }
+                    break;
+                }
+                slots.turn(&self.link_claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
+                self.asked_ips = ips;
+            }
+            let fetched = match kept {
+                Some((url, body, headers)) => Ok(Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer }),
+                None => self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await,
+            };
+            let answer = match fetched {
+                Ok(answer) => answer,
+                // A run the site's delay holds back before it read anything waits for it, never a failed run; one that read stops there.
+                Err(error) if error == PACED => {
+                    if read == 0 {
+                        self.following = false;
+                        self.result.links_wait = self.pacer.next_at();
+                        return Ok(());
+                    }
+                    break;
+                }
+                Err(_) => {
+                    for asked in if self.asked_ips.is_empty() { vec![ip] } else { std::mem::take(&mut self.asked_ips) } {
+                        slots.connected(asked, !self.connect_failed);
+                    }
+                    unread.insert(page);
+                    failing += 1;
+                    continue;
+                }
+            };
+            // A redirect to the same store key, another scheme, host spelling or tracking query, is the same page.
+            let moved = normaliser.parse(&answer.url).map(|url| url.key) != normaliser.parse(&page).map(|url| url.key);
+            if answer.status != 200 {
+                unread.insert(page.clone());
+                if matches!(answer.status, 404 | 410) || (matches!(answer.status, 300..=399) && moved) {
+                    taken_back.push(page.clone());
+                }
+            }
+            let peer = answer.peer.unwrap_or(ip);
+            slots.connected(peer, true);
+            // A site answering from another address too takes that one as well, or stops.
+            if !self.link_claims.iter().any(|claim| claim.ip == peer) {
+                match slots.claim(peer) {
+                    Some(claim) => {
+                        slots.book(peer);
+                        self.link_claims.push(claim);
+                    }
+                    None => break,
+                }
+            }
+            match answer.status {
+                200 => failing = 0,
+                // A refusal, a rate limit or a busy server ends the run: the site asks for less.
+                401 | 402 | 403 | 429 | 503 => {
+                    refused = Some(answer.status);
+                    break;
+                }
+                status if status >= 500 => {
+                    failing += 1;
+                    continue;
+                }
+                _ => {
+                    failing = 0;
+                    continue;
+                }
+            }
+            if !self.on_site(&answer.url) || !is_html(&answer) {
+                continue;
+            }
+            // A page that moved is kept where it moved to, which robots.txt allows as the redirect was followed.
+            if moved {
+                unread.insert(page.clone());
+                taken_back.push(page.clone());
+                if let Some(key) = self.followable(&normaliser, &answer.url).filter(|_| is_page(&answer.url)) {
+                    if seen.insert(key) {
+                        found.push(answer.url.clone());
+                    }
+                }
+            }
+            read += 1;
+            if nofollow(&answer.headers, &answer.body) {
+                continue;
+            }
+            let (body, base) = (answer.body, answer.url);
+            let cut = body.len() >= MAX_HOMEPAGE_BYTES;
+            let links = self.visitor.links_cpu(move || homepage::links(&body, cut).into_iter().filter_map(|href| urls::join(&base, &href).ok()).collect::<Vec<_>>()).await?;
+            for link in links {
+                if found.len() >= LINKS_MOST {
+                    break;
+                }
+                let Some(key) = self.followable(&normaliser, &link) else {
+                    continue;
+                };
+                if seen.insert(key) && is_page(&link) {
+                    if depth + 1 < LINKS_DEPTH && fetchable(&link) {
+                        queue.push_back((link.clone(), depth + 1));
+                    }
+                    found.push(link);
+                }
+            }
+        }
+        self.following = false;
+        found.retain(|url| !unread.contains(url));
+        let rests: Vec<Vec<u8>> = taken_back.iter().filter_map(|url| normaliser.parse(url)).filter_map(|url| url.key.splitn(2, |&b| b == 0).nth(1).map(<[u8]>::to_vec)).collect();
+        if !rests.is_empty() {
+            let known = self.known.sitemaps.values().map(|s| (s.id, s.kind.as_deref()));
+            let read = self.result.sitemaps.iter().map(|u| (u.id, u.kind.as_deref()));
+            let mut listings: Vec<i64> = known.chain(read).filter(|(_, kind)| is_listing(*kind)).map(|(id, _)| id).collect();
+            listings.push(crate::buckets::sitemap_id(&links_url(&self.known.host)));
+            let (buckets, host) = (self.visitor.buckets.clone(), self.known.host.clone());
+            self.visitor.links_cpu(move || buckets.store(&host).unqueue(&host, &rests, &listings)).await?.map_err(|_| Crash::new("StoreError"))?;
+        }
+        self.links_listing(found, read, refused, every).await
+    }
+
+    /// The store key of a link a run may keep: a page on the site's own host or its www host, with no query, that robots.txt allows.
+    fn followable(&self, normaliser: &Normaliser, link: &str) -> Option<Vec<u8>> {
+        let url = normaliser.parse(link)?;
+        let rest = url.key.splitn(2, |&b| b == 0).nth(1)?;
+        let host = rest.split(|&b| b == b'/').next()?;
+        let bare = self.bare_host();
+        (host == bare.as_bytes() && !rest.contains(&b'?') && self.result.robots_paths.allows_page(bare, rest)).then_some(url.key)
+    }
+
+    /// Keep a run's pages as the site's link listing, and set when the next run is due: soon while runs find new pages, later while they find none.
+    async fn links_listing(&mut self, found: Vec<String>, read: usize, refused: Option<u16>, every: i64) -> Result<(), Crash> {
+        // A refusal ends link work on the site.
+        self.result.links_refused = refused;
+        let url = links_url(&self.known.host);
+        let known = self.known.clone();
+        let stored = known.sitemaps.get(&url);
+        let i = self.update(&url, 0, None, None, stored);
+        let interval = stored.map_or(every, |s| s.interval).clamp(every, LINKS_INTERVAL_MAX);
+        let later = (interval * 2).min(LINKS_INTERVAL_MAX);
+        let update = &mut self.result.sitemaps[i];
+        update.kind = Some(LINKS_KIND.into());
+        if read == 0 {
+            // A refusal waits twice as long each time, as a run finding nothing new does.
+            let wait = if refused.is_some() { later } else { interval };
+            update.status = "error";
+            update.error = Some(refused.map_or_else(|| "unread".into(), |status| format!("http_{status}")));
+            update.interval = wait;
+            update.next_check_at = Some(self.now + wait);
+            return Ok(());
+        }
+        // A run reads the site's own pages, not a file it is handed, and comes once an interval: no churn check holds it back.
+        let standing = churn::Standing::default();
+        let job = FileJob {
+            _permit: None,
+            homepage: Some(self.home.clone()),
+            body: Vec::new(),
+            prepared: Some(found.into_iter().map(|url| Entry { url, ..Entry::default() }).collect()),
+            nofollow: false,
+            standing,
+            stored_hash: stored.and_then(|s| s.content_hash.clone()),
+            now: self.now,
+            trust: update.trust,
+            url: url.clone(),
+            id: update.id,
+            depth: 0,
+            known: self.known.clone(),
+            robots: self.result.robots_paths.clone(),
+            buckets: self.visitor.buckets.clone(),
+        };
+        match self.visitor.links_cpu(move || digest(job)).await?? {
+            Digested::Read(mut listing) => {
+                // A run the site refused partway keeps what it read, and waits as long as one refused at once.
+                let interval = if listing.listing.new > 0 && refused.is_none() { every } else { later };
+                self.take_read(i, &mut listing, stored, interval, &url);
+            }
+            Digested::Unchanged | Digested::Invalid => {
+                self.found = true;
+                self.kept += stored.map_or(0, |s| s.url_count);
+                let update = &mut self.result.sitemaps[i];
+                update.interval = later;
+                update.next_check_at = Some(self.now + later);
+            }
+        }
+        Ok(())
     }
 
     fn update(&mut self, url: &str, depth: i64, parent: Option<i64>, index_date: Option<String>, stored: Option<&KnownSitemap>) -> usize {
@@ -585,6 +1482,7 @@ impl Run<'_> {
                 suspect_at: stored.suspect_at,
                 sketch: stored.sketch.clone(),
                 generated_until: stored.generated_until,
+                google_news: stored.google_news,
             },
             None => SitemapUpdate {
                 id: sitemap_id(url),
@@ -607,6 +1505,7 @@ impl Run<'_> {
                 suspect_at: None,
                 sketch: Vec::new(),
                 generated_until: None,
+                google_news: false,
             },
         };
         self.result.sitemaps.push(update);
@@ -616,9 +1515,15 @@ impl Run<'_> {
     fn unchanged(&mut self, i: usize, stored: Option<&KnownSitemap>) {
         self.found = true;
         self.kept += stored.map_or(0, |s| s.url_count);
+        let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
-        update.interval = schedule::next_interval(update.interval, false);
+        let index = update.kind.as_deref() == Some("index");
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news);
         update.next_check_at = Some(self.now + update.interval);
+    }
+
+    fn listed_news(&self) -> bool {
+        self.visitor.buckets.terms(&self.known.host).news
     }
 
     fn failed(&mut self, i: usize, error: Option<String>) {
@@ -629,22 +1534,36 @@ impl Run<'_> {
     }
 
     fn settle(&mut self) {
-        if self.result.outcome != Outcome::Sitemap {
+        // A visit the site's delay stopped has not seen what it would judge by.
+        if self.result.outcome != Outcome::Sitemap || self.result.paced {
             return;
         }
         let updates = &self.result.sitemaps;
         if self.known.state == State::Active {
             let mut roots = updates.iter().filter(|u| u.depth == 0).peekable();
-            if self.result.requests > 0 && !self.answered {
+            if self.result.requests - self.result.aside > 0 && !self.answered {
                 self.stop(Outcome::Unreachable, self.network_error.clone());
             } else if roots.peek().is_some() && !self.found && roots.all(|u| u.status == "gone") {
                 self.stop(Outcome::NoSitemap, Some("sitemap_gone".into()));
             }
             return;
         }
-        if !self.found {
-            self.stop(Outcome::NoSitemap, Some("no_sitemap".into()));
-        } else if self.result.listed + self.kept < MIN_URLS && !updates.iter().any(|u| u.kind.as_deref() == Some("index")) {
+        // Sitemaps that answered when last read and are not due again still list what they listed: a recheck between two reads finds them as they were.
+        let read: HashSet<&str> = updates.iter().map(|u| u.url.as_str()).collect();
+        let standing: Vec<&KnownSitemap> = self
+            .known
+            .sitemaps
+            .values()
+            .filter(|s| s.ok && s.url_count > 0 && is_sitemap(s.kind.as_deref()) && !read.contains(s.url.as_str()) && !due(s, self.now))
+            .collect();
+        let index = updates.iter().any(|u| u.kind.as_deref() == Some("index")) || standing.iter().any(|s| s.kind.as_deref() == Some("index"));
+        let listed = self.result.listed + self.kept + standing.iter().map(|s| s.url_count).sum::<i64>();
+        if !self.found && standing.is_empty() {
+            // A recheck of a site that answered before, whose sitemaps answered with a rate limit, a server error or not at all, is tried again before it counts as having none.
+            let retry = self.transient.clone().filter(|_| self.known.state == State::New && self.known.last_ok_at.is_some());
+            self.result.passing |= retry.is_some();
+            self.stop(Outcome::NoSitemap, Some(retry.unwrap_or_else(|| "no_sitemap".into())));
+        } else if listed < MIN_URLS && !index {
             self.stop(Outcome::NoSitemap, Some("sitemap_too_small".into()));
         }
     }
@@ -660,17 +1579,21 @@ impl Run<'_> {
         if self.moved_away(&answer) {
             return Ok(());
         }
+        self.result.home_status = Some(answer.status);
         if answer.status >= 500 {
             self.stop(Outcome::Unreachable, Some(format!("homepage_{}", answer.status)));
             return Ok(());
         }
         if answer.status != 200 {
+            // A rate limit or refusal on a recheck of a site that answered before may be its answer to a busy hour; one that lasts keeps it out.
+            self.result.passing = matches!(answer.status, 401 | 403 | 429) && self.known.state == State::New && self.known.last_ok_at.is_some();
             self.stop(Outcome::Ineligible, Some("homepage_error".into()));
             return Ok(());
         }
         let body = answer.body;
+        let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         let detect = self.visitor.language.clone();
-        let page = self.visitor.cpu(move || homepage::read(&body, &*detect)).await?;
+        let page = self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?;
         self.result.home_chars = Some(page.chars as i64);
         self.result.declared_lang = page.declared;
         self.result.language = page.language;
@@ -680,15 +1603,40 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Try https, then http; stop at a DNS failure since the other scheme will not help.
+    /// Try https, then http; a DNS failure skips the other scheme and tries the www host, the only one some sites resolve.
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
+        let asked = self.result.requests;
+        let answer = self.first_answer_of(path, limit).await;
+        if path == "/robots.txt" {
+            self.result.robots_requests += self.result.requests - asked;
+        }
+        answer
+    }
+
+    async fn first_answer_of(&mut self, path: &str, limit: usize) -> Option<Answer> {
+        let www = format!("www.{}", self.known.host);
+        let hosts = if self.known.host.starts_with("www.") { vec![self.known.host.clone()] } else { vec![self.known.host.clone(), www] };
         let mut last = "unknown".to_string();
-        for scheme in ["https", "http"] {
-            match self.get(&format!("{scheme}://{}{path}", self.known.host), limit, None, None).await {
-                Ok(answer) => return Some(answer),
-                Err(error) => last = error,
+        for (i, host) in hosts.iter().enumerate() {
+            for scheme in ["https", "http"] {
+                match self.get(&format!("{scheme}://{host}{path}"), limit, None, None).await {
+                    Ok(answer) => {
+                        self.www_only = i > 0;
+                        self.result.www_only = Some(self.www_only);
+                        return Some(answer);
+                    }
+                    // The site's delay holds the next try back past this visit: no verdict, the next visit tries again.
+                    Err(error) if error == PACED => {
+                        self.result.paced = true;
+                        return None;
+                    }
+                    Err(error) => last = error,
+                }
+                if last.contains("DNS") {
+                    break;
+                }
             }
-            if last.contains("DNS") {
+            if !last.contains("DNS") {
                 break;
             }
         }
@@ -698,11 +1646,49 @@ impl Run<'_> {
 
     fn moved_away(&mut self, answer: &Answer) -> bool {
         let host = urls::split(&answer.url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
-        let Some(target) = self.visitor.suffixes.registrable(&host).filter(|target| *target != self.known.host) else {
+        let target = self.visitor.suffixes.registrable(&host);
+        let home = self.visitor.suffixes.registrable(&self.known.host);
+        // A subdomain kept as a domain of its own stays itself only on its own host; a registrable domain anywhere under its name.
+        let target = if home.as_deref() == Some(self.known.host.as_str()) || host.is_empty() {
+            target.filter(|target| *target != self.known.host)
+        } else {
+            let bare = host.strip_prefix("www.").unwrap_or(&host).to_string();
+            (bare != self.known.host).then(|| if target == home { bare } else { target.unwrap_or(bare) })
+        };
+        let Some(target) = target else {
             return false;
         };
         self.result.canonical_host = Some(target);
         self.stop(Outcome::Redirect, Some("redirect".into()));
+        true
+    }
+
+    /// A site that asks for a delay gets none of the next visit's requests before its delay has passed since this one's last.
+    fn note_quiet(&mut self) {
+        if crawl_delay(self.result.crawl_delay) > 0.0 || self.result.paced {
+            self.result.quiet_until = self.pacer.next_at();
+        }
+    }
+
+    /// Leaves the host's clock for the next run on it, which may follow at once.
+    fn keep_clock(&self) {
+        if let (Some(next), Some(store)) = (self.pacer.next, self.visitor.buckets.store_for(&self.known.host)) {
+            store.asked(&self.known.host, next);
+        }
+    }
+
+    /// Holds and spaces the addresses of a link run's redirect to another host before it is asked; false drops the hop.
+    async fn hold_hop(&mut self, from: &str, next: &str) -> bool {
+        if urls::split(next).ok().and_then(|parts| parts.hostname()).is_some_and(|host| host == from) {
+            return true;
+        }
+        let ips = self.addresses(next).await;
+        let slots = self.visitor.links.clone();
+        if ips.is_empty() || !hold(&slots, &mut self.link_claims, &ips) {
+            return false;
+        }
+        slots.turn(&ips).await;
+        self.asked_ips = ips;
         true
     }
 
@@ -716,12 +1702,19 @@ impl Run<'_> {
     ) -> Result<Answer, String> {
         let mut url = url.to_string();
         let mut permit = None;
-        for _ in 0..=MAX_REDIRECTS {
+        self.connect_failed = false;
+        // Cookies a redirect sets go with the later hops of the same chain, as a browser sends them; some sign-in redirects loop without them.
+        let mut cookies: Vec<Cookie> = Vec::new();
+        // The hops of one redirect chain are one request: only the first waits its turn.
+        for hop in 0..=MAX_REDIRECTS {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
                 return Err("OSError".into());
             }
-            self.pacer.wait().await;
+            let booked = self.pacer.next;
+            if hop == 0 && !self.pacer.wait().await {
+                return Err(PACED.into());
+            }
             if let (None, Some(budget)) = (&permit, &budget) {
                 permit = Some(budget.take().await.map_err(|crash| crash.0)?);
             }
@@ -731,6 +1724,10 @@ impl Run<'_> {
                 for (name, value) in signer.headers(&url, chrono::Utc::now().timestamp()) {
                     request = request.header(name, value);
                 }
+            }
+            let sending: Vec<&str> = cookies.iter().filter(|c| c.goes_to(&host)).map(|c| c.pair.as_str()).collect();
+            if !sending.is_empty() {
+                request = request.header("Cookie", sending.join("; "));
             }
             if let Some((etag, modified)) = &validators {
                 if let Some(etag) = etag {
@@ -742,17 +1739,42 @@ impl Run<'_> {
             }
             let started = Instant::now();
             let connecting = Some(self.visitor.connect_timeout);
-            let mut response = request.send().await.map_err(|e| net::failure(&e, started.elapsed(), connecting).to_string())?;
+            let mut response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    self.connect_failed = net::connect_failed(&error);
+                    // Only a try that never reached the server (no address, refused, no TLS) spends no turn; one it timed out on or dropped did.
+                    if hop == 0 && error.is_connect() {
+                        self.pacer.next = booked;
+                    }
+                    return Err(net::failure(&error, started.elapsed(), connecting).to_string());
+                }
+            };
             self.answered = true;
+            let peer = response.remote_addr().map(|addr| addr.ip());
+            if peer.is_some() && self.on_site(&url) {
+                self.site_peer = peer;
+            }
             let waited = started.elapsed().as_secs_f64();
             let status = response.status().as_u16();
             if status == 429 || status == 503 {
                 let asked = retry_after(response.headers());
-                self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked)));
+                self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked).min(MAX_WAIT_IN_VISIT)));
             }
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                for value in response.headers().get_all("set-cookie") {
+                    let registrable = self.visitor.suffixes.registrable(&host);
+                    if let Some(cookie) = Cookie::parse(&host, &String::from_utf8_lossy(value.as_bytes()), registrable.as_deref()) {
+                        cookies.retain(|kept| (kept.domain.as_str(), kept.name()) != (cookie.domain.as_str(), cookie.name()));
+                        cookies.push(cookie);
+                    }
+                }
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
-                    url = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
+                    let next = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
+                    if self.following && !(self.on_site(&next) && self.robots_allow(&next) && self.hold_hop(&host, &next).await) {
+                        return Ok(Answer { status, body: Vec::new(), headers: response.headers().clone(), url: next, permit, peer });
+                    }
+                    url = next;
                     continue;
                 }
             }
@@ -763,7 +1785,7 @@ impl Run<'_> {
             };
             // Slow to answer means busy: rest that long before the next request.
             self.pacer.rest(waited);
-            return Ok(Answer { status, body, headers: response.headers().clone(), url, permit });
+            return Ok(Answer { status, body, headers: response.headers().clone(), url, permit, peer });
         }
         Err("TooManyRedirects".into())
     }
@@ -777,7 +1799,13 @@ impl Run<'_> {
 struct FileJob {
     standing: churn::Standing,
     _permit: Option<OwnedSemaphorePermit>,
+    /// For the homepage, where it was read from after redirects, which its links are relative to.
+    homepage: Option<String>,
     body: Vec<u8>,
+    /// Pages found by following links, listed as they are instead of parsed from the body.
+    prepared: Option<Vec<Entry>>,
+    /// The homepage asks robots not to follow its links, so it lists only itself.
+    nofollow: bool,
     stored_hash: Option<String>,
     now: i64,
     trust: Trust,
@@ -808,13 +1836,18 @@ enum Digested {
 }
 
 /// Everything CPU-bound about one sitemap file: decompress, hash, parse, date, and store what it lists.
-fn digest(job: FileJob) -> Result<Digested, Crash> {
+fn digest(mut job: FileJob) -> Result<Digested, Crash> {
     let body = gunzip(&job.body);
-    let hash: String = Sha256::digest(&body).iter().take(16).map(|b| format!("{b:02x}")).collect();
-    if job.stored_hash.as_deref() == Some(hash.as_str()) {
+    let hex = |digest: &[u8]| -> String { digest.iter().take(16).map(|b| format!("{b:02x}")).collect() };
+    let hash = hex(&Sha256::digest(&body));
+    if job.homepage.is_none() && job.stored_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Digested::Unchanged);
     }
-    let (kind, entries) = sitemaps::parse_entries(&body);
+    let (kind, entries) = match (job.prepared.take(), job.homepage.as_deref()) {
+        (Some(entries), _) => (LINKS_KIND, entries),
+        (None, Some(base)) => homepage_listing(&body, base, job.nofollow),
+        (None, None) => sitemaps::parse_entries(&body),
+    };
     if kind == "invalid" {
         return Ok(Digested::Invalid);
     }
@@ -847,7 +1880,8 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .filter_map(|(entry, date)| {
                 let url = normaliser.parse(&entry.url)?;
                 let rest = url.key.splitn(2, |&b| b == 0).nth(1)?;
-                if !job.robots.allows_page(&job.known.host, rest) {
+                // A homepage's links with a query left once tracking is stripped are searches, sorts and sessions.
+                if !job.robots.allows_page(&job.known.host, rest) || (job.homepage.is_some() && rest.contains(&b'?')) {
                     return None;
                 }
                 let timed = sitemaps::has_time(entry.lastmod.as_deref().or(entry.published.as_deref()));
@@ -856,6 +1890,13 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .collect(),
         Err(_) => Vec::new(),
     };
+    // A homepage changes on every read with its tokens and times; only the pages it lists tell a change.
+    if job.homepage.is_some() {
+        read.hash = hex(&Sha256::digest(rows.iter().flat_map(|(url, _, _)| [url.key.as_slice(), b"\n"]).flatten().copied().collect::<Vec<u8>>()));
+        if job.stored_hash.as_deref() == Some(read.hash.as_str()) {
+            return Ok(Digested::Unchanged);
+        }
+    }
     let store = job.buckets.store(&job.known.host);
     let mut hashed: Vec<(u64, &[u8])> = rows.iter().map(|(url, _, _)| (fingerprint(&url.key, 0), url.key.as_slice())).collect();
     hashed.sort_unstable();
@@ -865,11 +1906,22 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
     let new_share = || store.new_share(hashed.iter().map(|(_, key)| *key)).unwrap_or(0.0);
     let verdict = churn::judge(&job.standing, rows.len(), sketch, new_share, job.now);
     read.listing = match verdict {
-        churn::Verdict::Clear => store.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?,
+        churn::Verdict::Clear => {
+            let now = epoch(Some(job.now)) as u32;
+            let recorded = if job.homepage.is_some() { job.buckets.record_page_listing(&job.known.host, job.id, rows, now) } else { job.buckets.record_listing(&job.known.host, job.id, rows, now) };
+            recorded.map_err(|_| Crash::new("StoreError"))?
+        }
         churn::Verdict::Suspect { .. } | churn::Verdict::Generated { .. } => Listing { listed: rows.len(), ..Listing::default() },
     };
     read.verdict = Some(verdict);
     Ok(Digested::Read(read))
+}
+
+/// A homepage as a sitemap: itself first, then each page it links to unless it asks robots not to follow them, relative links read from where it was found.
+fn homepage_listing(body: &[u8], base: &str, nofollow: bool) -> (&'static str, Vec<Entry>) {
+    let links = if nofollow { Vec::new() } else { homepage::links(body, body.len() >= MAX_HOMEPAGE_BYTES) };
+    let linked = links.into_iter().filter_map(|href| urls::join(base, &href).ok());
+    (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 
 fn children(job: &FileJob, entries: &[Entry], trust: Trust) -> Result<Vec<Child>, Crash> {
@@ -893,6 +1945,22 @@ fn due(stored: &KnownSitemap, now: i64) -> bool {
     stored.next_check_at.is_none_or(|next| next <= now)
 }
 
+/// Whether robots.txt rules, read for a domain and its www host, let us fetch this URL; another host or port has rules of its own.
+pub(crate) fn robots_allow(paths: &Paths, bare_host: &str, url: &str) -> bool {
+    let Ok(parts) = urls::split(url) else {
+        return true;
+    };
+    let host = parts.hostname().unwrap_or_default();
+    if host.strip_prefix("www.").unwrap_or(&host) != bare_host || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
+        return true;
+    }
+    let target = match &parts.query {
+        Some(query) => format!("{}?{query}", parts.path),
+        None => parts.path.clone(),
+    };
+    paths.allows(&urls::tidy_target(if target.is_empty() { "/" } else { &target }))
+}
+
 /// The most frequent value, the first seen winning a tie.
 fn dominant<'a>(values: impl Iterator<Item = &'a str>) -> Option<String> {
     let mut counts: IndexMap<&str, usize> = IndexMap::new();
@@ -908,15 +1976,121 @@ pub fn epoch(micros: Option<i64>) -> i64 {
     micros.map_or(0, |us| us.div_euclid(SECOND))
 }
 
+/// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed and its homepage.
+fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
+    SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().chain([HOMEPAGE]).filter(move |_| listed))
+}
+
+/// Where a site's link listing is stored: an address no sitemap has, which names the homepage it starts from.
+fn links_url(host: &str) -> String {
+    format!("https://{host}/#{LINKS_KIND}")
+}
+
+/// Whether a stored kind is a sitemap or feed the site lists pages in, not a homepage, a link listing or a page that wasn't one.
+pub(crate) fn is_sitemap(kind: Option<&str>) -> bool {
+    kind.is_some_and(|kind| !matches!(kind, HOMEPAGE_KIND | LINKS_KIND | "invalid"))
+}
+
+/// Whether a link a run finds is a page to keep: no file, feed or form.
+fn is_page(url: &str) -> bool {
+    urls::split(url).is_ok_and(|parts| !NOT_PAGES.is_match(&parts.path))
+}
+
+/// Whether a page found while following links is fetched in turn: no file, feed or form, and not so deep or repetitive that it looks like a trap.
+fn fetchable(url: &str) -> bool {
+    let Ok(parts) = urls::split(url) else {
+        return false;
+    };
+    let segments: Vec<&str> = parts.path.split('/').filter(|s| !s.is_empty()).collect();
+    segments.len() <= MAX_PATH_SEGMENTS
+        && parts.path.len() <= 512
+        && !NOT_PAGES.is_match(&parts.path)
+        && !segments.iter().any(|segment| segments.iter().filter(|other| other == &segment).count() >= 3)
+}
+
+/// Whether a failed request never got a connection: refused, or timed out connecting; a slow answer or a bad certificate did connect.
+
+/// Whether a homepage or link listing: read only while the site qualifies, not on a sitemap's schedule.
+pub fn is_listing(kind: Option<&str>) -> bool {
+    matches!(kind, Some(HOMEPAGE_KIND | LINKS_KIND))
+}
+
+/// Whether a page asks robots not to follow its links, in any X-Robots-Tag header or a robots meta tag, as `nofollow` or `none`.
+fn nofollow(headers: &HeaderMap, body: &[u8]) -> bool {
+    // A directive may follow a robot's name, as in `otherbot: nofollow`, but `max-image-preview:none` is a directive with a value.
+    let directive = |item: &str| match item.split_once(':') {
+        Some((name, rest)) if !name.trim().starts_with("max-") && name.trim() != "unavailable_after" => rest.trim().to_string(),
+        _ => item.trim().to_string(),
+    };
+    let asks = |value: &[u8]| String::from_utf8_lossy(value).to_ascii_lowercase().split(',').any(|item| matches!(directive(item).as_str(), "nofollow" | "none"));
+    headers.get_all("x-robots-tag").iter().any(|value| asks(value.as_bytes())) || NOFOLLOW.is_match(&String::from_utf8_lossy(&body[..body.len().min(HEAD_BYTES)]))
+}
+
+/// Whether an answer is a web page: HTML by the type it names, or markup when it names none.
+fn is_html(answer: &Answer) -> bool {
+    match header(&answer.headers, "content-type") {
+        Some(kind) => kind.to_ascii_lowercase().contains("html"),
+        None => answer.body.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<'),
+    }
+}
+
+/// The clock time of a moment in microseconds since the epoch, when it is still to come.
+fn instant_at(micros: i64) -> Option<tokio::time::Instant> {
+    let ahead = micros.checked_sub(chrono::Utc::now().timestamp_micros()).filter(|ahead| *ahead > 0)?;
+    Some(tokio::time::Instant::now() + Duration::from_micros(u64::try_from(ahead).ok()?))
+}
+
 fn crawl_delay(value: Option<f64>) -> f64 {
     match value {
-        Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(MAX_CRAWL_DELAY),
+        Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(robots::MAX_CRAWL_DELAY),
         _ => 0.0,
     }
 }
 
 fn retry_after(headers: &HeaderMap) -> f64 {
     header(headers, "retry-after").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0)
+}
+
+/// A cookie a redirect set: `name=value`, for its own host only, or for a parent domain it names and the hosts under it.
+#[derive(Debug, PartialEq, Eq)]
+struct Cookie {
+    domain: String,
+    host_only: bool,
+    pair: String,
+}
+
+impl Cookie {
+    /// A `Set-Cookie` value from `host`; None when it has no name, or names a domain that doesn't cover the host or lies above its registrable domain.
+    fn parse(host: &str, value: &str, registrable: Option<&str>) -> Option<Cookie> {
+        let mut attributes = value.split(';');
+        let (name, pair) = attributes.next().and_then(|pair| pair.split_once('=').map(|(name, value)| (name.trim(), format!("{}={}", name.trim(), value.trim()))))?;
+        let named = attributes
+            .find_map(|attribute| attribute.split_once('=').filter(|(key, _)| key.trim().eq_ignore_ascii_case("domain")).map(|(_, domain)| domain.trim().trim_start_matches('.').to_ascii_lowercase()))
+            .filter(|domain| !domain.is_empty());
+        let (domain, host_only) = match named {
+            Some(domain) if covers(&domain, host) && registrable.is_some_and(|registrable| covers(registrable, &domain)) => (domain, false),
+            Some(_) => return None,
+            None => (host.to_string(), true),
+        };
+        (!name.is_empty()).then_some(Cookie { domain, host_only, pair })
+    }
+
+    fn goes_to(&self, host: &str) -> bool {
+        if self.host_only {
+            host == self.domain
+        } else {
+            covers(&self.domain, host)
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.pair.split_once('=').map_or("", |(name, _)| name)
+    }
+}
+
+/// Whether a cookie for `domain` goes to `host`: the host itself or one under it.
+fn covers(domain: &str, host: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|rest| rest.ends_with('.'))
 }
 
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -948,6 +2122,95 @@ pub fn gunzip(body: &[u8]) -> Cow<'_, [u8]> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn an_address_takes_one_link_run_at_a_time_a_fetch_a_second_and_rests_after_failed_connections() {
+        let slots = Slots::new(4);
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        let claim = slots.claim(ip).unwrap();
+        assert!(slots.claim(ip).is_none(), "one run at a time on an address");
+        drop(claim);
+        assert!(slots.claim(ip).is_some(), "free again once the run ends");
+        let started = Instant::now();
+        slots.turn(&[ip]).await;
+        slots.turn(&[ip]).await;
+        assert!(started.elapsed() >= PEER_GAP, "fetches to one address a second apart");
+        let (first, second): (IpAddr, IpAddr) = ("192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap());
+        slots.turn(&[first, second]).await;
+        let started = Instant::now();
+        slots.turn(&[second]).await;
+        assert!(started.elapsed() >= PEER_GAP - Duration::from_millis(10), "a fetch books every address its run uses");
+        for _ in 0..PEER_FAILURES {
+            slots.connected(ip, false);
+        }
+        assert!(slots.claim(ip).is_none(), "failed connections in a row stop runs there");
+        let other: IpAddr = "192.0.2.8".parse().unwrap();
+        for connected in [false, true, false, false] {
+            slots.connected(other, connected);
+        }
+        assert!(slots.claim(other).is_some(), "one that connects in between starts the count again");
+    }
+
+    #[test]
+    fn addresses_idle_longer_than_a_stop_are_forgotten() {
+        let slots = Slots::new(4);
+        let (idle, stopped): (IpAddr, IpAddr) = ("192.0.2.9".parse().unwrap(), "192.0.2.10".parse().unwrap());
+        drop(slots.claim(idle));
+        for _ in 0..PEER_FAILURES {
+            slots.connected(stopped, false);
+        }
+        let mut peers = slots.peers.lock().unwrap();
+        peers.prune(Instant::now() + PEER_PRUNE_EVERY);
+        assert_eq!(peers.map.len(), 2, "both recent");
+        peers.prune(Instant::now() + PEER_REST + 3 * PEER_PRUNE_EVERY);
+        assert!(peers.map.is_empty(), "the idle one and the one whose stop ran out");
+    }
+
+    #[test]
+    fn a_run_claims_an_address_before_asking_it_and_stops_where_another_run_holds_one() {
+        let slots = Slots::new(2);
+        let (ours, theirs): (IpAddr, IpAddr) = ("192.0.2.1".parse().unwrap(), "192.0.2.2".parse().unwrap());
+        let mut claims = vec![slots.claim(ours).unwrap()];
+        let held = slots.claim(theirs).unwrap();
+        assert!(!hold(&slots, &mut claims, &[ours, theirs]), "another run is on the second address");
+        drop(held);
+        assert!(hold(&slots, &mut claims, &[ours, theirs]));
+        assert_eq!(claims.len(), 2, "both held now, so both are spaced and booked before the next fetch");
+        assert!(slots.claim(theirs).is_none());
+    }
+
+    #[test]
+    fn an_address_back_from_its_stop_takes_as_many_failures_again_to_stop() {
+        let slots = Slots::new(1);
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        for _ in 0..PEER_FAILURES {
+            slots.connected(ip, false);
+        }
+        assert!(slots.claim(ip).is_none(), "stopped");
+        slots.peers.lock().unwrap().map.get_mut(&ip).unwrap().stopped_until = Some(Instant::now());
+        slots.connected(ip, false);
+        assert!(slots.claim(ip).is_some(), "one failure after the stop ran out is not enough to stop it again");
+    }
+
+    #[test]
+    fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
+        assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
+        assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"], "after the sitemaps, which go first; the homepage last");
+    }
+
+    #[test]
+    fn a_redirect_cookie_goes_to_its_host_or_the_parent_domain_it_names() {
+        let host_only = Cookie::parse("oxfordreference.com", "AWSALBAPP-0=_remove_; Path=/", Some("oxfordreference.com")).unwrap();
+        assert_eq!((host_only.domain.as_str(), host_only.pair.as_str(), host_only.name()), ("oxfordreference.com", "AWSALBAPP-0=_remove_", "AWSALBAPP-0"));
+        assert!(host_only.goes_to("oxfordreference.com") && !host_only.goes_to("www.oxfordreference.com"), "one with no domain goes back to its own host only");
+        let parent = Cookie::parse("login.example.com", "sid = 1 ; Domain=.Example.com", Some("example.com")).unwrap();
+        assert_eq!(parent.domain, "example.com");
+        assert!(parent.goes_to("www.example.com") && parent.goes_to("example.com") && !parent.goes_to("badexample.com"));
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=other.com", Some("example.com")), None, "a domain that doesn't cover the host");
+        assert_eq!(Cookie::parse("a.example.co.uk", "x=1; Domain=co.uk", Some("example.co.uk")), None, "a public suffix");
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=", Some("example.com")).map(|c| c.host_only), Some(true), "an empty domain is the host's own");
+        assert_eq!(Cookie::parse("a.example.com", "=1", Some("example.com")), None);
+    }
 
     #[test]
     fn gunzip_keeps_what_decoded_before_a_cut() {

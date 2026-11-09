@@ -11,6 +11,17 @@ pub const MIN_INTERVAL: i64 = 10 * MINUTE;
 pub const MAX_INTERVAL: i64 = 7 * DAY;
 pub const DEFAULT_INTERVAL: i64 = DAY;
 pub const NEWS_INTERVAL: i64 = HOUR;
+/// A listed news site's root index and Google News sitemaps are read again at least this often: ~1 h of fixed waits follow a find, against a 2-hour target.
+pub const NEWS_REREAD: i64 = 30 * MINUTE;
+
+/// The interval a sitemap keeps: a listed news site's root index and its Google News files never wait longer than `NEWS_REREAD`; a re-read index sends its changed children, and a root that lists pages keeps its own pace.
+pub fn reread_within(interval: i64, listed_news: bool, depth: i64, index: bool, google_news: bool) -> i64 {
+    if listed_news && ((depth == 0 && index) || google_news) {
+        interval.min(NEWS_REREAD)
+    } else {
+        interval
+    }
+}
 
 const MIN_DATED: usize = 20;
 const AGREEMENT: f64 = 0.9;
@@ -110,6 +121,16 @@ pub fn round_half_even(numerator: i64, denominator: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listed_news_sites_root_index_and_google_news_files_are_read_within_half_an_hour() {
+        assert_eq!(reread_within(DAY, true, 0, true, false), NEWS_REREAD);
+        assert_eq!(reread_within(DAY, true, 2, false, true), NEWS_REREAD, "a Google News sitemap at any depth");
+        assert_eq!(reread_within(DAY, true, 0, false, false), DAY, "a root listing pages, such as an archive file robots.txt names, keeps its pace");
+        assert_eq!(reread_within(DAY, true, 1, true, false), DAY, "a child index keeps its pace; its parent sends it when it changes");
+        assert_eq!(reread_within(DAY, false, 0, true, true), DAY, "so does any site off the news list");
+        assert_eq!(reread_within(MIN_INTERVAL, true, 0, true, false), MIN_INTERVAL);
+    }
 
     #[test]
     fn intervals_move_within_bounds() {

@@ -49,6 +49,13 @@ impl Batch {
         Batch { urls: Vec::new(), sealed: Some(self.seal()), ..self.clone() }
     }
 
+    /// The batch as SQLite keeps it once Redis holds its task: sealed, and without an embed input's page list.
+    pub fn queued(&self) -> Batch {
+        let mut kept = self.sealed();
+        kept.extra.remove("pages");
+        kept
+    }
+
     pub fn manifest_entry(&self) -> Value {
         let mut entry = Map::new();
         entry.insert("batch_id".into(), self.batch_id.clone().into());
