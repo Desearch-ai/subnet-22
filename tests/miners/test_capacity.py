@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 
+import aiohttp
 import numpy as np
 import pytest
 from aiohttp import web
@@ -316,7 +317,7 @@ async def test_real_tasks_wait_between_batches_while_a_test_runs():
         assert seen == [["test text"]]
         client.resume()
         assert (await asyncio.wait_for(real, 2)).shape == (2, DIMS)
-        assert client.paused_s > 0
+        assert client.paused_since(0.0) > 0
         await client.aclose()
 
 
@@ -370,3 +371,106 @@ async def test_several_servers_take_batches_by_how_busy_they_are():
         await client.embed([f"text {i}" for i in range(40)])
         await client.aclose()
     assert calls["fast"] > 2 * calls["slow"] > 0
+
+
+async def test_a_stalled_node_cannot_keep_real_tasks_paused(monkeypatch):
+    monkeypatch.setattr(capacity, "SECONDS_PER_BLOCK", 0.01)
+    chain, embedder = Chain(), Embedder()
+    sitter = make_tester(chain, embedder, Api())
+    # The head never moves.
+    await asyncio.wait_for(sitter.sit(TEST), 2)
+    assert embedder.events == ["pause", "resume"]
+
+
+async def test_a_stopping_miner_lets_real_tasks_go_at_once():
+    stopping = asyncio.Event()
+    embedder = Embedder()
+    sitter = make_tester(Chain(), embedder, Api(), stopping)
+    task = asyncio.create_task(sitter.sit(TEST))
+    await asyncio.sleep(0.02)
+    assert embedder.events == ["pause"]
+    stopping.set()
+    await asyncio.wait_for(task, 1)
+    assert embedder.events == ["pause", "resume"]
+
+
+async def test_a_test_block_the_stream_skipped_still_starts_the_test(monkeypatch):
+    chain = Chain()
+    started: list[capacity.Test] = []
+    sitter = make_tester(chain, Embedder(), Api())
+
+    async def sit(test):
+        started.append(test)
+
+    monkeypatch.setattr(sitter, "sit", sit)
+    monkeypatch.setattr(capacity, "CANDIDATE_ONE_IN", 2)
+    flags = {n: capacity.is_candidate(block_hash(n)) for n in range(3000)}
+    first = next(
+        n
+        for n in range(10, 3000)
+        if flags[n] and not flags[n - 1] and not flags[n - 2] and not flags[n + 1]
+    )
+    await sitter.on_head(first - 1)
+    await sitter.on_head(first + 1)
+    await asyncio.sleep(0)
+    assert [t.block for t in started] == [first]
+
+
+async def test_stopping_zero_blocks_before_the_deadline_still_commits():
+    chain, embedder = Chain(), Embedder()
+    sitter = CapacityTester(
+        Settings(capacity_in_flight=1, capacity_stop_blocks=0),
+        embedder,
+        Api(),
+        chain,
+        asyncio.Event(),
+    )
+    task = asyncio.create_task(sitter.sit(TEST))
+    await asyncio.sleep(0.05)
+    await move_head(sitter, chain, TEST.deadline - 1)
+    for _ in range(100):
+        if chain.commits:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert chain.commits
+
+
+async def test_a_dead_server_among_several_does_not_fail_batches():
+    async def alive(request: web.Request) -> web.Response:
+        body = await request.json()
+        one = base64.b64encode(np.ones(DIMS, dtype=np.float32).tobytes()).decode()
+        rows = [{"index": i, "embedding": one} for i in range(len(body["input"]))]
+        return web.json_response({"data": rows})
+
+    async def dead(request: web.Request) -> web.Response:
+        return web.Response(status=500)
+
+    async with serving(dead) as bad, serving(alive) as good:
+        client = EmbeddingClient(
+            f"{bad}/v1/embeddings,{good}/v1/embeddings", MODEL, batch=1, in_flight=1
+        )
+        vectors = await client.embed([f"text {i}" for i in range(10)])
+        assert vectors.shape == (10, DIMS)
+        assert f"{bad}/v1/embeddings" in client.benched
+        await client.aclose()
+
+
+async def test_one_server_failing_still_raises_as_before():
+    async def dead(request: web.Request) -> web.Response:
+        return web.Response(status=500)
+
+    async with serving(dead) as bad:
+        client = EmbeddingClient(f"{bad}/v1/embeddings", MODEL, batch=1, in_flight=1)
+        with pytest.raises(aiohttp.ClientError):
+            await client.embed_now(["text"])
+        await client.aclose()
+
+
+def test_only_a_pause_during_the_task_counts_against_its_pace():
+    client = EmbeddingClient("http://x/v1/embeddings", MODEL)
+    client.pauses.append((10.0, 40.0))
+    assert client.paused_since(50.0) == 0.0
+    assert client.paused_since(30.0) == 10.0
+    assert client.paused_since(0.0) == 30.0

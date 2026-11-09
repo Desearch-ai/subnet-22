@@ -1,7 +1,9 @@
 import hashlib
 
+import aiohttp
 import numpy as np
 import pytest
+from aiohttp import web
 
 from desearch import capacity
 from desearch.capacity_chain import Commitment
@@ -15,6 +17,8 @@ from neurons.validators.capacity_score import (
     share_report,
     voided,
 )
+
+from tests.local_http import serving
 
 DIMS = 8
 BLOCK = 500
@@ -169,11 +173,73 @@ async def test_many_missing_reveals_void_the_test_for_everyone():
     assert scorer.report(0) == share_report([], [])
 
 
+async def test_a_failed_deadline_read_is_tried_again_until_the_state_is_gone():
+    scorer, chain = scorer_with([Miner("5A", 60)])
+    chain.fail_state = True
+    await scorer.step(TEST.deadline + 1)
+    assert state_of(scorer) == "found"
+    chain.fail_state = False
+    await scorer.step(TEST.deadline + 2)
+    assert state_of(scorer) == "read"
+
+
 async def test_a_deadline_state_the_node_no_longer_has_skips_the_test():
     scorer, chain = scorer_with([Miner("5A", 60)])
     chain.fail_state = True
-    await scored(scorer)
+    await scorer.step(TEST.deadline + score.STATE_KEPT_BLOCKS)
     assert state_of(scorer) == "missed"
+
+
+async def test_a_reveal_longer_than_one_chunk_is_read_whole():
+    body = b"r" * 264_000
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        answer = web.StreamResponse()
+        await answer.prepare(request)
+        for at in range(0, len(body), 8192):
+            await answer.write(body[at : at + 8192])
+        await answer.write_eof()
+        return answer
+
+    async with serving(handler) as url, aiohttp.ClientSession() as http:
+        read = score.public_reveal_reader(url, http)
+        assert await read("capacity/1/5A.reveal") == body
+
+
+async def test_an_oversized_reveal_stops_being_read_past_the_limit():
+    body = b"r" * (capacity.MAX_REVEAL_BYTES * 2)
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(body=body)
+
+    async with serving(handler) as url, aiohttp.ClientSession() as http:
+        read = score.public_reveal_reader(url, http)
+        got = await read("capacity/1/5A.reveal")
+    assert capacity.MAX_REVEAL_BYTES < len(got) < len(body)
+
+
+async def test_a_test_nobody_committed_to_does_not_use_up_a_worst_test():
+    db = open_state(":memory:")
+    scorer = Scorer(Chain({}), None, None, db, DIMS)
+    db.executemany(
+        "INSERT INTO tests VALUES (?, ?, 'done', 0)", [(1, b"a"), (2, b"b"), (3, b"c")]
+    )
+    for block in (1, 2):
+        for hotkey, chars in (("5A", 100), ("5B", 100)):
+            scorer.save(Row(block, hotkey, f"cold-{hotkey}", 1, chars, 2, score.PASS))
+    scorer.save(Row(3, "5C", "cold-5C", 0, 0, 0, score.NO_COMMIT))
+    assert scorer.report(0)["tests"] == 2
+
+
+def test_a_hotkey_that_changed_coldkey_keeps_the_shares_adding_up():
+    rows = [
+        (1, "5A", "old", 100, score.PASS, None),
+        (2, "5A", "new", 100, score.PASS, None),
+        (1, "5B", "other", 100, score.PASS, None),
+        (2, "5B", "other", 100, score.PASS, None),
+    ]
+    report = share_report(rows, [1, 2])
+    assert sum(c["share"] for c in report["coldkeys"]) == pytest.approx(1.0)
 
 
 async def test_a_test_block_that_left_the_chain_counts_for_nobody():
@@ -283,15 +349,21 @@ def test_a_median_past_the_tight_rule_is_reported_but_still_passes():
     assert report["coldkeys"][0]["hotkeys"][0]["outcomes"]["above_tight_rule"] == 1
 
 
-def test_a_void_needs_more_than_a_fifth_of_commitments_missing():
+def test_a_void_needs_more_than_a_fifth_of_coldkeys_missing():
     def rows(missing: int, passed: int) -> list[Row]:
         return [
-            Row(1, f"m{i}", "c", 1, 0, 2, score.NO_REVEAL) for i in range(missing)
-        ] + [Row(1, f"p{i}", "c", 1, 1, 2, score.PASS) for i in range(passed)]
+            Row(1, f"m{i}", f"cm{i}", 1, 0, 2, score.NO_REVEAL) for i in range(missing)
+        ] + [Row(1, f"p{i}", f"cp{i}", 1, 1, 2, score.PASS) for i in range(passed)]
 
     assert not voided(rows(1, 4))
     assert voided(rows(2, 3))
     assert not voided([Row(1, "n", "c", 0, 0, 0, score.NO_COMMIT)])
+
+
+def test_one_big_operator_withholding_cannot_void_a_test():
+    theirs = [Row(1, f"b{i}", "big", 1, 0, 2, score.NO_REVEAL) for i in range(38)]
+    others = [Row(1, f"p{i}", f"c{i}", 1, 1, 2, score.PASS) for i in range(9)]
+    assert not voided(theirs + others)
 
 
 async def test_a_scan_finds_a_test_only_after_a_quiet_run(monkeypatch):

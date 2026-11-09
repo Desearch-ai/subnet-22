@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bittensor.wallets import Keypair, Wallet
 
+from desearch.capacity import REFERENCE_STOP_BLOCKS
 from desearch.embedding import LOCAL_EMBEDDINGS
 from desearch.fetch import FetchSettings
 
@@ -34,7 +35,7 @@ class Settings(FetchSettings):
     capacity_chain: str = "finney"
     capacity_netuid: int = 22
     capacity_in_flight: int = 4
-    capacity_stop_blocks: int = 2
+    capacity_stop_blocks: int = REFERENCE_STOP_BLOCKS
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:

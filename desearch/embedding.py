@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import aiohttp
@@ -50,6 +51,8 @@ INPUT_SCHEMA = pa.schema(
 )
 VECTOR_DTYPE = np.dtype("<f2")
 MAX_DECODED_BYTES = 256_000_000
+BENCHED_S = 30.0
+PAUSES_KEPT = 16
 
 
 def model_named(name: str) -> EmbeddingModel:
@@ -96,11 +99,12 @@ class EmbeddingClient:
         self.in_flight = in_flight * len(self.urls)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.load = dict.fromkeys(self.urls, 0)
+        self.benched: dict[str, float] = {}
         self.session: aiohttp.ClientSession | None = None
         self.free = asyncio.Event()
         self.free.set()
-        self.paused_s = 0.0
         self.paused_at = 0.0
+        self.pauses: deque[tuple[float, float]] = deque(maxlen=PAUSES_KEPT)
 
     def pause(self) -> None:
         """Real tasks wait between batches, so a capacity test has the server to itself."""
@@ -110,8 +114,15 @@ class EmbeddingClient:
 
     def resume(self) -> None:
         if not self.free.is_set():
-            self.paused_s += time.monotonic() - self.paused_at
+            self.pauses.append((self.paused_at, time.monotonic()))
         self.free.set()
+
+    def paused_since(self, started: float) -> float:
+        """How long real tasks have been held up since a moment."""
+        spans = list(self.pauses)
+        if not self.free.is_set():
+            spans.append((self.paused_at, time.monotonic()))
+        return sum(max(0.0, end - max(begin, started)) for begin, end in spans)
 
     def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
@@ -137,6 +148,12 @@ class EmbeddingClient:
             served = names if served is None else [n for n in served if n in names]
         return served or []
 
+    def _least_busy(self) -> str:
+        """The server with the fewest batches on it, so a faster GPU takes more; one that just failed only if all did."""
+        now = time.monotonic()
+        working = [url for url in self.urls if self.benched.get(url, 0.0) <= now]
+        return min(working or self.urls, key=self.load.__getitem__)
+
     async def embed(self, texts: list[str]) -> np.ndarray:
         """Vectors in the texts' order; a few batches in flight keep the server busy."""
         slots = asyncio.Semaphore(self.in_flight)
@@ -160,15 +177,21 @@ class EmbeddingClient:
             "encoding_format": "base64",
             "truncate_prompt_tokens": self.model.max_tokens,
         }
-        # The least busy server, so a faster GPU takes more batches.
-        url = min(self.urls, key=self.load.__getitem__)
-        self.load[url] += 1
-        try:
-            async with self._session().post(url, json=body) as response:
-                response.raise_for_status()
-                answer = await response.json()
-        finally:
-            self.load[url] -= 1
+        for tries_left in range(len(self.urls) - 1, -1, -1):
+            url = self._least_busy()
+            self.load[url] += 1
+            try:
+                async with self._session().post(url, json=body) as response:
+                    response.raise_for_status()
+                    answer = await response.json()
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                # A dead server answers fast, and would otherwise always look the least busy.
+                self.benched[url] = time.monotonic() + BENCHED_S
+                if not tries_left:
+                    raise
+            finally:
+                self.load[url] -= 1
         rows = sorted(answer["data"], key=lambda row: row["index"])
         vectors = [
             np.frombuffer(base64.b64decode(row["embedding"]), dtype=np.float32)

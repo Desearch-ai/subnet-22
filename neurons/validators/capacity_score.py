@@ -33,9 +33,10 @@ PUBLIC_BUCKET = "https://subnet-22.s3.us-east-va.io.cloud.ovh.us"
 READS_AT_ONCE = 16
 SCAN_AT_ONCE = 16
 FOLLOW_S = 12.0
-SECONDS_PER_BLOCK = 12
 # Reveals may still be arriving as the last allowed block is made.
 REVEAL_MARGIN_BLOCKS = 2
+# A pruned node keeps state about 256 blocks back; a failed read is worth trying again until then.
+STATE_KEPT_BLOCKS = 240
 
 PASS = "pass"
 FAIL = "fail"
@@ -135,11 +136,17 @@ def with_similarity(test: capacity.Test, row: Row, values: list[float]) -> Row:
 
 
 def voided(rows: list[Row]) -> bool:
-    """Too many missing reveals at once means the path failed, not the miners; the test counts for nobody."""
-    committed = [row for row in rows if row.verdict != NO_COMMIT]
-    missing = [row for row in committed if row.verdict == NO_REVEAL]
+    """Many owners' reveals missing at once means the path failed, not the miners; the test counts for nobody.
+
+    It counts coldkeys, so one big operator withholding its own cannot void a test for everyone.
+    """
+    committed = {row.coldkey for row in rows if row.verdict != NO_COMMIT}
+    revealed = {
+        row.coldkey for row in rows if row.verdict not in (NO_COMMIT, NO_REVEAL)
+    }
     return (
-        bool(committed) and len(missing) / len(committed) > capacity.VOID_MISSING_SHARE
+        bool(committed)
+        and len(committed - revealed) / len(committed) > capacity.VOID_MISSING_SHARE
     )
 
 
@@ -157,13 +164,13 @@ def share_report(
     """
     by_hotkey: dict[str, int] = defaultdict(int)
     by_test: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
-    coldkey_of: dict[str, str] = {}
+    coldkeys: dict[str, set[str]] = defaultdict(set)
     outcomes: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     gaps: list[float] = []
     for block, hotkey, coldkey, chars, verdict, gap in rows:
         by_hotkey[hotkey] += chars
         by_test[coldkey][block] += chars
-        coldkey_of[hotkey] = coldkey
+        coldkeys[coldkey].add(hotkey)
         outcomes[hotkey][verdict] += 1
         if gap is not None:
             gaps.append(gap)
@@ -177,12 +184,10 @@ def share_report(
         )
     }
     total = sum(kept.values())
-    coldkeys: dict[str, list[str]] = defaultdict(list)
-    for hotkey, coldkey in coldkey_of.items():
-        coldkeys[coldkey].append(hotkey)
-    window_s = max(len(tests) - 1, 1) * capacity.WINDOW_BLOCKS * SECONDS_PER_BLOCK
+    work_blocks = capacity.WINDOW_BLOCKS - capacity.REFERENCE_STOP_BLOCKS
+    window_s = max(len(tests) - 1, 1) * work_blocks * capacity.SECONDS_PER_BLOCK
 
-    def of(amounts: dict[str, float] | None, hotkeys: list[str]) -> float | None:
+    def of(amounts: dict[str, float] | None, hotkeys: set[str]) -> float | None:
         if not amounts or not sum(amounts.values()):
             return None
         return sum(amounts.get(h, 0.0) for h in hotkeys) / sum(amounts.values())
@@ -271,7 +276,7 @@ class Scorer:
                 self.set_state(block, "left_chain")
                 continue
             if state == "found" and finalized >= test.deadline:
-                state = await self.read_commitments(test)
+                state = await self.read_commitments(test, finalized)
             if state == "read" and finalized >= test.reveal_by + REVEAL_MARGIN_BLOCKS:
                 await self.judge(test)
 
@@ -282,7 +287,7 @@ class Scorer:
         )
         self.db.commit()
 
-    async def read_commitments(self, test: capacity.Test) -> str:
+    async def read_commitments(self, test: capacity.Test, finalized: int) -> str:
         """Everyone's commitment as of the deadline block; a later overwrite, made after seeing the samples, is never seen."""
         try:
             registered = await self.chain.registered(test.deadline)
@@ -297,6 +302,8 @@ class Scorer:
             log.warning(
                 "test %d: its deadline state cannot be read: %r", test.block, exc
             )
+            if finalized - test.deadline < STATE_KEPT_BLOCKS:
+                return "found"
             self.set_state(test.block, "missed")
             return "missed"
         for (hotkey, coldkey), commitment in zip(registered.items(), found):
@@ -364,9 +371,13 @@ class Scorer:
         )
 
     def report(self, since_block: int, served=None, crawled=None) -> dict:
+        # A test nobody committed to says nothing of anyone; it must not use up a coldkey's worst test.
         counted = self.db.execute(
-            "SELECT block FROM tests WHERE state = 'done' AND block >= ? ORDER BY block",
-            (since_block,),
+            """
+            SELECT block FROM tests WHERE state = 'done' AND block >= ?
+            AND block IN (SELECT block FROM results WHERE verdict != ?) ORDER BY block
+            """,
+            (since_block, NO_COMMIT),
         ).fetchall()
         rows = self.db.execute(
             """
@@ -399,12 +410,34 @@ def public_reveal_reader(bucket: str, http: aiohttp.ClientSession):
             async with http.get(f"{bucket.rstrip('/')}/{key}") as answer:
                 if answer.status != 200:
                     return None
-                return await answer.content.read(capacity.MAX_REVEAL_BYTES + 1)
+                body = bytearray()
+                async for chunk in answer.content.iter_chunked(1 << 16):
+                    body += chunk
+                    if len(body) > capacity.MAX_REVEAL_BYTES:
+                        break
+                return bytes(body)
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             log.warning("reading %s failed: %r", key, exc)
             return None
 
     return read
+
+
+async def score_once(chain, scorer, http, embedder, window, args) -> None:
+    finalized = await chain.finalized()
+    cursor = scorer.cursor()
+    start = cursor + 1 if cursor is not None else max(0, finalized - args.back_blocks)
+    if start <= finalized:
+        await scorer.scan(start, finalized)
+    await scorer.step(finalized)
+    report = scorer.report(
+        finalized - window,
+        await public_work(args.api, http, "embed", args.hours),
+        await public_work(args.api, http, "crawl", args.hours),
+    )
+    report["finalized"] = finalized
+    report["verified"] = embedder is not None
+    Path(args.out).write_text(json.dumps(report, indent=1))
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -422,26 +455,14 @@ async def run(args: argparse.Namespace) -> None:
     ):
         reader = public_reveal_reader(args.bucket, http)
         scorer = Scorer(chain, reader, embedder, db, model.dims)
-        window = int(args.hours * 3600 / SECONDS_PER_BLOCK)
+        window = int(args.hours * 3600 / capacity.SECONDS_PER_BLOCK)
         while True:
-            finalized = await chain.finalized()
-            cursor = scorer.cursor()
-            start = (
-                cursor + 1
-                if cursor is not None
-                else max(0, finalized - args.back_blocks)
-            )
-            if start <= finalized:
-                await scorer.scan(start, finalized)
-            await scorer.step(finalized)
-            report = scorer.report(
-                finalized - window,
-                await public_work(args.api, http, "embed", args.hours),
-                await public_work(args.api, http, "crawl", args.hours),
-            )
-            report["finalized"] = finalized
-            report["verified"] = embedder is not None
-            Path(args.out).write_text(json.dumps(report, indent=1))
+            try:
+                await score_once(chain, scorer, http, embedder, window, args)
+            except Exception:
+                if not args.follow:
+                    raise
+                log.exception("scoring failed; trying again")
             if not args.follow:
                 break
             await asyncio.sleep(FOLLOW_S)

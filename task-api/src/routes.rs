@@ -45,8 +45,8 @@ const LINK_SLACK_S: u64 = 60;
 const TASKS_PAGE: i64 = 50;
 const MAX_TASKS_PAGE: i64 = 100;
 const ENQUEUED_TTL_S: u64 = 86_400;
-/// A test's commitments, samples and reveals all fall well inside this many blocks.
-const CAPACITY_REVEAL_BLOCKS: i64 = 100;
+/// A test's reveals are due by its block plus 35, and scorers read them just after; a later reveal counts for nobody.
+const CAPACITY_REVEAL_BLOCKS: i64 = 37;
 const CAPACITY_LINK_S: u64 = 300;
 const CAPACITY_REVEAL_TYPE: &str = "application/octet-stream";
 const CAPACITY_REVEAL_MAX_BYTES: u64 = 600_000;

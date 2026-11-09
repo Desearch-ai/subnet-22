@@ -36,7 +36,7 @@ async fn nothing_uploaded_is_refused() {
 async fn a_block_too_old_or_in_the_future_or_not_a_number_is_refused() {
     let h = Harness::start().await;
     let block = test_block(&h).await;
-    for body in [json!({"test_block": block - 101}), json!({"test_block": block + 5}), json!({"test_block": "soon"}), json!({})] {
+    for body in [json!({"test_block": block - 38}), json!({"test_block": block + 5}), json!({"test_block": "soon"}), json!({})] {
         let refused = h.miner.post(REVEAL, body).await.unwrap_err();
         assert_eq!(refused.status, 422);
     }

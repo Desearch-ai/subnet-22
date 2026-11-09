@@ -130,13 +130,10 @@ class EmbedMiner(TaskWorker):
         rows = read_parquet(body, INPUT_SCHEMA)
         async with self.server:
             started = time.monotonic()
-            paused = getattr(self.embedder, "paused_s", 0.0)
             vectors = await self.embedder.embed([row["text"] for row in rows])
-            # A capacity test held this task up; that says nothing of the server's pace.
-            paused = getattr(self.embedder, "paused_s", 0.0) - paused
-            self.recent.append(
-                (len(rows), max(time.monotonic() - started - paused, 1e-3))
-            )
+            # A capacity test holding this task up says nothing of the server's pace.
+            took = time.monotonic() - started - self.embedder.paused_since(started)
+            self.recent.append((len(rows), max(took, 1e-3)))
         self.ahead.pop(task["task_id"], None)
         return rows, encode_vectors(vectors)
 

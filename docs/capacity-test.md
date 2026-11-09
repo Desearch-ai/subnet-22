@@ -22,8 +22,8 @@ with the same GPUs scores the same on one UID or on thirty.
 | Check | After that | Anyone with the model embeds the 48 texts and compares them, at a cosine similarity of at least 0.999 |
 
 A hotkey's score for a test is the characters of all the texts it committed, once its 48 samples pass. A commitment with no reveal,
-or a reveal that fails, scores nothing for that test. If over a fifth of a test's commitments have no reveal, the path failed rather
-than the miners, and the test counts for nobody. Reports add up a coldkey's hotkeys and name the top one.
+or a reveal that fails, scores nothing for that test. If over a fifth of the coldkeys that committed have no reveal, the path failed
+rather than the miners, and the test counts for nobody. Reports add up a coldkey's hotkeys and name the top one.
 
 The exact rules are in [`desearch/capacity.py`](../desearch/capacity.py).
 
@@ -40,7 +40,7 @@ CAPACITY_TEST=1
 | `CAPACITY_CHAIN` | `finney` | the node to follow. Your own node starts each test a little sooner than a public endpoint |
 | `CAPACITY_NETUID` | `22` | the subnet |
 | `CAPACITY_IN_FLIGHT` | `4` | batches sent to the model server at once during a test. Raise it if your server has room |
-| `CAPACITY_STOP_BLOCKS` | `2` | how many blocks before the deadline to stop and send the commitment. Fewer gives more time to embed and more risk of missing the deadline |
+| `CAPACITY_STOP_BLOCKS` | `2` | how many blocks before the deadline to stop and send the commitment, at least 1. Fewer gives more time to embed and more risk of missing the deadline |
 
 While a test runs, real tasks wait between batches, for about 48 seconds. Claims last long enough for this. The miner watches the
 newest block, not the finalized one: waiting for finality would lose about 26 seconds of a test.

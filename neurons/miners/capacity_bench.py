@@ -54,9 +54,9 @@ async def stream(
                 await client.embed_now(texts)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
                 errors.append(repr(exc))
+                await asyncio.sleep(0.1)
                 continue
-            if time.monotonic() < stop_at:
-                done.append(sum(map(len, texts)))
+            done.append(sum(map(len, texts)))
 
     await asyncio.gather(*(work() for _ in range(in_flight)))
 
@@ -68,6 +68,7 @@ async def measure(
     done: list[int] = []
     errors: list[str] = []
     each = max(1, in_flight // streams)
+    # All the work started is counted, and all of its time, so more batches in flight at the end cost nothing.
     stop_at = time.monotonic() + seconds
     started = time.monotonic()
     await asyncio.gather(
@@ -101,11 +102,10 @@ async def throughput(args: argparse.Namespace) -> dict:
 def neutrality(rows: list[dict]) -> dict:
     """More hotkeys on the same GPUs earning more than one is the failure this test exists to find."""
     base = rows[0]["chars_per_second"]
-    spread = [row["chars_per_second"] / base - 1.0 for row in rows] if base else [0.0]
-    return {
-        "most_above_one_hotkey": max(spread),
-        "passes": max(spread) <= NEUTRAL_WITHIN,
-    }
+    if not base or any(row["errors"] for row in rows):
+        return {"most_above_one_hotkey": None, "passes": False}
+    above = max(row["chars_per_second"] / base - 1.0 for row in rows)
+    return {"most_above_one_hotkey": above, "passes": above <= NEUTRAL_WITHIN}
 
 
 async def compare(args: argparse.Namespace) -> dict:

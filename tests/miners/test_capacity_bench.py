@@ -48,12 +48,28 @@ async def test_more_hotkeys_on_one_gpu_measure_about_the_same():
     assert 0.7 < many["chars_per_second"] / one["chars_per_second"] < 1.3
 
 
+def row(chars_per_second: float, errors: int = 0) -> dict:
+    return {"chars_per_second": chars_per_second, "errors": errors}
+
+
 def test_the_verdict_fails_when_more_hotkeys_earn_more():
-    rows = [{"chars_per_second": 100.0}, {"chars_per_second": 101.0}]
-    assert bench.neutrality(rows)["passes"]
-    rows.append({"chars_per_second": 120.0})
-    verdict = bench.neutrality(rows)
+    assert bench.neutrality([row(100.0), row(101.0)])["passes"]
+    verdict = bench.neutrality([row(100.0), row(101.0), row(120.0)])
     assert not verdict["passes"] and verdict["most_above_one_hotkey"] > 0.19
+
+
+def test_the_verdict_fails_on_a_dead_server_or_any_errors():
+    assert not bench.neutrality([row(0.0), row(0.0)])["passes"]
+    assert not bench.neutrality([row(100.0), row(100.0, errors=1)])["passes"]
+
+
+async def test_many_hotkeys_on_a_neutral_gpu_do_not_read_low():
+    async with serving(gpu_server(2_000_000)) as url:
+        client = EmbeddingClient(url + "/v1/embeddings", MODEL, batch=8, in_flight=1)
+        one = await bench.measure(client, 1, 0.5, 8)
+        many = await bench.measure(client, 38, 0.5, 8)
+        await client.aclose()
+    assert many["chars_per_second"] / one["chars_per_second"] > 0.9
 
 
 async def test_compare_finds_identical_servers_identical(monkeypatch, tmp_path):

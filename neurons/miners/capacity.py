@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 
 import aiohttp
@@ -72,13 +73,19 @@ class CapacityTester:
     async def on_head(self, block: int) -> None:
         if block <= self.head and self.hashes:
             return
-        block_hash = await self.chain.block_hash(block)
-        earlier = await self.earlier_hashes(block)
-        self.hashes.append((block, block_hash))
+        # A stream under load can skip blocks, a test's among them.
+        first = block
+        if self.hashes:
+            first = max(self.head + 1, block - capacity.WINDOW_BLOCKS + 1)
+        test = None
+        for number in range(first, block + 1):
+            block_hash = await self.chain.block_hash(number)
+            earlier = await self.earlier_hashes(number)
+            self.hashes.append((number, block_hash))
+            test = capacity.test_at(number, block_hash, earlier) or test
         async with self.head_moved:
             self.head = block
             self.head_moved.notify_all()
-        test = capacity.test_at(block, block_hash, earlier)
         if test is not None and (self.sitting is None or self.sitting.done()):
             self.sitting = asyncio.create_task(self.sit(test))
 
@@ -102,9 +109,9 @@ class CapacityTester:
             if pausing:
                 self.embedder.pause()
             try:
-                raws = await self.embedded_until(
-                    test, test.deadline - self.settings.capacity_stop_blocks
-                )
+                # A commitment sent at the deadline block itself would come too late.
+                stop_blocks = max(1, self.settings.capacity_stop_blocks)
+                raws = await self.embedded_until(test, test.deadline - stop_blocks)
             finally:
                 if pausing:
                     self.embedder.resume()
@@ -158,12 +165,18 @@ class CapacityTester:
             asyncio.create_task(work())
             for _ in range(self.settings.capacity_in_flight * self.embedder.servers)
         ]
+        # Real tasks are held up meanwhile, so a stalled node or a stopping miner must end this too.
+        reached = asyncio.create_task(self.wait_for_head(stop_block))
+        stopped = asyncio.create_task(self.stopping.wait())
+        limit = (stop_block - test.block + 1) * capacity.SECONDS_PER_BLOCK
         try:
-            await self.wait_for_head(stop_block)
+            await asyncio.wait(
+                {reached, stopped}, timeout=limit, return_when=asyncio.FIRST_COMPLETED
+            )
         finally:
-            for worker in workers:
-                worker.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
+            for task in (reached, stopped, *workers):
+                task.cancel()
+            await asyncio.gather(reached, stopped, *workers, return_exceptions=True)
         raws: list[bytes] = []
         while len(raws) in done:
             raws.append(done[len(raws)])
@@ -171,13 +184,17 @@ class CapacityTester:
 
     async def wait_for_head(self, block: int) -> None:
         async with self.head_moved:
-            await self.head_moved.wait_for(
-                lambda: self.head >= block or self.stopping.is_set()
-            )
+            await self.head_moved.wait_for(lambda: self.head >= block)
 
     async def committed(self, test: capacity.Test, tag: bytes, root: bytes) -> bool:
         """Sends the commitment again if a new block does not show it, until the deadline; a busy pool drops calls."""
-        while self.head < test.deadline and not self.stopping.is_set():
+        blocks_left = test.deadline - self.head + 1
+        give_up = time.monotonic() + blocks_left * capacity.SECONDS_PER_BLOCK
+        while (
+            self.head < test.deadline
+            and not self.stopping.is_set()
+            and time.monotonic() < give_up
+        ):
             try:
                 await self.chain.commit(tag, root)
             except Exception as exc:
@@ -205,8 +222,15 @@ class CapacityTester:
     async def revealed(
         self, test, raws: list[bytes], levels, tree_root: bytes, count: int
     ) -> None:
+        blocks_left = test.reveal_by - self.head + 1
+        give_up = time.monotonic() + blocks_left * capacity.SECONDS_PER_BLOCK
         while await self.chain.finalized() < test.sample_block:
             if self.stopping.is_set():
+                return
+            if time.monotonic() > give_up:
+                log.warning(
+                    "capacity test %d: the chain stopped finalizing", test.block
+                )
                 return
             await asyncio.sleep(FINALITY_POLL_S)
         if await self.chain.block_hash(test.block) != test.seed:

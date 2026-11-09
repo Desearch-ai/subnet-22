@@ -22,6 +22,9 @@ CANDIDATE_ONE_IN = 240
 QUIET_BLOCKS = 60
 # Commitments count up to the deadline block: the test block plus this.
 WINDOW_BLOCKS = 6
+# The reference miner stops this many blocks before the deadline, leaving a block to send its commitment again.
+REFERENCE_STOP_BLOCKS = 2
+SECONDS_PER_BLOCK = 12
 # The block whose hash picks the samples comes this long after the deadline, so no commitment can follow from it.
 SAMPLE_AFTER_BLOCKS = 4
 REVEAL_BLOCKS = 25
@@ -30,7 +33,7 @@ MATCH_SIMILARITY = 0.999
 # Honest vectors sit about 1e-6 from the reference. Reported, not enforced, until real GPUs show where a tighter rule can stand.
 TIGHT_MEDIAN_GAP = 1e-5
 NORM_TOLERANCE = 0.01
-# Of a test's commitments, this share without a reveal means the fault was not theirs, and the test counts for nobody.
+# This share of the coldkeys that committed having no reveal means the fault was not theirs, and the test counts for nobody.
 VOID_MISSING_SHARE = 0.2
 
 DOMAIN = b"sn22-capacity-1:"
