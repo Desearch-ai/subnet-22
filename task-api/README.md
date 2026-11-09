@@ -377,6 +377,7 @@ subnet-22 bucket, temporary, emptied after a day, public
   log/uploads/          every completed upload with its reported counts, numbered and signed
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json
   embed/inputs/         the planner's input files, deleted once their vectors are published
+  capacity/             miners' capacity test reveals, see docs/capacity-test.md
 desearch-pages bucket
   changes/                every new, changed or removed page with its full record, naming the miner
                           that crawled it and the validator that checked it; numbered under seq/,
