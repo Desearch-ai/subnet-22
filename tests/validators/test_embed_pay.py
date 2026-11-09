@@ -143,3 +143,30 @@ def test_a_ledger_from_before_embed_uploads_were_logged_keeps_its_rows_as_crawl(
     ).fetchall() == [("e1", "embed", 1000), ("u0", "crawl", 0), ("u1", "crawl", 0)]
     assert reopened.db.execute("SELECT kind FROM checks").fetchall() == [("crawl",)]
     assert set(reopened.embed_paid(NOW)) == {"m"}
+
+
+def test_a_task_handed_to_another_miner_pays_only_its_latest_upload():
+    ledger = Ledger(":memory:")
+    first = embedded("first", "m", NOW - 2000, 1000)
+    again = embedded("again", "sibling", NOW - 1000, 1000)
+    other = embedded("other", "m", NOW - 500, 1000)
+    first["task_id"] = again["task_id"] = "voided-task"
+    ledger.add_uploads([first, again, other])
+    for miner, key in (("m", "other"), ("sibling", "again")):
+        ledger.record_check(
+            key,
+            miner,
+            NOW - 500,
+            "pass",
+            1000,
+            1000,
+            1000,
+            1000,
+            at=NOW - 10,
+            kind=EMBED,
+        )
+
+    paid = ledger.embed_paid(NOW)
+
+    assert paid["m"].amount == pytest.approx(1000), "the voided upload is not paid"
+    assert paid["sibling"].amount == pytest.approx(1000)
