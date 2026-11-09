@@ -232,6 +232,11 @@ given.
   about 350 bytes a page, at about 600 pages an input some 200 KB a task, or some 400 MB for a buffer of
   2,000.
 
+`GET /v1/overview?kind=embed` publishes it as `supply`: `mode` (`fixed`, or `as_planned` with no rate),
+`target_tasks_per_hour`, `tasks_per_hour` (the rate now), `max_change_per_hour`, `buffer_tasks`,
+`buffer_minutes`, `ready_tasks`, and `scheduled` (`tasks_per_hour`, `from`, `reached_by`) when a change is
+set or under way.
+
 The planner keeps its place in the log and the version of every page it planned in RocksDB under
 `PLANNER_DIR`, reads the same bucket settings as the publisher, and is configured with:
 
@@ -340,7 +345,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal; with a fixed rate, this is what makes room for the buffer |
 | `TASK_API_EMBED_RELEASE_PER_HOUR` | 0 | embed tasks released an hour however fast the planner hands inputs over, the rest waiting as a buffer; 0 leaves release to `TASK_API_RELEASE_SPREAD_S` alone |
-| `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it |
+| `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it, published in `GET /v1/overview?kind=embed` ahead of that |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |

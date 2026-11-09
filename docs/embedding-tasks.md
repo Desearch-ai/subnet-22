@@ -29,6 +29,34 @@ section's heading. A task may hold page texts alone.
 A task holds the texts of up to 1,000 pages and 3 million characters. Upload its vectors within
 5 minutes of claiming it.
 
+## How much work to expect
+
+Embed tasks can be released at a fixed rate, whatever the planner hands over, so you can size your GPUs
+for a number rather than for a peak. `GET /v1/overview?kind=embed` publishes it under `supply`:
+
+```json
+{
+  "mode": "fixed",
+  "target_tasks_per_hour": 3300,
+  "tasks_per_hour": 3300.0,
+  "max_change_per_hour": 0.1,
+  "buffer_tasks": 1650,
+  "buffer_minutes": 30.0,
+  "ready_tasks": 2,
+  "scheduled": {"tasks_per_hour": 3600, "from": 1794300000.0, "reached_by": 1794303100.0}
+}
+```
+
+- `tasks_per_hour` is the rate now, across all miners. It moves toward a new target by about a tenth an
+  hour, so you have hours to add or drop capacity, and `scheduled` says when a change starts and when it
+  will be reached; it is `null` when none is due.
+- `buffer_minutes` is how long the rate holds if no new work comes in. Once it reaches 0, tasks come only
+  as fast as they are made.
+- `mode` is `as_planned` while no rate is set: tasks then come as they are made, and only `mode` is given.
+
+Tasks hold about 1,300 texts and 2 million characters on average, though that varies with what is being
+embedded; the public stats (`/v1/stats/series?kind=embed`) show what they have held lately.
+
 ## How it is checked
 
 When you complete a task, its file must hold exactly one vector per text. A file of any other size

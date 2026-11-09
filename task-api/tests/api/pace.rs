@@ -143,6 +143,7 @@ async fn until_a_rate_is_set_rounds_are_released_as_before_and_hold_both_lanes()
     let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round");
     assert_eq!(round.batches.len(), 2, "one round for both lanes, as before");
     assert!(round.batches.iter().all(|batch| !batch.extra.contains_key("lane")));
+    assert_eq!(h.public("/v1/overview?kind=embed").await.1["supply"], json!({"mode": "as_planned"}));
 }
 
 fn paced(per_hour: f64) -> impl FnOnce(&mut task_api::settings::Settings) {
@@ -200,6 +201,29 @@ async fn a_fresh_input_goes_ahead_of_the_buffer_within_the_rate_in_a_round_of_it
     assert_eq!(first["round_id"], json!(round.round_id), "the fresh task is the next one released, however many wait");
     let (held, ready) = h.state.embed.held_and_ready(&h.redis).await.unwrap();
     assert_eq!((held, ready), (4, 0), "and it took a place in the rate like any other");
+}
+
+#[tokio::test]
+async fn the_overview_publishes_the_rate_what_it_is_changing_to_and_the_buffer() {
+    let later = now() + 86_400.0;
+    let h = Harness::with(move |s| {
+        paced(3000.0)(s);
+        s.embed_release_next = Some((3300.0, later));
+    })
+    .await;
+    embed_rounds(&h, inputs(3)).await;
+    h.state.embed.release_paced(&h.redis, now(), 3000.0, AT_ONCE).await.unwrap();
+    let supply = h.public("/v1/overview?kind=embed").await.1["supply"].clone();
+    assert_eq!(supply["mode"], "fixed");
+    assert_eq!((supply["target_tasks_per_hour"].clone(), supply["tasks_per_hour"].clone()), (json!(3000.0), json!(3000.0)));
+    assert_eq!(supply["max_change_per_hour"], 0.1);
+    assert_eq!((supply["buffer_tasks"].clone(), supply["ready_tasks"].clone()), (json!(3), json!(0)));
+    assert_eq!(supply["buffer_minutes"], 0.1, "three tasks at 3000 an hour");
+    assert_eq!((supply["scheduled"]["tasks_per_hour"].clone(), supply["scheduled"]["from"].clone()), (json!(3300.0), json!(later)));
+    let ramp = supply["scheduled"]["reached_by"].as_f64().unwrap() - later;
+    assert!((3400.0..3500.0).contains(&ramp), "a tenth an hour takes an hour less a bit: {ramp}");
+    assert_eq!(h.public("/v1/overview?kind=crawl").await.1["supply"], Value::Null, "crawl makes no such promise");
+    assert_eq!(h.state.settings.embed_release_target(later), Some(3300.0), "the target changes when it said it would");
 }
 
 #[tokio::test]
