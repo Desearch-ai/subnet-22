@@ -55,14 +55,19 @@ class TaskWorker:
     """Claims one kind of task and runs up to max_tasks of them at once."""
 
     kind = ""
+    # Seconds the API client allows a call, here a claim that may wait.
+    api_timeout = 30.0
 
     def __init__(self, settings: Settings, api: TaskApiClient | None = None):
         self.settings = settings
-        self.api = api or TaskApiClient(settings.task_api_url, settings.keypair())
+        self.api = api or TaskApiClient(
+            settings.task_api_url, settings.keypair(), self.api_timeout
+        )
         self.upload_http: aiohttp.ClientSession | None = None
         self.stopping = asyncio.Event()
         self.in_flight: set[asyncio.Task] = set()
         self.idle_polls = 0
+        self.claiming = False
 
     def stop(self) -> None:
         if self.stopping.is_set():
@@ -87,8 +92,17 @@ class TaskWorker:
                     )
                     continue
 
+                polling = asyncio.create_task(self.poll())
+                await asyncio.wait(
+                    {stopped, polling}, return_when=asyncio.FIRST_COMPLETED
+                )
+                # A claim still waiting is let go at once: the API gives back any task it was just drawing.
+                if not polling.done() and self.claiming:
+                    polling.cancel()
                 try:
-                    delay = await self.poll()
+                    delay = await polling
+                except asyncio.CancelledError:
+                    break
                 except Exception:
                     log.exception("claim poll failed")
                     delay = ERROR_BACKOFF
@@ -106,11 +120,14 @@ class TaskWorker:
             await self.aclose()
 
     async def poll(self) -> float:
+        self.claiming = True
         try:
             answer = await self.api.post("/v1/tasks/claim", self.claim_body())
         except TaskApiError as exc:
             log.warning("claim failed: %s", exc)
             return ERROR_BACKOFF
+        finally:
+            self.claiming = False
         receipts = answer.get("receipts") or [answer.get("receipt")]
         if self.settings.receipts_file:
             for receipt in filter(None, receipts):

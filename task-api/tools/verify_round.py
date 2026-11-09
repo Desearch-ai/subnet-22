@@ -22,7 +22,12 @@ RECEIPT_FIELDS = (
     "refusal",
     "cause",
     "block",
+    "waited_from",
 )
+# A place whose miner has not asked again may be passed for this long before it is let go.
+LINE_KEEP_S = 30.0
+# Time for a claim that was passed to be answered once its miner asks again.
+LINE_SLACK_S = 10.0
 
 
 def canonical_json(value) -> bytes:
@@ -104,6 +109,7 @@ def verify(
     receipts: list[dict] | None = None,
     received: dict[str, list[str]] | None = None,
     signer: str | None = None,
+    line_keep: float = LINE_KEEP_S,
 ) -> bool:
     round_ = get(api, f"/v1/rounds/{round_id}")
     log = get(api, f"/v1/rounds/{round_id}/log")
@@ -146,6 +152,11 @@ def verify(
     ok &= check(
         "batches were handed out in exactly the published order",
         *_replay(manifest, expected, log["entries"]),
+    )
+
+    ok &= check(
+        "no miner waiting in line was passed for longer than its place lasts",
+        *_line_order(log["entries"], line_keep),
     )
 
     root = merkle_root([canonical_json(line) for line in log["entries"]])
@@ -249,6 +260,12 @@ def _replay(
     entries = sorted(entries, key=lambda e: e.get("seq", 0))
     rank = {batch_id: i for i, batch_id in enumerate(order)}
     queued = list(order)
+    # Taken from the queue for a miner who was never told of it, Redis lost as the API answered say: out of the queue, with perhaps no line to show for it, until the API signs that it went back.
+    untold = {
+        line.get("task_id"): line.get("seq", 0)
+        for line in entries
+        if line["outcome"] == "reclaimed" and line.get("cause") == "never_issued"
+    }
     holders: dict[str, set[str]] = defaultdict(set)
     issues = reclaims = 0
 
@@ -256,7 +273,16 @@ def _replay(
         task_id = line.get("task_id")
         if line["outcome"] == "issued":
             hotkey = line.get("hotkey", "")
-            due = next((b for b in queued if hotkey not in holders[b]), None)
+            seq = line.get("seq", 0)
+            due = next(
+                (
+                    b
+                    for b in queued
+                    if hotkey not in holders[b]
+                    and (b == task_id or untold.get(b, -1) < seq)
+                ),
+                None,
+            )
             if due is None:
                 return (
                     False,
@@ -273,6 +299,10 @@ def _replay(
         elif line["outcome"] == "dropped" and task_id in queued:
             # Dropped as a claim drew it: its input expired or miners handed it back too often.
             queued.remove(task_id)
+        elif line["outcome"] == "reclaimed" and task_id in queued:
+            # Taken for this miner with nothing to show for it, and it counts as having held it.
+            if line.get("cause") == "never_issued":
+                holders[task_id].add(line.get("hotkey", ""))
         elif line["outcome"] == "reclaimed" and task_id:
             place = next(
                 (i for i, b in enumerate(queued) if rank[b] > rank[task_id]),
@@ -282,7 +312,33 @@ def _replay(
             reclaims += 1
     return (
         True,
-        f"{issues} issues in exact serve order, {reclaims} returned to the queue",
+        f"{issues} issues in exact serve order, {reclaims} returned to the queue, "
+        f"{len(untold)} signed as taken for a miner never told of them",
+    )
+
+
+def _line_order(entries: list[dict], keep_s: float = LINE_KEEP_S) -> tuple[bool, str]:
+    """A later place may be given a task while an earlier one waits, when that one has not asked yet or a task it was due went nowhere; then the earlier one is served with the next tasks there are, however long they take to come. Later places served well apart before that are what no honest line does."""
+    issued = sorted(
+        (line for line in entries if line.get("waited_from") is not None),
+        key=lambda line: line.get("seq", 0),
+    )
+    worst = 0.0
+    for at, line in enumerate(issued):
+        passed_at = [
+            before["served_at"]
+            for before in issued[:at]
+            if before["waited_from"] > line["waited_from"]
+            and before["served_at"] < line["served_at"] - LINE_SLACK_S
+        ]
+        if passed_at:
+            worst = max(worst, max(passed_at) - min(passed_at))
+    if worst > keep_s + LINE_SLACK_S:
+        return False, f"a miner was passed for {worst:.1f}s, over the {keep_s:.0f}s a place lasts"
+    outside = sum(1 for line in entries if line.get("outcome") == "issued") - len(issued)
+    return True, (
+        f"{len(issued)} tasks given from the line, {outside} outside it, "
+        f"passed for {worst:.1f}s at most"
     )
 
 
@@ -311,6 +367,12 @@ def main() -> int:
         help="file of {task_id: [urls]} you were given, to check they match the commitment",
     )
     parser.add_argument(
+        "--line-keep",
+        type=float,
+        default=LINE_KEEP_S,
+        help="seconds a place in line lasts, where TASK_API_EMBED_LINE_KEEP_S is not the default",
+    )
+    parser.add_argument(
         "--receipts",
         help="file of receipts you kept, one JSON object per line as the miner writes them",
     )
@@ -325,7 +387,11 @@ def main() -> int:
         else None
     )
     batches = json.loads(Path(args.batches).read_text()) if args.batches else None
-    return 0 if verify(args.api, args.round, receipts, batches, args.signer) else 1
+    return (
+        0
+        if verify(args.api, args.round, receipts, batches, args.signer, args.line_keep)
+        else 1
+    )
 
 
 if __name__ == "__main__":

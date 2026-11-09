@@ -30,6 +30,10 @@ const SLOW_INSIDE_S: f64 = 5.0;
 /// Requests signed this long before they arrived are counted too: they were slow on the way here.
 const LATE_ARRIVAL_S: f64 = 10.0;
 
+/// Time a request spent waiting on purpose, a claim waiting in line, which does not make it slow.
+#[derive(Clone, Copy)]
+pub struct Waited(pub std::time::Duration);
+
 pub enum ApiError {
     Status {
         status: u16,
@@ -215,7 +219,7 @@ async fn time_requests(request: Request, next: Next) -> Response {
     let route = format!("{} {route}", request.method());
     let signed = request.headers().get("X-Timestamp").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok());
     let response = next.run(request).await;
-    let took = started.elapsed().as_secs_f64();
+    let took = started.elapsed().saturating_sub(response.extensions().get::<Waited>().map_or(std::time::Duration::ZERO, |waited| waited.0)).as_secs_f64();
     let mut minute = MINUTE.lock().expect("request minute");
     let now = (desearch::time::now() / 60.0) as i64;
     if minute.at != now {

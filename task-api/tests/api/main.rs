@@ -6,6 +6,7 @@ mod embed;
 mod fakechain;
 mod harness;
 mod limits;
+mod line;
 mod load;
 mod logs;
 mod overlap;

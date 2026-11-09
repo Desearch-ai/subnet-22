@@ -19,8 +19,9 @@ use serde_json::{json, Map, Value};
 use crate::auth::{self, client_address, Caller};
 use crate::budgets::{self, CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET};
 use crate::embedding::{self, VECTORS_SUFFIX, VECTORS_TYPE};
-use crate::http::{json_body, unavailable, Answer, ApiError, Query, CLAIM_PATH};
+use crate::http::{json_body, unavailable, Answer, ApiError, Query, Waited, CLAIM_PATH};
 use crate::lifecycle::{self, kind_of, signed_manifest, text, EMBED_FIELDS};
+use crate::line::{Waiting, LINE_POLL_S, MAX_WAIT_S, STILL_THERE};
 use crate::manifest::REVEAL_AFTER_BLOCKS;
 use crate::models::{self, ClaimBody, CompleteBody, Enqueue};
 use crate::py::round_to;
@@ -120,14 +121,17 @@ async fn validator(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiErro
 
 pub async fn claim(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Response {
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
-    match claim_tasks(&state, &signed).await {
+    let mut waited = Duration::ZERO;
+    let mut answer = match claim_tasks(&state, &signed, &mut waited).await {
         Ok(answer) => answer.into_response(),
         Err(ApiError::Unavailable) => unavailable(CLAIM_PATH),
         Err(error) => error.into_response(),
-    }
+    };
+    answer.extensions_mut().insert(Waited(waited));
+    answer
 }
 
-async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
+async fn claim_tasks(state: &Arc<State>, signed: &Signed<'_>, waited: &mut Duration) -> Answer {
     let mut steps = Steps::since(now());
     let who = signed.caller(state).await?;
     steps.mark("caller");
@@ -152,12 +156,10 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         return refused(state, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
     }
     let at = now();
-    let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
-    let locked = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await?;
+    let locked = locked_out(state, &who, kind).await?;
     steps.mark("lockout");
-    if let Some(until) = locked {
-        let inputs = json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)});
-        return refused(state, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
+    if let Some(locked) = locked {
+        return refused(state, &round_id, &who, locked).await;
     }
     // Stop leasing work whose upload would expire before validation.
     let validating = state.validation.oldest_age(&state.redis, at).await?.max(state.validation.oldest_seeding_age(&state.redis, at).await?);
@@ -179,68 +181,220 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
     };
     steps.mark("budget");
+    let in_line = kind == EMBED && state.settings.embed_line;
+    let mut waiting = (in_line && body.wait_s > 0.0).then(|| state.waiters.wait(&who.hotkey, state.redis.clone()));
+    let wait_s = body.wait_s.min(MAX_WAIT_S);
+    let ask = Ask { who: who.clone(), kind, budget, count: body.count, in_line };
+    let answer = serve(state, &round_id, ask, waiting.as_ref(), Instant::now() + Duration::from_secs_f64(wait_s), steps, waited).await;
+    if let Some(waiting) = waiting.as_mut() {
+        waiting.answered();
+    }
+    answer
+}
+
+/// What a claim asks for.
+#[derive(Clone)]
+struct Ask {
+    who: Caller,
+    kind: &'static str,
+    budget: i64,
+    count: i64,
+    in_line: bool,
+}
+
+/// What one draw from the queue came to.
+enum Drawn {
+    Refused(Refusal),
+    /// Every task drawn was dropped at no cost to the miner, so it may draw again.
+    AllDropped,
+    Given {
+        tasks: Vec<Value>,
+        receipts: Vec<Value>,
+    },
+}
+
+/// Draws until there are tasks, or a refusal, waiting for its turn where the claim asks to.
+async fn serve(
+    state: &Arc<State>,
+    round_id: &str,
+    ask: Ask,
+    waiting: Option<&Waiting<'_>>,
+    wait_until: Instant,
+    steps: Steps,
+    waited: &mut Duration,
+) -> Answer {
+    let who = ask.who.clone();
+    let mut steps = Some(steps);
+    // A draw that was all dropped tasks leaves the miner nothing, so it draws again rather than wait out a refusal.
+    let mut draws = 0;
+    while draws < CLAIM_DRAWS {
+        // On its own task, so a miner gone at this moment cannot leave a claim half made: taken from the queue, with no receipt.
+        let (send, drawn) = tokio::sync::oneshot::channel();
+        let drawing = draw(state.clone(), ask.clone(), steps.take().unwrap_or_else(|| Steps::since(now())));
+        let (owner, asked) = (state.clone(), ask.clone());
+        detach(state, async move {
+            if let Err(Ok(Drawn::Given { tasks, .. })) = send.send(drawing.await) {
+                if let Err(error) = give_back(&owner, &asked.who, asked.kind, &tasks, "client_gone").await {
+                    eprintln!("could not give back the tasks of {}, gone before its answer: {error:#}", asked.who.hotkey);
+                }
+            }
+        });
+        let drawn = drawn.await.map_err(|_| anyhow::anyhow!("a draw from the queue stopped before it answered"))??;
+        match drawn {
+            Drawn::Given { tasks, receipts } => return Ok(Json(json!({"tasks": tasks, "receipts": receipts}))),
+            Drawn::AllDropped => {
+                // In line the next draw says where the place stands, so it ends by itself.
+                draws += usize::from(!ask.in_line);
+            }
+            Drawn::Refused(mut refusal) => {
+                if !ask.in_line || refusal.code != "QUEUE_EMPTY" {
+                    return refused(state, round_id, &who, refusal).await;
+                }
+                let Some(waiting) = waiting else {
+                    refusal.inputs.insert("retry_after".into(), LINE_POLL_S.into());
+                    return refused(state, round_id, &who, refusal).await;
+                };
+                let left = wait_until.saturating_duration_since(Instant::now());
+                if left.is_zero() || state.draining.load(Ordering::Relaxed) {
+                    // The place lasts only while the miner asks, so it asks again at once.
+                    refusal.inputs.insert("retry_after".into(), 0.into());
+                    return refused(state, round_id, &who, refusal).await;
+                }
+                let started = Instant::now();
+                // A wake-up lost to a race costs no more than this.
+                let _ = tokio::time::timeout(left.min(STILL_THERE), waiting.woken.notified()).await;
+                *waited += started.elapsed();
+                if let Some(locked) = locked_out(state, &who, ask.kind).await? {
+                    return refused(state, round_id, &who, locked).await;
+                }
+            }
+        }
+    }
+    let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": state.tasks(ask.kind).depth(&state.redis).await?}));
+    refused(state, round_id, &who, refusal).await
+}
+
+/// One draw, from taking tasks off the queue to their receipts in the log and their clocks started.
+async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, ApiError> {
+    let Ask { who, kind, budget, count, in_line } = ask;
     let tasks = state.tasks(kind);
+    let limit = WAITING_PER_BUDGET * budget;
+    let drawing = if in_line {
+        let (keep, places) = (state.settings.embed_line_keep, state.settings.embed_line_places);
+        tasks.claim_in_line(&state.redis, &who.hotkey, budget, limit, count, now(), keep, places).await?
+    } else {
+        tasks.claim(&state.redis, &who.hotkey, budget, limit, count, now()).await?
+    };
+    let claims = match drawing {
+        Ok(claims) => claims,
+        Err(refusal) => return Ok(Drawn::Refused(refusal)),
+    };
+    steps.mark("queue");
     let mut issued = Vec::new();
     let mut receipts = Vec::new();
     let mut dropped = 0;
-    // A draw that was all dropped tasks leaves the miner nothing, so it draws again rather than wait out a refusal.
-    for _ in 0..CLAIM_DRAWS {
-        let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
-            Ok(claims) => claims,
-            Err(refusal) => return refused(state, &round_id, &who, refusal).await,
-        };
-        steps.mark("queue");
-        let drawn = claims.len();
-        let mut dropped_now = 0;
-        for got in claims {
-            if kind == EMBED {
-                let handbacks = queues::handbacks(&state.redis, &got.task_id).await?;
-                if let Some(cause) = lifecycle::spent(&state.settings, &got.payload, handbacks, now()) {
-                    lifecycle::drop_claimed(state, &got.task_id, &got.payload, &who.hotkey, cause, got.seq).await?;
-                    dropped_now += 1;
-                    continue;
+    for got in claims {
+        if kind == EMBED {
+            let handbacks = queues::handbacks(&state.redis, &got.task_id).await?;
+            if let Some(cause) = lifecycle::spent(&state.settings, &got.payload, handbacks, now()) {
+                lifecycle::drop_claimed(&state, &got.task_id, &got.payload, &who.hotkey, cause, got.seq).await?;
+                dropped += 1;
+                // A task that was never going anywhere costs no one their turn.
+                if let Some(since) = got.waited_from {
+                    tasks.keep_place(&state.redis, &who.hotkey, since, now(), state.settings.embed_line_keep).await?;
                 }
-            }
-            if let Some(task) = issue(state, &got, kind, &who).await? {
-                receipts.push(Receipt {
-                    round_id: text(&task, "round_id").into(),
-                    hotkey: who.hotkey.clone(),
-                    requested_at: who.requested_at,
-                    outcome: "issued",
-                    seq: got.seq,
-                    task_id: Some(got.task_id.clone()),
-                    ..Receipt::default()
-                });
-                issued.push(task);
+                continue;
             }
         }
-        dropped += dropped_now;
-        if dropped_now < drawn {
-            break;
+        if let Some(task) = issue(&state, &got, kind, &who).await? {
+            receipts.push(Receipt {
+                round_id: text(&task, "round_id").into(),
+                hotkey: who.hotkey.clone(),
+                requested_at: who.requested_at,
+                outcome: "issued",
+                seq: got.seq,
+                task_id: Some(got.task_id.clone()),
+                waited_from: got.waited_from.map(|at| round_to(at, 3)),
+                ..Receipt::default()
+            });
+            issued.push(task);
         }
-    }
-    if issued.is_empty() && dropped > 0 {
-        let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
-        return refused(state, &round_id, &who, refusal).await;
     }
     if issued.is_empty() {
-        return Err(ApiError::status(503, "upload signing is unavailable"));
+        return if dropped > 0 { Ok(Drawn::AllDropped) } else { Err(ApiError::status(503, "upload signing is unavailable")) };
     }
     steps.mark("issue");
     let receipts = state.record(receipts).await?;
     steps.mark("receipts");
     // The time spent signing and recording the claims is ours, not the miner's.
-    let task_ids: Vec<String> = issued.iter().map(|task| text(task, "task_id").to_string()).collect();
-    let expiry = tasks.start_clocks(&state.redis, &who.hotkey, &task_ids, now()).await?;
+    let told: Vec<(String, String)> = issued.iter().map(|task| told_mark(task, &who.hotkey)).collect();
+    let started = tasks.start_clocks(&state.redis, &who.hotkey, &told, now()).await;
+    let (expiry, held) = match started {
+        Ok(started) => started,
+        Err(error) => {
+            // Its answer may be all that was lost, leaving the claims marked as told of when the miner is told nothing.
+            if let Err(undoing) = give_back(&state, &who, kind, &issued, "never_issued").await {
+                eprintln!("could not give back the tasks of {}, whose clocks may not have started: {undoing:#}", who.hotkey);
+            }
+            return Err(error.into());
+        }
+    };
+    // A draw this slow may have seen its claim given back as never finished; the miner is not sent to work on what is no longer its own.
+    issued.retain(|task| held.iter().any(|task_id| task_id == text(task, "task_id")));
+    if issued.is_empty() {
+        return Ok(Drawn::AllDropped);
+    }
     steps.mark("clocks");
     if let Some(slow) = steps.slow() {
-        eprintln!("claiming {} tasks for {} took {slow}", task_ids.len(), who.hotkey);
+        eprintln!("claiming {} tasks for {} took {slow}", issued.len(), who.hotkey);
     }
     for task in &mut issued {
         task["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
         task["upload"]["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
     }
-    Ok(Json(json!({"tasks": issued, "receipts": receipts})))
+    Ok(Drawn::Given { tasks: issued, receipts })
+}
+
+/// What completing a claim checks it against: set only as the miner is about to be told of it.
+fn told_mark(task: &Value, hotkey: &str) -> (String, String) {
+    let key = text(&task["upload"], "key");
+    let mark = json!({"hotkey": hotkey, "key": key, "name": key.strip_prefix("uploads/").unwrap_or(key), "at": now()});
+    (text(task, "task_id").to_string(), mark.to_string())
+}
+
+/// Tasks whose miner cannot have been told of them go back in their place, at no cost to it or to anyone else. One that fails leaves the rest to go back.
+async fn give_back(state: &State, who: &Caller, kind: &str, tasks: &[Value], cause: &str) -> anyhow::Result<()> {
+    let mut outcome = Ok(());
+    for task in tasks {
+        let task_id = text(task, "task_id");
+        let back = async {
+            let Some(seq) = state.tasks(kind).take_back_untold(&state.redis, task_id, &who.hotkey).await? else { return Ok(()) };
+            state
+                .record_done(Receipt {
+                    round_id: text(task, "round_id").into(),
+                    hotkey: who.hotkey.clone(),
+                    requested_at: 0.0,
+                    outcome: "reclaimed",
+                    seq,
+                    task_id: Some(task_id.to_string()),
+                    cause: Some(cause.into()),
+                    ..Receipt::default()
+                })
+                .await
+        };
+        if let Err(error) = back.await {
+            outcome = Err(error);
+        }
+    }
+    outcome
+}
+
+/// The refusal for a miner locked out of this kind of task now.
+async fn locked_out(state: &State, who: &Caller, kind: &str) -> Result<Option<Refusal>, ApiError> {
+    let at = now();
+    let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
+    let locked = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await?;
+    Ok(locked.map(|until| Refusal::new("LOCKED_OUT", json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)}))))
 }
 
 async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {
@@ -284,15 +438,26 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
             }
             _ => {
                 eprintln!("could not presign the upload for {task_id}: its embed inputs are missing");
-                state.tasks(kind).abandon(&state.redis, task_id, &who.hotkey).await?;
+                // A hand-back like any other, so a task that can never be given out runs out of them and is dropped.
+                if let Some(seq) = state.tasks(kind).abandon(&state.redis, task_id, &who.hotkey).await? {
+                    state
+                        .record_done(Receipt {
+                            round_id: got.payload.get("round_id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| state.current_round(kind)),
+                            hotkey: who.hotkey.clone(),
+                            outcome: "reclaimed",
+                            seq,
+                            task_id: Some(task_id.clone()),
+                            cause: Some("never_issued".into()),
+                            ..Receipt::default()
+                        })
+                        .await?;
+                }
                 return Ok(None);
             }
         }
     } else {
         json!({})
     };
-    let issued = json!({"hotkey": who.hotkey, "key": upload_key, "name": name, "at": now()});
-    let _: () = state.redis.clone().set(format!("issued:{task_id}"), issued.to_string()).await?;
     let expires_at = got.expires_at - UPLOAD_GRACE_S;
     let round_id = got.payload.get("round_id").cloned().unwrap_or_else(|| state.current_round(kind).into());
     let mut task = Map::new();
@@ -506,7 +671,7 @@ pub async fn abandon(
     };
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
     state
-        .record_one(Receipt {
+        .record_done(Receipt {
             round_id,
             hotkey: who.hotkey.clone(),
             requested_at: who.requested_at,

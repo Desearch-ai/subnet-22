@@ -71,6 +71,12 @@ pub struct Settings {
     pub embed_checks_per_hour: f64,
     pub queue_target: i64,
     pub embed_queue_target: i64,
+    /// Embed claims wait in line: a released task goes to the place that has waited longest, and no one gets ahead by asking more often.
+    pub embed_line: bool,
+    /// Seconds a place in line lasts after its miner last asked.
+    pub embed_line_keep: f64,
+    /// Places one hotkey can hold in line at once, so one task at a turn at most for each.
+    pub embed_line_places: i64,
     /// Seconds after the planner wrote an embed input that its task is dropped at its next claim; inputs are kept a day.
     pub embed_input_max_age: f64,
     /// Seconds a revealed round's tasks are released over, one by one, so miners see a steady supply rather than whole rounds at once.
@@ -124,6 +130,23 @@ where
 
 pub(crate) fn listed(value: &str) -> Vec<String> {
     value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect()
+}
+
+/// The waiting line's settings; values that would refuse every claim or let departed miners stand in others' way stop the start.
+fn embed_line(on: &str, keep: f64, places: i64) -> Result<(bool, f64, i64)> {
+    let on = match on {
+        "0" => false,
+        "1" => true,
+        other => bail!("TASK_API_EMBED_LINE={other:?} must be 0 or 1"),
+    };
+    // Below this a polling miner, told to wait 5 s, could lose its place between polls.
+    if !(15.0..=600.0).contains(&keep) {
+        bail!("TASK_API_EMBED_LINE_KEEP_S={keep} must be from 15 to 600 seconds");
+    }
+    if !(1..=crate::models::MAX_CLAIM).contains(&places) {
+        bail!("TASK_API_EMBED_LINE_PLACES={places} must be from 1 to {}", crate::models::MAX_CLAIM);
+    }
+    Ok((on, keep, places))
 }
 
 /// The fixed rate and any change coming; a setting that would quietly do nothing, or publish nonsense to miners, stops the start.
@@ -181,6 +204,8 @@ impl Settings {
             _ => SeedsMode::Local { block_seconds: number("TASK_API_BLOCK_SECONDS", 12.0)?, genesis: number("TASK_API_GENESIS", 0.0)? },
         };
         let key_uri = text("TASK_API_KEY_URI", "");
+        let (embed_line, embed_line_keep, embed_line_places) =
+            embed_line(&text("TASK_API_EMBED_LINE", "0"), number("TASK_API_EMBED_LINE_KEEP_S", 30.0)?, number("TASK_API_EMBED_LINE_PLACES", 1)?)?;
         let (embed_release_per_hour, embed_release_next) = embed_release(
             number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,
             number("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR", 0.0)?,
@@ -218,6 +243,9 @@ impl Settings {
             embed_checks_per_hour: number("TASK_API_EMBED_CHECKS_PER_HOUR", EMBED_CHECKS_PER_HOUR)?,
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
+            embed_line,
+            embed_line_keep,
+            embed_line_places,
             embed_input_max_age: number("TASK_API_EMBED_INPUT_MAX_AGE_S", 72_000.0)?,
             release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
             embed_release_per_hour,
@@ -259,6 +287,17 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn line_settings_that_would_refuse_every_claim_or_block_others_stop_the_start() {
+        assert_eq!(embed_line("0", 30.0, 1).unwrap(), (false, 30.0, 1));
+        assert_eq!(embed_line("1", 60.0, 4).unwrap(), (true, 60.0, 4));
+        for (on, keep, places) in
+            [("true", 30.0, 1), ("1", f64::NAN, 1), ("1", f64::INFINITY, 1), ("1", -1.0, 1), ("1", 5.0, 1), ("1", 3600.0, 1), ("1", 30.0, 0), ("1", 30.0, 51)]
+        {
+            assert!(embed_line(on, keep, places).is_err(), "{on} {keep} {places}");
+        }
+    }
 
     #[test]
     fn a_fixed_rate_that_would_quietly_do_nothing_or_publish_nonsense_stops_the_start() {

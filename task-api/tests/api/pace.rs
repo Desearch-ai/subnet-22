@@ -370,7 +370,7 @@ async fn until_a_rate_is_set_rounds_are_released_as_before_and_hold_both_lanes()
     let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round");
     assert_eq!(round.batches.len(), 2, "one round for both lanes, as before");
     assert!(round.batches.iter().all(|batch| !batch.extra.contains_key("lane")));
-    assert_eq!(h.public("/v1/overview?kind=embed").await.1["supply"], json!({"mode": "as_planned"}));
+    assert_eq!(h.public("/v1/overview?kind=embed").await.1["supply"], json!({"mode": "as_planned", "waiting_line": false}));
 }
 
 fn paced(per_hour: f64) -> impl FnOnce(&mut task_api::settings::Settings) {
