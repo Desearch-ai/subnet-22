@@ -409,7 +409,7 @@ async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError
         return Ok(Value::Null);
     }
     let settings = &state.settings;
-    let Some(target) = settings.embed_release_target(at) else { return Ok(json!({"mode": "as_planned"})) };
+    let Some(target) = settings.embed_release_target(at) else { return Ok(json!({"mode": "as_planned", "waiting_line": settings.embed_line})) };
     let (held, ready) = state.embed.held_and_ready(&state.redis).await?;
     let kept: Vec<Option<String>> = redis::cmd("HMGET").arg(EMBED_PACE).arg("rate").arg("released").query_async(&mut state.redis.clone()).await?;
     let read = |at: usize| kept.get(at).and_then(Clone::clone).and_then(|value| value.parse::<f64>().ok());
@@ -430,6 +430,7 @@ async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError
         "buffer_minutes": round_to(held as f64 / rate * 60.0, 1),
         "ready_tasks": ready,
         "scheduled": scheduled,
+        "waiting_line": settings.embed_line,
     }))
 }
 

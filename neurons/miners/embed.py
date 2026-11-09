@@ -29,11 +29,15 @@ DOWNLOAD_ATTEMPTS = 3
 # Kept before the claim expires for the upload and the completion call.
 UPLOAD_MARGIN_S = 20.0
 SERVER_WAIT_S = 10.0
+# Where claims wait in line, how long to hold a place before asking again; well inside the API client's 30 s.
+CLAIM_WAIT_S = 20
 PACE_TASKS = 5
 
 
 class EmbedMiner(TaskWorker):
     kind = EMBED
+    # A lost answer to a claim is a lost task and a strike, so the wait comes on top of what a call may take.
+    api_timeout = CLAIM_WAIT_S + 30.0
 
     def __init__(self, settings: Settings, api=None, embedder=None):
         super().__init__(settings, api)
@@ -51,7 +55,11 @@ class EmbedMiner(TaskWorker):
         self.task_texts = 0
 
     def claim_body(self) -> dict:
-        return {**super().claim_body(), "models": [self.embedder.model.name]}
+        return {
+            **super().claim_body(),
+            "models": [self.embedder.model.name],
+            "wait_s": CLAIM_WAIT_S,
+        }
 
     def claimed(self, task: dict) -> None:
         self.ahead[task["task_id"]] = task.get("texts", 0)

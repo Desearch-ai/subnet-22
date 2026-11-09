@@ -17,6 +17,7 @@ use crate::budgets::{CRAWL, EMBED};
 use crate::chain::Chain;
 use crate::db::{Db, Reader};
 use crate::flow::PublishRate;
+use crate::line::Waiters;
 use crate::logs::Cache;
 use crate::py::{canonical, round_to};
 use crate::queues::{PublishQueue, TaskQueue, ValidationQueue};
@@ -85,6 +86,8 @@ pub struct State {
     pub draining: AtomicBool,
     /// Completions and reference calls running on after their caller may have stopped waiting.
     pub detached: AtomicUsize,
+    /// The claims waiting in line in this copy.
+    pub waiters: Waiters,
 }
 
 pub async fn redis_from(url: &str) -> Result<Redis> {
@@ -181,6 +184,7 @@ impl State {
             started_at: now(),
             draining: AtomicBool::new(false),
             detached: AtomicUsize::new(0),
+            waiters: Waiters::default(),
             settings,
         })
     }
@@ -257,6 +261,46 @@ impl State {
 
     pub async fn record_one(&self, receipt: Receipt) -> Result<Value> {
         Ok(self.record(vec![receipt]).await?.remove(0))
+    }
+
+    /// A line for what Redis has already done to a task. A round with such a line missing can never be verified, so one the log cannot take now waits in Redis.
+    pub async fn record_done(&self, receipt: Receipt) -> Result<()> {
+        let owed = json!({
+            "round_id": receipt.round_id,
+            "hotkey": receipt.hotkey,
+            "requested_at": receipt.requested_at,
+            "outcome": receipt.outcome,
+            "seq": receipt.seq,
+            "task_id": receipt.task_id,
+            "cause": receipt.cause,
+        });
+        if let Err(error) = self.record_one(receipt).await {
+            eprintln!("the log could not take {owed}, so it waits in Redis: {error:#}");
+            let _: i64 = self.redis.clone().rpush(crate::queues::LOG_OWED, owed.to_string()).await?;
+        }
+        Ok(())
+    }
+
+    /// Writes what the log could not take before, oldest first, until it refuses one.
+    pub async fn write_owed(&self) -> Result<()> {
+        let mut redis = self.redis.clone();
+        loop {
+            let owed: Option<String> = redis.lindex(crate::queues::LOG_OWED, 0).await?;
+            let Some(owed) = owed else { return Ok(()) };
+            let line: Value = serde_json::from_str(&owed)?;
+            self.record_one(Receipt {
+                round_id: line["round_id"].as_str().unwrap_or_default().into(),
+                hotkey: line["hotkey"].as_str().unwrap_or_default().into(),
+                requested_at: line["requested_at"].as_f64().unwrap_or(0.0),
+                outcome: if line["outcome"] == "dropped" { "dropped" } else { "reclaimed" },
+                seq: line["seq"].as_i64().unwrap_or(0),
+                task_id: line["task_id"].as_str().map(String::from),
+                cause: line["cause"].as_str().map(String::from),
+                ..Receipt::default()
+            })
+            .await?;
+            let _: Option<String> = redis.lpop(crate::queues::LOG_OWED, None).await?;
+        }
     }
 
     /// Seconds a hotkey polling past its rate waits, None while it is within it.

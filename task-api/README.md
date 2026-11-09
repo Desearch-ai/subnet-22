@@ -258,6 +258,55 @@ about the last ten minutes), `max_change_per_hour`, `buffer_tasks`,
 `buffer_minutes`, `ready_tasks`, and `scheduled` (`tasks_per_hour`, `from`, `reached_by`) when a change is
 set or under way.
 
+### Waiting line for embed tasks
+
+With `TASK_API_EMBED_LINE=1`, a released embed task goes to the place that has waited longest, so timing the
+claim API earns nothing.
+
+- **A place** is taken the first time a miner asks for a task with none ready for it, one a hotkey unless
+  `TASK_API_EMBED_LINE_PLACES` allows more, within its budget, and kept for `TASK_API_EMBED_LINE_KEEP_S` after it last
+  asked, or until a waiting claim's connection closes. Asking again keeps a place; it never moves it up. The edge moves
+  from timing to places: a hotkey with four places gets about four times the tasks while the line is long. A claim may take a task only while as many are ready as there are places
+  ahead of it, so asking more often gains nothing, and neither does holding a connection open. Budget, the
+  verdicts a miner waits for and every other refusal work as before, and a miner refused for capacity holds no
+  place. A miner at the front whose only ready tasks are ones it held before gives up its place to the next.
+- **`wait_s`** in a claim's body (20 s at most) holds the request until a task comes, and answers `QUEUE_EMPTY`
+  with `retry_after` 0 when it does not, as the place lasts only while the miner asks. `QUEUE_EMPTY` says how many
+  places are `ahead` and `in_line`.
+- **Polling miners** need no change. A poll is a claim with no wait: it takes a place, gets `retry_after` 5 and
+  gets a task on the poll that finds its place's turn has come. That turn holds one task back for up to 5 s
+  more, or `TASK_API_EMBED_LINE_KEEP_S` when the miner has gone. With a long line they get their share, about the
+  same as waiting miners at a task a second across 250 hotkeys; with a short line each poll's wait costs them turns. A
+  miner that polls less often than its place lasts starts again from the back each time.
+- **Signed requests** are checked as they arrive, so a wait does not run into the 60 s a signature is good for,
+  and the claim clock starts when the task is given, not when the request was signed. A receipt's `requested_at`
+  stays the time the request was signed; the wait is not counted as a slow request.
+- **The order** is signed: an `issued` receipt and log entry carry `waited_from`, when the place was taken. A
+  later place served before an earlier one means the earlier miner had not asked again yet, or that a task it was due
+  went nowhere, and the earlier place is then next however long the next task takes. So
+  `tools/verify_round.py` checks that no place was passed by later places for longer than a place lasts (`--line-keep`
+  where `TASK_API_EMBED_LINE_KEEP_S` is not the default), and `tools/verify_line.py`
+  checks the same over the last issues of every round from `/v1/events`.
+- **Load:** a waiting claim costs one open connection, one script when it joins and every 3 s after, and each
+  copy of the API makes one or two Redis reads every 100 ms however many wait. With every miner waiting 20 s at a time
+  that is fewer requests than the polling it replaces. Any proxy in front must allow a response to take over 20 s.
+- **Restarts and copies:** the line is in Redis, and every step on it one script, so any copy serves any place; a
+  copy going away answers its waiting claims, whose miners ask again elsewhere and keep their places.
+- **Switching on** needs every copy of the API on this build first. An older copy reads the log without
+  `waited_from`, so a round it anchors never verifies. Before going back to an older build, switch this off and wait
+  for the rounds served from the line to close. An older `verify_round.py` does not know `waited_from` and fails such
+  rounds.
+- **Rollback** is removing the setting: claims are served as before, a `wait_s` is ignored, and the places left in
+  Redis are let go the next time the line is used.
+- **Lost answers:** a draw runs to its receipts whatever becomes of the request, and a miner seen to be gone before its
+  answer has the task given back at no cost. A task given
+  to a connection that died silently is lost to that miner like any claim it never saw: the claim expires, with a
+  strike. A proxy that hides a client's disconnect widens that from milliseconds to the wait, so check the proxy before
+  switching this on.
+- **A line that stops:** tasks left standing for longer than a place lasts, by places whose miners have gone or by hotkeys
+  of one owner asking in turn, go to whoever asks next, one task for each such wait. A claim the API never finished
+  making goes back within about a minute, at no cost to its miner, the rate or the task's hand-backs.
+
 The planner keeps its place in the log and the version of every page it planned in RocksDB under
 `PLANNER_DIR`, reads the same bucket settings as the publisher, and is configured with:
 
@@ -368,6 +417,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal; with a fixed rate, this is what makes room for the buffer |
 | `TASK_API_EMBED_RELEASE_PER_HOUR` | 0 | embed tasks released an hour however fast the planner hands inputs over, the rest waiting as a buffer; 0 leaves release to `TASK_API_RELEASE_SPREAD_S` alone |
 | `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it, published in `GET /v1/overview?kind=embed` ahead of that |
+| `TASK_API_EMBED_LINE` | 0 | 1 makes embed claims wait in line ([waiting line](#waiting-line-for-embed-tasks)) |
+| `TASK_API_EMBED_LINE_KEEP_S` | 30 | seconds a place in line lasts after its miner last asked, from 15 to 600 |
+| `TASK_API_EMBED_LINE_PLACES` | 1 | places one hotkey can hold in line at once, up to 50: tasks follow places, so this decides how tasks split between hotkeys |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |

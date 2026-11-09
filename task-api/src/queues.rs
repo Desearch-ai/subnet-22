@@ -16,6 +16,8 @@ use crate::state::Redis;
 
 pub const QUEUE: &str = "queue:ready";
 pub const CLAIMS: &str = "claims:expiry";
+/// Log lines for what Redis has already done, while the log cannot take them.
+pub const LOG_OWED: &str = "log:owed";
 /// Uploads open for every validator to score, by completion time.
 pub const VOPEN: &str = "vjobs:open";
 /// Uploads waiting for their seed block, which decides whether validators check them.
@@ -52,6 +54,8 @@ pub const ROUND_SPAN: i64 = 10_000_000;
 pub const CLAIM_SCAN: i64 = 50;
 pub const OPEN_SCAN: isize = 500;
 pub const ACTIVE_S: f64 = 3600.0;
+/// Places one miner can hold in line at most, as many as a claim can ask for tasks.
+pub const LINE_SLOTS: i64 = crate::models::MAX_CLAIM;
 /// A miner that held the whole front of the queue is still served from further back.
 pub const CLAIM_SCAN_MAX: i64 = 1000;
 pub const HOLDERS_TTL_S: i64 = 7 * 86_400;
@@ -59,7 +63,8 @@ pub const KINDS: [&str; 2] = ["crawl", "embed"];
 /// Kept past any reveal, so lists a crash left behind still expire.
 pub const STAGED_TTL_S: u64 = 2 * 86_400;
 
-static CLAIM: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/claim.lua")));
+static CLAIM: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/claim.lua"), "return take(tonumber(ARGV[9]))")));
+static CLAIM_IN_LINE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/claim.lua"), include_str!("lua/line_claim.lua"))));
 static RECLAIM: LazyLock<Script> = LazyLock::new(|| {
     Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/reclaim.lua"), include_str!("lua/requeue.lua"), "return {holder, seq}"))
 });
@@ -69,6 +74,19 @@ static DISCARD: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_
 static COMPLETE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/complete.lua"))));
 static START: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/start.lua")));
 static RESTORE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/restore.lua")));
+static KEEP_PLACE: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r"for slot = 0, tonumber(ARGV[4]) - 1 do
+  local place = ARGV[1] .. ':' .. slot
+  if not redis.call('ZSCORE', KEYS[1], place) then
+    redis.call('ZADD', KEYS[1], ARGV[2], place)
+    redis.call('ZADD', KEYS[2], ARGV[3], place)
+    return 1
+  end
+end
+return 0",
+    )
+});
 static RELEASE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/release.lua")));
 static RELEASE_PACED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/release_paced.lua")));
 static VOPEN_PICKED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_picked.lua")));
@@ -80,6 +98,21 @@ static PRETURN: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lu
 /// The tasks of a round not finished yet; it closes once none are left.
 pub fn open_round_key(round_id: &str) -> String {
     format!("round:{round_id}:open")
+}
+
+/// Places in line by when each was taken, each `<hotkey>:<slot>`.
+pub fn line_key(kind: &str) -> String {
+    format!("line:{kind}")
+}
+
+/// When the line last moved while tasks stood ready.
+pub fn line_since_key(kind: &str) -> String {
+    format!("line:{kind}:since")
+}
+
+/// Places in line by when each is let go, unless its miner asks again.
+pub fn line_alive_key(kind: &str) -> String {
+    format!("line:{kind}:alive")
 }
 
 pub fn ready_key(kind: &str) -> String {
@@ -180,6 +213,8 @@ pub struct Claim {
     pub payload: Value,
     pub expires_at: f64,
     pub seq: i64,
+    /// When the place in line it was given to was taken.
+    pub waited_from: Option<f64>,
 }
 
 /// Why a claim found no task for this miner.
@@ -313,21 +348,95 @@ impl TaskQueue {
                     payload: parsed(text(&claim[1])).unwrap_or(Value::Null),
                     expires_at: now + self.claim_ttl,
                     seq: int(&claim[2]).unwrap_or(0),
+                    waited_from: None,
+                })
+                .collect()),
+        })
+    }
+
+    /// A place given back as it was when the task drawn for it came to nothing.
+    pub async fn keep_place(&self, redis: &Redis, hotkey: &str, since: f64, now: f64, keep: f64) -> Result<()> {
+        let _: i64 = KEEP_PLACE
+            .key(line_key(self.kind))
+            .key(line_alive_key(self.kind))
+            .arg(hotkey)
+            .arg(number(since))
+            .arg(number(now + keep))
+            .arg(LINE_SLOTS)
+            .invoke_async(&mut redis.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// As `claim`, within what the miner's places in line allow: one for each task it asks for, up to `places`, kept from the first time it asked, each given a task once as many are ready as there are places ahead of it. Asking again keeps a place for `keep` seconds more.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_in_line(
+        &self,
+        redis: &Redis,
+        hotkey: &str,
+        budget: i64,
+        waiting_limit: i64,
+        count: i64,
+        now: f64,
+        keep: f64,
+        places: i64,
+    ) -> Result<Result<Vec<Claim>, Refusal>> {
+        let mut redis = redis.clone();
+        let found: Vec<Reply> = CLAIM_IN_LINE
+            .key(&self.ready)
+            .key(CLAIMS)
+            .key(inflight_key(self.kind, hotkey))
+            .key(waiting_key(self.kind, hotkey))
+            .key(line_key(self.kind))
+            .key(line_alive_key(self.kind))
+            .key(line_since_key(self.kind))
+            .arg(hotkey)
+            .arg(number(self.claim_ttl))
+            .arg(number(now))
+            .arg(budget)
+            .arg(CLAIM_SCAN)
+            .arg(HOLDERS_TTL_S)
+            .arg(CLAIM_SCAN_MAX)
+            .arg(waiting_limit)
+            .arg(count)
+            .arg(number(keep))
+            .arg(LINE_SLOTS)
+            .arg(places)
+            .invoke_async(&mut redis)
+            .await?;
+        let status = found.first().and_then(text).unwrap_or_default();
+        let first = || found.get(1).and_then(int).unwrap_or(0);
+        Ok(match status.as_str() {
+            "full" => Err(Refusal::new("NO_CAPACITY", json!({"budget": budget, "in_flight": first()}))),
+            "waiting" => Err(Refusal::new("WAITING_FOR_VERDICTS", json!({"waiting": first(), "limit": waiting_limit}))),
+            "line" => {
+                let inputs = json!({"depth": self.depth(&redis).await?, "ahead": first(), "in_line": found.get(2).and_then(int).unwrap_or(0)});
+                Err(Refusal::new("QUEUE_EMPTY", inputs))
+            }
+            _ => Ok(found[1..]
+                .chunks(4)
+                .map(|claim| Claim {
+                    task_id: text(&claim[0]).unwrap_or_default(),
+                    payload: parsed(text(&claim[1])).unwrap_or(Value::Null),
+                    expires_at: now + self.claim_ttl,
+                    seq: int(&claim[2]).unwrap_or(0),
+                    waited_from: text(&claim[3]).and_then(|at| at.parse().ok()),
                 })
                 .collect()),
         })
     }
 
     /// The claims this hotkey still holds restart their clock now; returns the new expiry.
-    pub async fn start_clocks(&self, redis: &Redis, hotkey: &str, task_ids: &[String], now: f64) -> Result<f64> {
+    /// The claims still this miner's start their clocks and are marked as told of, together: until then a claim costs the miner nothing. Returns when they end and which they are.
+    pub async fn start_clocks(&self, redis: &Redis, hotkey: &str, told: &[(String, String)], now: f64) -> Result<(f64, Vec<String>)> {
         let expiry = now + self.claim_ttl;
         let mut invocation = START.key(CLAIMS);
         invocation.arg(hotkey).arg(number(expiry));
-        for task_id in task_ids {
-            invocation.arg(task_id);
+        for (task_id, mark) in told {
+            invocation.arg(task_id).arg(mark);
         }
-        let _: i64 = invocation.invoke_async(&mut redis.clone()).await?;
-        Ok(expiry)
+        let held: Vec<String> = invocation.invoke_async(&mut redis.clone()).await?;
+        Ok((expiry, held))
     }
 
     pub async fn complete(&self, redis: &Redis, task_id: &str, hotkey: &str, job: &Value, upload_key: &str, arrived: f64) -> Result<Option<i64>> {
@@ -349,6 +458,11 @@ impl TaskQueue {
         Ok(ABANDON.key(&self.ready).key(CLAIMS).arg(task_id).arg(hotkey).invoke_async(&mut redis.clone()).await?)
     }
 
+    /// A task back from a miner never told of it costs neither the rate nor one of its hand-backs, so closing a connection at the right moment burns neither.
+    pub async fn take_back_untold(&self, redis: &Redis, task_id: &str, hotkey: &str) -> Result<Option<i64>> {
+        Ok(ABANDON.key(&self.ready).key(CLAIMS).arg(task_id).arg(hotkey).arg("untold").invoke_async(&mut redis.clone()).await?)
+    }
+
     /// Takes a claimed task out of the queues for good; false when the claim is not the hotkey's.
     pub async fn discard(&self, redis: &Redis, task_id: &str, hotkey: &str) -> Result<bool> {
         let discarded: i64 = DISCARD.key(CLAIMS).arg(task_id).arg(hotkey).invoke_async(&mut redis.clone()).await?;
@@ -357,7 +471,16 @@ impl TaskQueue {
 
     /// The holder and log number of a claim taken back after its expiry, None if it was not due.
     pub async fn reclaim(&self, redis: &Redis, task_id: &str, now: f64) -> Result<Option<(String, i64)>> {
-        let found: Option<Vec<Reply>> = RECLAIM.key(&self.ready).key(CLAIMS).arg(task_id).arg(number(now)).invoke_async(&mut redis.clone()).await?;
+        self.reclaim_as(redis, task_id, now, "told").await
+    }
+
+    /// As `reclaim`, for a miner never told of the task: see `take_back_untold`.
+    pub async fn reclaim_untold(&self, redis: &Redis, task_id: &str, now: f64) -> Result<Option<(String, i64)>> {
+        self.reclaim_as(redis, task_id, now, "untold").await
+    }
+
+    async fn reclaim_as(&self, redis: &Redis, task_id: &str, now: f64, how: &str) -> Result<Option<(String, i64)>> {
+        let found: Option<Vec<Reply>> = RECLAIM.key(&self.ready).key(CLAIMS).arg(task_id).arg(number(now)).arg(how).invoke_async(&mut redis.clone()).await?;
         Ok(found.filter(|f| f.len() == 2).map(|f| (text(&f[0]).unwrap_or_default(), int(&f[1]).unwrap_or(0))))
     }
 
@@ -375,6 +498,20 @@ pub async fn handbacks(redis: &Redis, task_id: &str) -> Result<i64> {
 
 pub async fn claim_expiry(redis: &Redis, task_id: &str) -> Result<Option<f64>> {
     Ok(redis.clone().zscore(CLAIMS, task_id).await?)
+}
+
+/// Claims with no task issued for them, and when each one's clock runs out.
+pub async fn unissued_claims(redis: &Redis) -> Result<Vec<(String, f64)>> {
+    let claims: Vec<(String, f64)> = redis.clone().zrange_withscores(CLAIMS, 0, -1).await?;
+    if claims.is_empty() {
+        return Ok(claims);
+    }
+    let mut checking = redis::pipe();
+    for (task_id, _) in &claims {
+        checking.exists(format!("issued:{task_id}"));
+    }
+    let issued: Vec<bool> = checking.query_async(&mut redis.clone()).await?;
+    Ok(claims.into_iter().zip(issued).filter(|(_, issued)| !issued).map(|(claim, _)| claim).collect())
 }
 
 pub async fn expired_claims(redis: &Redis, now: f64) -> Result<Vec<String>> {

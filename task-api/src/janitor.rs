@@ -15,7 +15,7 @@ use crate::budgets::{self, hour_of, EMBED, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::{EMBED_PACE, KINDS};
 use crate::state::State;
-use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::{checks, hours, lifecycle, line, logs, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -44,6 +44,7 @@ const RELEASE_AT_ONCE: usize = 2_000;
 /// The same for embed tasks, whose page lists make each one slow to read in a script: a buffer let go all at once must not hold Redis up.
 const EMBED_RELEASE_AT_ONCE: usize = 200;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
+const UNISSUED_EVERY: Duration = Duration::from_secs(10);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
 const OPEN_LIST_EVERY: Duration = Duration::from_secs(5);
@@ -80,6 +81,7 @@ struct Due {
     kept_block_at: Option<Instant>,
     listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
+    unissued_at: Option<Instant>,
     /// A rate from when release was last held to one is forgotten, so going back to one starts at its target.
     pace_forgotten: bool,
 }
@@ -98,7 +100,14 @@ impl Duty {
 
     async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
         match self {
-            Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
+            Duty::Reclaim => {
+                state.write_owed().await?;
+                if elapsed(due.unissued_at, UNISSUED_EVERY) {
+                    due.unissued_at = Some(Instant::now());
+                    lifecycle::reclaim_unissued(state, now()).await?;
+                }
+                lifecycle::reclaim_expired(state, now()).await.map(drop)
+            }
             Duty::Settle => {
                 lifecycle::recheck_malformed(state).await?;
                 lifecycle::settle_seeded(state).await.map(drop)
@@ -217,6 +226,7 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
         duties.spawn(keep(duty, state.clone(), leading.clone(), stop.clone()));
     }
     let warming = tokio::spawn(keep_warm(state.clone(), stop.clone()));
+    let waking = tokio::spawn(line::keep_waking(state.clone(), stop.clone()));
     let mut stopping = stop.clone();
     while !*stopping.borrow() {
         let held = hold(&state, &holder).await;
@@ -237,6 +247,7 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
     leading.store(false, Ordering::Release);
     while duties.join_next().await.is_some() {}
     let _ = warming.await;
+    let _ = waking.await;
     if let Err(error) = release(&state, &holder).await {
         eprintln!("could not release the janitor lease: {error:#}");
     }

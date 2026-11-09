@@ -75,6 +75,7 @@ export interface Supply {
   tasks_per_hour?: number
   released_tasks_per_hour?: number
   buffer_minutes?: number
+  waiting_line?: boolean
 }
 
 export interface HourPoint extends VerdictCounts, ClaimCounts {

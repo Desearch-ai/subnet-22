@@ -220,6 +220,7 @@ fn build(dir: &Path, days: i64) -> Result<()> {
                 refusal,
                 cause: cause.map(String::from),
                 block: None,
+                waited_from: None,
             };
             roundlog::record(&tx, &receipt, &"ab".repeat(64), at)?;
         }

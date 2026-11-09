@@ -35,6 +35,8 @@ pub const EMBED_ROUND_INPUTS: isize = 200;
 const OPENED_TTL_S: u64 = 2 * 86_400;
 /// How far before its reveal a round of the fresh lane counts as due: further than any held task can have waited, an input being dropped within a day, so it goes ahead of all of them.
 const FRESH_AHEAD_S: f64 = 86_400.0;
+/// A claim with no task issued this long after it was made never will have: issuing takes moments.
+const UNISSUED_AFTER_S: f64 = 60.0;
 /// Rounds opened in one step at most while a fixed rate keeps the lanes apart.
 const EMBED_RUNS_A_STEP: usize = 64;
 const FRESH: &str = "fresh";
@@ -385,6 +387,8 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
 }
 
 pub async fn close_finished(state: &State) -> Result<Vec<String>> {
+    // A round is sealed with every line it has, so none may still be waiting to be written.
+    state.write_owed().await?;
     let mut closed = Vec::new();
     // Tasks a fixed rate holds back keep their rounds open, so the rounds are counted in one trip.
     let rounds = state.lookups.read(roundstore::open_revealed).await?;
@@ -436,23 +440,28 @@ pub async fn finish_task(state: &State, round_id: &str, task_id: &str) -> Result
 }
 
 pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, String)>> {
-    let mut reclaimed = Vec::new();
+    let mut lapsed_or_back = Vec::new();
     for task_id in queues::expired_claims(&state.redis, now).await? {
         let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
         let kind = kind_of(&payload).to_string();
         let tasks = state.tasks(&kind);
         let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
-        let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
+        // A claim the API never finished making, Redis lost as it answered say: its miner was never told of the task.
+        let told: bool = state.redis.clone().exists(format!("issued:{task_id}")).await?;
+        let reclaimed = if told { tasks.reclaim(&state.redis, &task_id, now).await? } else { tasks.reclaim_untold(&state.redis, &task_id, now).await? };
+        let Some((holder, seq)) = reclaimed else { continue };
         let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
         if !holder.is_empty() {
-            if !forgiven {
-                let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
-                state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", desearch::time::now())).await?;
-            }
             let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-            let cause = if forgiven { "restart" } else { "expired" };
+            let cause = if !told {
+                "never_issued"
+            } else if forgiven {
+                "restart"
+            } else {
+                "expired"
+            };
             state
-                .record_one(Receipt {
+                .record_done(Receipt {
                     round_id,
                     hotkey: holder.clone(),
                     requested_at: 0.0,
@@ -463,8 +472,43 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
                     ..Receipt::default()
                 })
                 .await?;
+            if !forgiven && told {
+                let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
+                state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", desearch::time::now())).await?;
+            }
         }
-        reclaimed.push((task_id, holder));
+        lapsed_or_back.push((task_id, holder));
+    }
+    Ok(lapsed_or_back)
+}
+
+/// Claims the API never finished making, Redis lost as it answered say: their miners were never told, so the tasks go back long before their clocks run out, at no cost to anyone.
+pub async fn reclaim_unissued(state: &State, now: f64) -> Result<Vec<String>> {
+    let mut reclaimed = Vec::new();
+    for (task_id, expiry) in queues::unissued_claims(&state.redis).await? {
+        let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
+        let kind = kind_of(&payload).to_string();
+        let tasks = state.tasks(&kind);
+        if now - (expiry - tasks.claim_ttl) < UNISSUED_AFTER_S {
+            continue;
+        }
+        let Some((holder, seq)) = tasks.reclaim_untold(&state.redis, &task_id, expiry).await? else { continue };
+        if !holder.is_empty() {
+            let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
+            state
+                .record_done(Receipt {
+                    round_id,
+                    hotkey: holder,
+                    requested_at: 0.0,
+                    outcome: "reclaimed",
+                    seq,
+                    task_id: Some(task_id.clone()),
+                    cause: Some("never_issued".into()),
+                    ..Receipt::default()
+                })
+                .await?;
+        }
+        reclaimed.push(task_id);
     }
     Ok(reclaimed)
 }
@@ -503,7 +547,7 @@ pub fn crashed_on_most(votes: &[Value]) -> bool {
 pub async fn drop_task(state: &State, task_id: &str, job: &Value, hotkey: &str, cause: &str, seq: i64) -> Result<()> {
     let round_id = text(job, "round_id").to_string();
     state
-        .record_one(Receipt {
+        .record_done(Receipt {
             round_id: round_id.clone(),
             hotkey: hotkey.into(),
             outcome: "dropped",
@@ -564,7 +608,7 @@ pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> 
     payload.insert("attempts".into(), attempts.into());
     let seq = state.tasks(&kind).restore(&state.redis, task_id, &Value::Object(payload)).await?;
     state
-        .record_one(Receipt {
+        .record_done(Receipt {
             round_id,
             hotkey: miner,
             outcome: "reclaimed",

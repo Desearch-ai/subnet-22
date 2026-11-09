@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 
+from desearch.client import TaskApiClient
 from desearch.embedding import (
     INPUT_SCHEMA,
     MODELS,
@@ -17,7 +18,7 @@ from desearch.embedding import (
     write_parquet,
 )
 from neurons.miners.config import Settings
-from neurons.miners.embed import EmbedMiner
+from neurons.miners.embed import CLAIM_WAIT_S, EmbedMiner
 from tests.local_http import serving
 
 MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", 4, 16)
@@ -167,7 +168,50 @@ def test_a_task_that_cannot_be_embedded_before_its_claim_expires_is_handed_back_
 def test_the_claim_names_the_model_the_miner_runs():
     miner = EmbedMiner(Settings(), api=Api(), embedder=Embedder())
 
-    assert miner.claim_body() == {"kind": "embed", "count": 1, "models": ["tiny"]}
+    assert miner.claim_body() == {
+        "kind": "embed",
+        "count": 1,
+        "models": ["tiny"],
+        "wait_s": CLAIM_WAIT_S,
+    }
+
+
+def test_a_claim_answered_after_its_wait_asks_again_at_once_and_one_answered_at_once_waits():
+    miner = EmbedMiner(Settings(), api=Api(), embedder=Embedder())
+
+    async def answer(refusal):
+        async def post(path, body=None):
+            return {"tasks": [], "refusal": refusal}
+
+        miner.api.post = post
+        return await miner.poll()
+
+    in_line = {"code": "QUEUE_EMPTY", "inputs": {"ahead": 3, "retry_after": 0}}
+    assert asyncio.run(answer(in_line)) == 0.05, "a place lasts only while it asks"
+    as_before = {"code": "QUEUE_EMPTY", "inputs": {"retry_after": 10.0}}
+    assert asyncio.run(answer(as_before)) == 10.0, "without a line it polls as told"
+
+
+def test_the_claim_wait_ends_before_the_client_gives_up():
+    assert EmbedMiner.api_timeout >= CLAIM_WAIT_S + 30
+    client = TaskApiClient("http://localhost", "//Alice", EmbedMiner.api_timeout)
+    assert client.timeout.total == EmbedMiner.api_timeout
+
+
+def test_stopping_lets_go_of_a_waiting_claim_at_once():
+    class Waiting(Api):
+        async def post(self, path, body=None):
+            await asyncio.sleep(30)
+            return {}
+
+    async def scenario():
+        miner = EmbedMiner(Settings(), api=Waiting(), embedder=Embedder())
+        running = asyncio.create_task(miner.run())
+        await asyncio.sleep(0.05)
+        miner.stop()
+        await asyncio.wait_for(running, 2)
+
+    asyncio.run(scenario())
 
 
 def test_the_default_model_is_the_published_desearch_model():
