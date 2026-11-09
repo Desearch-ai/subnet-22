@@ -365,6 +365,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         page_first: false,
         backfill: false,
         backfill_shards: 0..1024,
+        backfill_read_ahead: 1,
         backfill_every: Duration::from_secs(3600),
         backfill_retry: Duration::from_secs(600),
         current_prefix: "current/".into(),
@@ -3729,6 +3730,109 @@ async fn the_backfill_plans_the_passages_of_reference_pages_planned_page_first_o
     let inputs = inputs_texts(&mut redis, &on, &temp).await;
     assert!(inputs.iter().any(|texts| texts.len() == 40 && texts.iter().all(|text| text.starts_with("A title › Section "))), "passages alone, the page text planned before");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A planner whose backfill has one reference page, planned page first, in each of the first `shards` shards of `current/`, each shard's manifest answered `pick` late, as a shard whose rows take that long to pick.
+async fn sweep_of_slow_picks(name: &str, shards: usize, read_ahead: usize, pick: Duration, redis: &mut ConnectionManager) -> (Planner, PathBuf) {
+    let dir = scratch(name);
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let long = (0..8).map(|i| format!("## Section {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n");
+    let mut found: BTreeMap<usize, Record> = BTreeMap::new();
+    for n in 0.. {
+        let url = format!("https://britannica.example/topic/{n}");
+        let at = current::shard_of(&page_key(&url).unwrap()).unwrap();
+        if at < shards {
+            found.entry(at).or_insert_with(|| Record { domain: "britannica.example".into(), ..v2(record(&url, &long, "article", "en")) });
+        }
+        if found.len() == shards {
+            break;
+        }
+    }
+    log(&pages, 1, found.values().cloned().collect()).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "britannica.example", "rule": "whole", "type": "reference"}]}).to_string()).unwrap();
+    let lane = |passages_per_hour: f64, backfill: bool| {
+        let mut lane = settings(dir.join("state"), 3_600_000.0, 0);
+        (lane.set_file, lane.fresh, lane.budget_at_start, lane.page_first, lane.pages_per_input) =
+            (Some(set.clone()), None, Duration::from_secs(120), true, 100);
+        (lane.passage_texts_per_hour, lane.backfill, lane.backfill_shards, lane.backfill_read_ahead) = (passages_per_hour, backfill, 0..shards, read_ahead);
+        lane
+    };
+    let mut first = Planner::new(lane(0.0, false), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    first.pass().await.unwrap();
+    first.flush().await.unwrap();
+    assert_eq!(first.counts.page_only, shards as u64);
+    drop(first);
+    let () = redis::cmd("FLUSHDB").query_async(redis).await.unwrap();
+    for (at, record) in &found {
+        let row = PageRow {
+            key: page_key(&record.url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(record),
+            published_at: record.fetched_at.clone(),
+            record: record.clone(),
+        };
+        shard(&current, *at, vec![vec![row]]).await;
+        stub.state.slow("GET", &format!("desearch-current/current/shard={at:04}/manifest.json"), 1, pick);
+    }
+    let mut planner = Planner::new(lane(3_600_000.0, true), pages, temp, redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.current = Some(current);
+    (planner, dir)
+}
+
+/// How long the backfill takes to plan the passages of every shard, however much passage budget it has.
+async fn time_to_plan(planner: &mut Planner, shards: u64) -> Duration {
+    let started = std::time::Instant::now();
+    while planner.counts.passages < shards {
+        planner.pass().await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(60), "the sweep got stuck: {:?}", planner.counts);
+    }
+    started.elapsed()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_reads_ahead_as_many_shards_as_it_is_told_and_keeps_them_as_it_goes_on() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let (mut one, dir) = sweep_of_slow_picks("read-ahead-one", 6, 1, Duration::from_millis(700), &mut redis).await;
+    one.pass().await.unwrap();
+    assert_eq!(one.shards_reading(), [0, 1], "as it always has: the shard being planned and the one after it");
+    assert!(one.counts.backfill_starved >= 1, "a pass that finds no page ready says so: {:?}", one.counts);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (mut three, dir) = sweep_of_slow_picks("read-ahead-three", 6, 3, Duration::from_millis(700), &mut redis).await;
+    three.pass().await.unwrap();
+    assert_eq!(three.shards_reading(), [0, 1, 2, 3]);
+    time_to_plan(&mut three, 6).await;
+    assert_eq!(three.counts.passage_texts, 6 * 8, "every page's passages, each once");
+    three.flush().await.unwrap();
+    assert_eq!(three.counts.shards_skipped, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The hourly swing as the planner's report and the public stats show it: with budget to spare, the sweep stops planning while the next shard is picked, and reading further ahead takes that away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pick_slower_than_planning_a_shard_stops_the_sweep_with_budget_to_spare_unless_it_reads_further_ahead() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let pick = Duration::from_millis(1200);
+    let (mut shallow, dir) = sweep_of_slow_picks("swing-shallow", 6, 1, pick, &mut redis).await;
+    let held_up = time_to_plan(&mut shallow, 6).await;
+    let starved = shallow.counts.backfill_starved;
+    let _ = std::fs::remove_dir_all(&dir);
+    let (mut deep, dir) = sweep_of_slow_picks("swing-deep", 6, 5, pick, &mut redis).await;
+    let read_ahead = time_to_plan(&mut deep, 6).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    // Two shards for each pick: 3 picks' time for 6 shards, where reading them all at once takes one.
+    assert!(held_up >= pick * 5 / 2, "with one shard read ahead the sweep waits on each second pick: {held_up:?}");
+    assert!(read_ahead + pick <= held_up, "reading ahead takes the waits away: {read_ahead:?} against {held_up:?}");
+    assert!(starved > deep.counts.backfill_starved, "and the report says what held it up: {starved} against {}", deep.counts.backfill_starved);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

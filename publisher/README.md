@@ -121,7 +121,13 @@ on input writes and writing its state.
   is tried again from the place kept `PLANNER_BACKFILL_RETRY_S` (600) later, while the log and waiting pages go on;
   after three failed reads in a row the backfill goes on to the next shard, logs that it skipped it, and counts
   both in its report. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S` (24 h) after
-  its last shard, so a page the log passed by is planned once `current/` holds it.
+  its last shard, so a page the log passed by is planned once `current/` holds it. No page of a shard comes before
+  every row of it is picked, and `PLANNER_BACKFILL_READ_AHEAD` (1) shards are read ahead of the one being planned, so
+  a sweep whose shards take less time to plan than to pick stops between shards with budget left, and the supply of
+  whatever it plans swings with it. More shards read ahead take that away, for more reads and threads at once; the
+  pages held in memory stay as they are. The report line counts what ended each pass that read no further:
+  `backfill_starved` (no page ready from the reader), `backfill_no_place` (budget or room), `backfill_no_passages`
+  (the passage budget), `backfill_not_due` (a retry or the next sweep is not due).
 - **Bulk lane** (`PLANNER_BULK_PAGES_PER_HOUR`, 0 by default, which leaves it off): reads the bulk feed (`bulk/`)
   in order, up to 4 files a pass, a page at a time while the lane's own hourly budget holds a page and the rest lane
   holds under half of `PLANNER_MAX_PENDING` inputs, so the log keeps the other half whatever a file holds. A page is

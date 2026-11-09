@@ -543,6 +543,8 @@ pub struct Settings {
     pub backfill: bool,
     /// The shards the backfill reads, in order.
     pub backfill_shards: Range<usize>,
+    /// Shards read ahead of the one being planned; no page of a shard comes before all its rows are picked, so the sweep waits on its reader when planning a shard takes less than picking one.
+    pub backfill_read_ahead: usize,
     /// How long after reading its last shard the backfill sweeps `current/` again.
     pub backfill_every: Duration,
     /// How long after a failed read the backfill reads the shard again.
@@ -601,6 +603,7 @@ impl Settings {
                 }
                 None => 0..SHARDS,
             },
+            backfill_read_ahead: number::<usize>("PLANNER_BACKFILL_READ_AHEAD", 1)?.max(1),
             backfill_every: Duration::from_secs_f64(number("PLANNER_BACKFILL_EVERY_S", 86_400.0)?),
             backfill_retry: Duration::from_secs_f64(number("PLANNER_BACKFILL_RETRY_S", 600.0)?),
             current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
@@ -1659,6 +1662,11 @@ pub struct Counts {
     /// Failed reads of a shard, and shards the backfill went past after failing to read them.
     pub shard_failures: u64,
     pub shards_skipped: u64,
+    /// What ended a backfill pass with nothing more read: its reader had no page ready, the budget or room held no place for the page, the passage budget was spent on it, or a sweep or a read tried again was not due.
+    pub backfill_starved: u64,
+    pub backfill_no_place: u64,
+    pub backfill_no_passages: u64,
+    pub backfill_not_due: u64,
     pub inputs: u64,
     pub handed_over: u64,
     pub expired: u64,
@@ -1831,8 +1839,8 @@ pub struct Planner {
     listed_modified: Option<std::time::SystemTime>,
     set: Option<Arc<Set>>,
     reading: Option<Reading>,
-    /// The next shard, read from its first key while this one is taken, so its pick is done by the time it is wanted.
-    next_reading: Option<Reading>,
+    /// The next shards in sweep order, each read from its first key while this one is taken, so their picks are done by the time they are wanted.
+    next_reading: VecDeque<Reading>,
     /// When the backfill reads again: its next sweep once it has read every shard, or a while after a shard failed.
     next_sweep: Option<Instant>,
     /// The shard the backfill last failed to read, and how many times in a row.
@@ -1959,7 +1967,7 @@ impl Planner {
             listed_modified: None,
             set: None,
             reading: None,
-            next_reading: None,
+            next_reading: VecDeque::new(),
             next_sweep: None,
             failing: (usize::MAX, 0),
             replan_after: [0; CLASSES],
@@ -2576,17 +2584,26 @@ impl Planner {
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
     async fn backfill(&mut self, stopped: Option<Class>) -> Result<bool> {
         let reserve = self.reserve(Class::ALL[0], Source::Backfill);
-        if !self.settings.backfill || self.current.is_none() || !self.budget.holds_after(reserve, self.settings.pages_per_input) || !self.room_after(reserve) {
+        if !self.settings.backfill || self.current.is_none() {
+            return Ok(false);
+        }
+        if !self.budget.holds_after(reserve, self.settings.pages_per_input) || !self.room_after(reserve) {
+            self.counts.backfill_no_place += 1;
             return Ok(false);
         }
         let (most, mut read, started, planned) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now(), self.counts.planned);
         loop {
             let slice_over = read > 0 && started.elapsed() >= self.settings.fresh_flush_after;
             let full = self.counts.planned - planned >= most as u64 || read >= READS_PER_PLANNED * most;
-            if full || slice_over || self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_place(reserve) {
+            if full || slice_over {
+                return Ok(read > 0);
+            }
+            if self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_place(reserve) {
+                self.counts.backfill_no_place += 1;
                 return Ok(read > 0);
             }
             if self.reading.is_none() && !self.start_reading()? {
+                self.counts.backfill_not_due += 1;
                 return Ok(read > 0);
             }
             let reading = self.reading.as_mut().expect("a shard being read");
@@ -2595,12 +2612,21 @@ impl Planner {
                 None => tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await,
             };
             match next {
-                Err(_) => return Ok(read > 0),
+                Err(_) => {
+                    self.counts.backfill_starved += 1;
+                    return Ok(read > 0);
+                }
                 Ok(Some(page)) => {
                     // A page goes only with a place beyond what its class leaves to the log and better classes; else the sweep waits on it, as it is the log's spare budget.
                     let class = self.class_of(&page.key);
                     let passage_waits = self.backfill_passages(&page) && !self.passage_budget.has();
-                    if passage_waits || stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
+                    let no_place = stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill));
+                    if passage_waits || no_place {
+                        if no_place {
+                            self.counts.backfill_no_place += 1;
+                        } else {
+                            self.counts.backfill_no_passages += 1;
+                        }
                         self.reading.as_mut().expect("a shard being read").held = Some(page);
                         return Ok(read > 0);
                     }
@@ -2665,7 +2691,7 @@ impl Planner {
         }
     }
 
-    /// Starts reading the backfill's next shard from where it was left, and the one after it from its start; false while a finished sweep waits for the next.
+    /// Starts reading the backfill's next shard from where it was left, and up to `backfill_read_ahead` after it from their starts; false while a finished sweep waits for the next.
     fn start_reading(&mut self) -> Result<bool> {
         if self.next_sweep.is_some_and(|next| Instant::now() < next) {
             return Ok(false);
@@ -2673,24 +2699,31 @@ impl Planner {
         let first = self.first_shard();
         let (shard, after) = self.state.backfill()?.unwrap_or((first, None));
         let (shard, after) = if self.settings.backfill_shards.contains(&shard) { (shard, after) } else { (first, None) };
-        let following = self.shard_after(shard);
-        let ready = match self.next_reading.take() {
-            Some(next) if next.shard == shard && after.is_none() => Some(next),
-            // A shard read again after a failure keeps the one after it as read so far.
-            Some(next) if Some(next.shard) == following => {
-                self.next_reading = Some(next);
-                None
-            }
+        let ready = match self.next_reading.front() {
+            Some(next) if next.shard == shard => self.next_reading.pop_front().filter(|_| after.is_none()),
             _ => None,
         };
+        // A shard read again after a failure keeps those after it as read so far.
+        if self.next_reading.front().is_some_and(|next| Some(next.shard) != self.shard_after(shard)) {
+            self.next_reading.clear();
+        }
         self.reading = Some(match ready {
             Some(next) => next,
             None => self.spawn_reading(shard, after),
         });
-        if let Some(following) = following.filter(|_| self.next_reading.is_none()) {
-            self.next_reading = Some(self.spawn_reading(following, None));
+        let mut last = self.next_reading.back().map_or(shard, |next| next.shard);
+        while self.next_reading.len() < self.settings.backfill_read_ahead {
+            let Some(next) = self.shard_after(last) else { break };
+            let reading = self.spawn_reading(next, None);
+            self.next_reading.push_back(reading);
+            last = next;
         }
         Ok(true)
+    }
+
+    /// The shards being read: the one being planned, then those read ahead of it.
+    pub fn shards_reading(&self) -> Vec<usize> {
+        self.reading.iter().chain(&self.next_reading).map(|reading| reading.shard).collect()
     }
 
     /// The first shard of a sweep.
@@ -2711,7 +2744,8 @@ impl Planner {
             ranges_at_once: RANGES_AT_ONCE,
             bytes_at_once: READ_BYTES_AT_ONCE,
         };
-        let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
+        // However deep the read-ahead, the pages held in memory stay what the next shard and this one hold at the shallowest.
+        let (send, pages) = mpsc::channel(2 * BACKFILL_AHEAD / (self.settings.backfill_read_ahead + 1));
         let (set, langs, from, class) = (self.set.clone(), self.settings.langs.clone(), after.clone(), self.backfill_class);
         let (state, page_first, withdrawn, tables) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone(), self.tables.clone());
         let bulk_through = (self.settings.bulk_pages_per_hour > 0.0).then_some(self.bulk_read_through);
