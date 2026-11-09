@@ -2910,6 +2910,7 @@ impl Planner {
     /// Plans until `stop` turns true, writing what is buffered first.
     pub async fn run(&mut self, mut stop: watch::Receiver<bool>) -> Result<()> {
         let mut reported = Instant::now();
+        let mut held_at_report = self.counts.log_held;
         while !*stop.borrow() {
             let busy = match self.pass().await {
                 Ok(busy) => busy,
@@ -2920,6 +2921,10 @@ impl Planner {
             };
             if reported.elapsed() >= Duration::from_secs(60) {
                 let (behind, waiting) = (self.latest_seen - self.read_through, self.state.waiting_count());
+                if behind > 0 && self.counts.log_held > held_at_report {
+                    eprintln!("planner: the log is {behind} change files behind because the rest lane is full; fresh pages wait with it, so the task API's rate may be below what the log makes");
+                }
+                held_at_report = self.counts.log_held;
                 println!(
                     "planner: through change file {}, behind: {behind}, waiting_now: {waiting}, {:?}, {}",
                     self.read_through,

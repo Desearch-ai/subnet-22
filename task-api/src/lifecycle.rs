@@ -200,19 +200,20 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         return Ok(None);
     }
     let mut redis = state.redis.clone();
-    let mut waiting: Vec<String> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
+    // Read as bytes, so an entry that is not text is passed over with those that are not JSON, not left to stop every round.
+    let mut waiting: Vec<Vec<u8>> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
     if waiting.is_empty() {
         return Ok(None);
     }
     // A round is served in its published order, so while a fixed rate lets the fresh lane go ahead, a round holds inputs of one lane.
     let ahead = state.settings.embed_release_per_hour > 0.0;
     if ahead {
-        let lane = |raw: &String| serde_json::from_str::<Value>(raw).is_ok_and(|entry| text(&entry, "lane") == FRESH);
+        let lane = |raw: &Vec<u8>| serde_json::from_slice::<Value>(raw).is_ok_and(|entry| text(&entry, "lane") == FRESH);
         let first = lane(&waiting[0]);
         let run = waiting.iter().take_while(|raw| lane(raw) == first).count();
         waiting.truncate(run);
     }
-    let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()).collect();
+    let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_slice::<Value>(raw).ok()).collect();
     let opened = opened_rounds(state, &entries).await?;
     let model = state.settings.embed_model.clone();
     let mut batches = Vec::new();
@@ -368,7 +369,10 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     let mut filled = Vec::new();
     for round in state.lookups.read(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
-        if open > 0 {
+        // Its tasks are queued only if they exist, whatever a copy from before they were queued together left in its open set.
+        let keys: Vec<String> = round.order.iter().map(|task_id| format!("task:{task_id}")).collect();
+        let queued: i64 = if keys.is_empty() { 0 } else { redis::cmd("EXISTS").arg(&keys).query_async(&mut state.redis.clone()).await? };
+        if open > 0 && queued > 0 {
             let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
             state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
             queues::unstage(&state.redis, &round.round_id).await?;

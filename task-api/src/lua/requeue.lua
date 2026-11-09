@@ -9,5 +9,8 @@ end
 if task['kind'] == 'embed' then
   redis.call('INCR', 'handbacks:' .. task_id)
   redis.call('EXPIRE', 'handbacks:' .. task_id, 172800)
+  if payload and redis.call('EXISTS', 'embed:pace') == 1 then
+    redis.call('HINCRBYFLOAT', 'embed:pace', 'tokens', -1)
+  end
 end
 local seq = redis.call('INCR', 'log:seq')

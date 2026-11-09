@@ -240,6 +240,74 @@ async fn a_round_counted_as_open_has_its_tasks_queued() {
 }
 
 #[tokio::test]
+async fn hand_backs_cost_the_rate_so_miners_are_given_no_more_than_it_says() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    let t0 = 1_000_000.0;
+    fill(&h, &queue, "live", 1000, t0).await;
+    queue.release_paced(&h.redis, t0 + 61.0, 3600.0, AT_ONCE).await.unwrap();
+    let mut given = 0;
+    // Five minutes at a task a second, three claims in ten handed back and given to someone else.
+    for second in 1..=300 {
+        queue.release_paced(&h.redis, t0 + 61.0 + second as f64, 3600.0, AT_ONCE).await.unwrap();
+        let hotkey = format!("m{second}");
+        let claims = queue.claim(&h.redis, &hotkey, 50, 100, 50, t0 + 61.0 + second as f64).await.unwrap().unwrap_or_default();
+        for (at, got) in claims.into_iter().enumerate() {
+            given += 1;
+            if (second + at) % 10 < 3 {
+                queue.abandon(&h.redis, &got.task_id, &hotkey).await.unwrap();
+            }
+        }
+    }
+    assert!((270..=310).contains(&given), "five minutes at a task a second give about 300 tasks, hand-backs included: {given}");
+}
+
+#[tokio::test]
+async fn hand_backs_cost_the_rate_nothing_without_one() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    fill(&h, &queue, "off", 1, now() - 120.0).await;
+    queue.release_due(&h.redis, now(), AT_ONCE).await.unwrap();
+    let got = queue.claim(&h.redis, "m", 5, 10, 1, now()).await.unwrap().unwrap();
+    queue.abandon(&h.redis, &got[0].task_id, "m").await.unwrap();
+    let pace: bool = h.redis.clone().exists(EMBED_PACE).await.unwrap();
+    assert!(!pace, "no rate state appears");
+}
+
+#[tokio::test]
+async fn an_input_that_is_not_text_stops_no_round() {
+    let h = Harness::with(|s| s.embed_tasks = true).await;
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, vec![0xff_u8, 0xfe]).await.unwrap();
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, input().to_string()).await.unwrap();
+    let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round");
+    assert_eq!(round.batches.len(), 1);
+    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
+async fn a_round_marked_open_with_no_tasks_is_filled() {
+    let h = Harness::with(|s| s.embed_tasks = true).await;
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, input().to_string()).await.unwrap();
+    let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round");
+    let id = round.round_id.clone();
+    let mut revealed = h.state.lookups.read(move |conn| task_api::roundstore::get(conn, &id)).await.unwrap().unwrap();
+    let seed = loop {
+        if let Some(seed) = h.state.seeds.seed_for(revealed.seed_block).await.unwrap() {
+            break seed;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    task_api::rounds::reveal(&mut revealed, &seed);
+    let saved = revealed.clone();
+    h.state.db.run(move |conn| task_api::roundstore::mark_revealed(conn, &saved)).await.unwrap();
+    // As a copy from before the two went together could leave it.
+    let _: i64 = h.redis.clone().sadd(lifecycle::open_round_key(&round.round_id), &revealed.order).await.unwrap();
+    lifecycle::fill_missing(&h.state).await.unwrap();
+    assert_eq!(h.state.embed.depth(&h.redis).await.unwrap(), 1, "its task is queued, not lost with the round open for good");
+}
+
+#[tokio::test]
 async fn a_fresh_input_goes_ahead_of_a_buffer_longer_than_an_hour() {
     let h = Harness::with(paced(3600.0)).await;
     let older = fill(&h, &h.state.embed, "older", 2, now() - 3.0 * 3600.0).await;

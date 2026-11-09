@@ -11,7 +11,7 @@ elseif rate > target then
   rate = math.max(target, rate - change)
 end
 local limit = math.max(1, rate * burst / 3600)
-tokens = math.min(limit, tokens + since * rate / 3600)
+tokens = math.min(limit, math.max(-rate / 6, tokens) + since * rate / 3600)
 local moved = 0
 local whole = math.min(math.floor(tokens), most, math.floor(limit) - redis.call('ZCARD', ready))
 if whole > 0 then

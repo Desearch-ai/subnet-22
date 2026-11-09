@@ -222,7 +222,8 @@ covered: uploads then wait for their verdicts, and miners stop at `WAITING_FOR_V
   stay at least a third above what the log and fresh lane alone make, or the log, and the fresh pages in it, fall
   behind: watch `behind` and `waiting_now` in the planner's report.
 - **Tasks nobody takes stay held:** release stops while ten seconds' worth are ready, so miners coming back from
-  an outage find no pile. Hand-backs and expired claims go straight back to the ready queue, outside the rate.
+  an outage find no pile. Hand-backs, expired claims and tasks retried go straight back to the ready queue, and each
+  costs the rate one task, up to ten minutes' worth at once, so what miners are given stays at the rate.
 - **The rate counts tasks, not work:** texts and characters a task follow what is being embedded, so the load on
   miners moves by about a tenth even at a fixed rate, and more when the mix changes.
 - **The rate** moves toward a new target by about a tenth of itself an hour, as `embed:pace` in Redis
