@@ -41,6 +41,8 @@ const WARM_EVERY: Duration = Duration::from_secs(15);
 const SEAL_EVERY: Duration = Duration::from_secs(5);
 /// Held tasks moved to the ready queue in one step at most; a backlog drains over a few steps.
 const RELEASE_AT_ONCE: usize = 2_000;
+/// The same for embed tasks, whose page lists make each one slow to read in a script: a buffer let go all at once must not hold Redis up.
+const EMBED_RELEASE_AT_ONCE: usize = 200;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
@@ -113,7 +115,7 @@ impl Duty {
             Duty::Rounds => {
                 // Each step runs whatever another one hit, so a chain error opening embed rounds holds up no reveal.
                 let steps = [
-                    ("opening embed rounds", lifecycle::open_embed_rounds(state).await.map(drop)),
+                    ("opening embed rounds", lifecycle::open_waiting_embed_rounds(state).await),
                     ("filling revealed rounds", lifecycle::fill_missing(state).await.map(drop)),
                     ("revealing rounds", lifecycle::reveal_pending(state).await.map(drop)),
                     ("closing rounds", lifecycle::close_finished(state).await.map(drop)),
@@ -130,7 +132,8 @@ impl Duty {
                 for kind in KINDS {
                     let tasks = state.tasks(kind);
                     match target.filter(|_| kind == EMBED) {
-                        Some(target) => drop(tasks.release_paced(&state.redis, now(), target, RELEASE_AT_ONCE).await?),
+                        Some(target) => drop(tasks.release_paced(&state.redis, now(), target, EMBED_RELEASE_AT_ONCE).await?),
+                        None if kind == EMBED => drop(tasks.release_due(&state.redis, now(), EMBED_RELEASE_AT_ONCE).await?),
                         None => drop(tasks.release_due(&state.redis, now(), RELEASE_AT_ONCE).await?),
                     }
                 }

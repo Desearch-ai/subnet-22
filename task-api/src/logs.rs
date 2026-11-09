@@ -411,8 +411,9 @@ async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError
     let settings = &state.settings;
     let Some(target) = settings.embed_release_target(at) else { return Ok(json!({"mode": "as_planned"})) };
     let (held, ready) = state.embed.held_and_ready(&state.redis).await?;
-    let kept: Option<String> = state.redis.clone().hget(EMBED_PACE, "rate").await?;
-    let rate = kept.and_then(|rate| rate.parse::<f64>().ok()).unwrap_or(target);
+    let kept: Vec<Option<String>> = redis::cmd("HMGET").arg(EMBED_PACE).arg("rate").arg("released").query_async(&mut state.redis.clone()).await?;
+    let read = |at: usize| kept.get(at).and_then(Clone::clone).and_then(|value| value.parse::<f64>().ok());
+    let rate = read(0).unwrap_or(target);
     let hours_to = |from: f64, to: f64| (to / from).ln().abs() / RATE_STEP_PER_HOUR;
     let scheduled = match settings.embed_release_next {
         Some((next, from)) if at < from => json!({"tasks_per_hour": next, "from": from, "reached_by": from + hours_to(target, next) * HOUR}),
@@ -423,6 +424,7 @@ async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError
         "mode": "fixed",
         "target_tasks_per_hour": target,
         "tasks_per_hour": round_to(rate, 1),
+        "released_tasks_per_hour": round_to(read(1).unwrap_or(rate), 1),
         "max_change_per_hour": RATE_STEP_PER_HOUR,
         "buffer_tasks": held,
         "buffer_minutes": round_to(held as f64 / rate * 60.0, 1),

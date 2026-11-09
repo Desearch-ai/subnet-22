@@ -3732,8 +3732,14 @@ async fn the_backfill_plans_the_passages_of_reference_pages_planned_page_first_o
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A planner whose backfill has one reference page, planned page first, in each of the first `shards` shards of `current/`, each shard's manifest answered `pick` late, as a shard whose rows take that long to pick.
-async fn sweep_of_slow_picks(name: &str, shards: usize, read_ahead: usize, pick: Duration, redis: &mut ConnectionManager) -> (Planner, PathBuf) {
+/// A planner whose backfill has one reference page, planned page first, in each of the first `shards` shards of `current/`, each shard's manifest answered `pick` of it late, as a shard whose rows take that long to pick.
+async fn sweep_of_slow_picks(
+    name: &str,
+    shards: usize,
+    read_ahead: usize,
+    pick: impl Fn(usize) -> Duration,
+    redis: &mut ConnectionManager,
+) -> (Planner, PathBuf) {
     let dir = scratch(name);
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
@@ -3775,7 +3781,7 @@ async fn sweep_of_slow_picks(name: &str, shards: usize, read_ahead: usize, pick:
             record: record.clone(),
         };
         shard(&current, *at, vec![vec![row]]).await;
-        stub.state.slow("GET", &format!("desearch-current/current/shard={at:04}/manifest.json"), 1, pick);
+        stub.state.slow("GET", &format!("desearch-current/current/shard={at:04}/manifest.json"), 1, pick(*at));
     }
     let mut planner = Planner::new(lane(3_600_000.0, true), pages, temp, redis.clone(), Room::Fixed(100)).await.unwrap();
     planner.current = Some(current);
@@ -3798,19 +3804,45 @@ async fn the_backfill_reads_ahead_as_many_shards_as_it_is_told_and_keeps_them_as
         eprintln!("skipped: no Redis on {REDIS}");
         return;
     };
-    let (mut one, dir) = sweep_of_slow_picks("read-ahead-one", 6, 1, Duration::from_millis(700), &mut redis).await;
+    let (mut one, dir) = sweep_of_slow_picks("read-ahead-one", 6, 1, |_| Duration::from_millis(700), &mut redis).await;
     one.pass().await.unwrap();
     assert_eq!(one.shards_reading(), [0, 1], "as it always has: the shard being planned and the one after it");
     assert!(one.counts.backfill_starved >= 1, "a pass that finds no page ready says so: {:?}", one.counts);
     let _ = std::fs::remove_dir_all(&dir);
 
-    let (mut three, dir) = sweep_of_slow_picks("read-ahead-three", 6, 3, Duration::from_millis(700), &mut redis).await;
+    let (mut three, dir) = sweep_of_slow_picks("read-ahead-three", 6, 3, |_| Duration::from_millis(700), &mut redis).await;
     three.pass().await.unwrap();
     assert_eq!(three.shards_reading(), [0, 1, 2, 3]);
     time_to_plan(&mut three, 6).await;
     assert_eq!(three.counts.passage_texts, 6 * 8, "every page's passages, each once");
     three.flush().await.unwrap();
     assert_eq!(three.counts.shards_skipped, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blip_over_before_a_shard_s_turn_costs_no_retry_wait_for_each_shard_read_ahead() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    // The readers ahead fail while the first shard is still being picked, and storage has mended when their turn comes.
+    let first_pick = |shard: usize| if shard == 0 { Duration::from_millis(1500) } else { Duration::ZERO };
+    let (mut planner, dir) = sweep_of_slow_picks("read-ahead-blip", 6, 3, first_pick, &mut redis).await;
+    planner.settings.backfill_retry = Duration::from_secs(3600);
+    let current = planner.current.clone().unwrap();
+    let mut files = Vec::new();
+    for shard in 1..=3 {
+        let key = format!("current/shard={shard:04}/base-000000000000.parquet");
+        files.push((key.clone(), current.get(&key).await.unwrap()));
+        current.delete(&key).await.unwrap();
+    }
+    planner.pass().await.unwrap();
+    for (key, body) in files {
+        current.put(&key, body, PARQUET, None).await.unwrap();
+    }
+    time_to_plan(&mut planner, 6).await;
+    assert_eq!((planner.counts.passage_texts, planner.counts.shards_skipped), (6 * 8, 0), "every page, at no retry wait: {:?}", planner.counts);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3822,11 +3854,11 @@ async fn a_pick_slower_than_planning_a_shard_stops_the_sweep_with_budget_to_spar
         return;
     };
     let pick = Duration::from_millis(1200);
-    let (mut shallow, dir) = sweep_of_slow_picks("swing-shallow", 6, 1, pick, &mut redis).await;
+    let (mut shallow, dir) = sweep_of_slow_picks("swing-shallow", 6, 1, |_| pick, &mut redis).await;
     let held_up = time_to_plan(&mut shallow, 6).await;
     let starved = shallow.counts.backfill_starved;
     let _ = std::fs::remove_dir_all(&dir);
-    let (mut deep, dir) = sweep_of_slow_picks("swing-deep", 6, 5, pick, &mut redis).await;
+    let (mut deep, dir) = sweep_of_slow_picks("swing-deep", 6, 5, |_| pick, &mut redis).await;
     let read_ahead = time_to_plan(&mut deep, 6).await;
     let _ = std::fs::remove_dir_all(&dir);
     // Two shards for each pick: 3 picks' time for 6 shards, where reading them all at once takes one.

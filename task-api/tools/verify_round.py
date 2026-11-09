@@ -224,6 +224,8 @@ def _receipts(
     round_id: str, receipts: list[dict], entries: list[dict], signer: str
 ) -> tuple[bool, str]:
     logged = {canonical_json(receipt_body(round_id, line)) for line in entries}
+    # A miner keeps its receipts of every round in one file.
+    receipts = [r for r in receipts if r["body"].get("round_id") == round_id]
     problems = []
     for receipt in receipts:
         body = receipt["body"]
@@ -268,6 +270,9 @@ def _replay(
             queued.remove(task_id)
             holders[task_id].add(hotkey)
             issues += 1
+        elif line["outcome"] == "dropped" and task_id in queued:
+            # Dropped as a claim drew it: its input expired or miners handed it back too often.
+            queued.remove(task_id)
         elif line["outcome"] == "reclaimed" and task_id:
             place = next(
                 (i for i, b in enumerate(queued) if rank[b] > rank[task_id]),

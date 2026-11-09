@@ -39,6 +39,7 @@ for a number rather than for a peak. `GET /v1/overview?kind=embed` publishes it 
   "mode": "fixed",
   "target_tasks_per_hour": 3300,
   "tasks_per_hour": 3300.0,
+  "released_tasks_per_hour": 3296.4,
   "max_change_per_hour": 0.1,
   "buffer_tasks": 1650,
   "buffer_minutes": 30.0,
@@ -50,8 +51,10 @@ for a number rather than for a peak. `GET /v1/overview?kind=embed` publishes it 
 - `tasks_per_hour` is the rate now, across all miners. It moves toward a new target by about a tenth an
   hour, so you have hours to add or drop capacity, and `scheduled` says when a change starts and when it
   will be reached; it is `null` when none is due.
+- `released_tasks_per_hour` is what actually went out over about the last ten minutes. Trust it over the rate
+  when the two differ.
 - `buffer_minutes` is how long the rate holds if no new work comes in. Once it reaches 0, tasks come only
-  as fast as they are made.
+  as fast as they are made, and that fall has no limit on its speed.
 - `mode` is `as_planned` while no rate is set: tasks then come as they are made, and only `mode` is given.
 
 Tasks hold about 1,300 texts and 2 million characters on average, though that varies with what is being

@@ -73,6 +73,7 @@ export interface Supply {
   mode: 'fixed' | 'as_planned'
   target_tasks_per_hour?: number
   tasks_per_hour?: number
+  released_tasks_per_hour?: number
   buffer_minutes?: number
 }
 

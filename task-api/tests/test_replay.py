@@ -29,6 +29,25 @@ def test_serving_in_order_passes():
     assert ok, why
 
 
+def test_a_batch_dropped_as_it_was_drawn_leaves_the_queue():
+    log = [entry(1, "dropped", "a", hotkey=""), entry(2, "issued", "b"), entry(3, "issued", "c")]
+    ok, why = verifier._replay(MANIFEST, ORDER, log)
+    assert ok, why
+
+
+def test_a_batch_dropped_after_its_last_attempt_changes_nothing():
+    log = [entry(1, "issued", "a"), entry(2, "dropped", "a"), entry(3, "issued", "b")]
+    ok, why = verifier._replay(MANIFEST, ORDER, log)
+    assert ok, why
+
+
+def test_only_the_round_s_own_receipts_are_checked():
+    log = [{"seq": 1, "outcome": "issued", "hotkey": "x", "task_id": "a", "requested_at": 1.0}]
+    other = {"body": {"round_id": "other", "seq": 9, "outcome": "issued"}, "signature": "00"}
+    ok, why = verifier._receipts("r1", [other], log, "signer")
+    assert ok, why
+
+
 def test_serving_out_of_order_is_caught():
     ok, why = verifier._replay(MANIFEST, ORDER, [entry(1, "issued", "b")])
     assert not ok

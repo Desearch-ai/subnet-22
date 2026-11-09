@@ -206,34 +206,45 @@ The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
 ### Fixed rate of embed tasks
 
 `TASK_API_EMBED_RELEASE_PER_HOUR` holds embed tasks to one rate, whatever the planner hands over. A
-planner stall, a new lane or a chain stall reaches miners only once the tasks waiting behind the rate
-are gone, and output then falls to what the planner hands over; the rate promises no task it was never
-given.
+planner stall or a new lane reaches miners only once the tasks waiting behind the rate are gone, and output
+then falls to what the planner hands over; the rate promises no task it was never given. A chain stall is not
+covered: uploads then wait for their verdicts, and miners stop at `WAITING_FOR_VERDICTS` whatever the buffer holds.
 
 - **The buffer** is the revealed tasks not released yet, in `queue:held:embed`. They count in `queue`
   of `GET /v1/room?kind=embed`, so `TASK_API_EMBED_QUEUE_TARGET` is what bounds it: the planner hands
   inputs over until queue, unrevealed rounds, waiting inputs and uploads awaiting a verdict reach the
-  target, and holds the rest as it always does when the API has no room. A target of 2,000 at 3,300
-  tasks an hour leaves about half an hour behind the rate. The buffer fills only while the planner hands
-  over more than the rate, so the rate belongs a little under what the planner averages; a full buffer is
-  the steady state, and the planner's surplus waits on its side.
+  target, and holds the rest as it always does when the API has no room. The buffer fills only while the
+  planner hands over more than the rate, so the rate belongs under what it hands over in a lasting way: read it
+  from a week of `/v1/stats/hours`, not from its best hours, as a rate over that empties the buffer and output
+  falls to what comes in. Two thousand tasks at a rate of 2,400 an hour is about 50 minutes behind the rate.
+- **A full buffer** leaves the planner short of room all the time, which it never was before a rate. Nothing is
+  lost, but what is planned last in a pass waits first ([planner](../publisher/README.md#planner)). The rate must
+  stay at least a third above what the log and fresh lane alone make, or the log, and the fresh pages in it, fall
+  behind: watch `behind` and `waiting_now` in the planner's report.
+- **Tasks nobody takes stay held:** release stops while ten seconds' worth are ready, so miners coming back from
+  an outage find no pile. Hand-backs and expired claims go straight back to the ready queue, outside the rate.
+- **The rate counts tasks, not work:** texts and characters a task follow what is being embedded, so the load on
+  miners moves by about a tenth even at a fixed rate, and more when the mix changes.
 - **The rate** moves toward a new target by about a tenth of itself an hour, as `embed:pace` in Redis
   keeps it across restarts and between copies of the API. It starts at the target when first set. A
   pause in release, the API down say, comes back as ten seconds' worth at most, not as a burst.
 - **The fresh lane** goes ahead of the buffer and within the rate: its inputs get rounds of their own,
-  due at once, so a fresh page does not wait the half hour and miners see no more tasks for it. Other
-  pages reach miners about as much later as the buffer is long.
+  due at once, so a fresh page does not wait for it and miners see no more tasks for it. Other pages reach
+  miners about as much later as the buffer is long.
 - **Verifying a round** works as before: a round's tasks are released in its published order, and a
   round stays open, its log unanchored, until its last task is done, so about as much longer as the
   buffer is long. `embed_input_max_age` (20 hours) and the day inputs are kept are far beyond the buffer.
-- **Rollback** is removing the setting: the tasks held are all due, and go to the ready queue within
-  seconds, where miners take them as they have room, at no risk to anyone but a short rush.
+- **Rollback** is removing the setting: the tasks held are all due, and go to the ready queue at no more than
+  200 a second, where miners take them as they have room, at no risk to anyone but a short rush. Before going back
+  to a build without the rate, remove the setting and wait for `queue:held:embed` to empty: an older build moves
+  2,000 tasks in one script, holding Redis for seconds.
 - **Redis** holds each waiting task's page list, so each buffered task costs what its input's pages take:
-  about 350 bytes a page, at about 600 pages an input some 200 KB a task, or some 400 MB for a buffer of
-  2,000.
+  about 350 bytes a page, at about 600 pages an input some 210 KB a task, or some 430 MB for a buffer of
+  2,000. Check Redis has the room first.
 
 `GET /v1/overview?kind=embed` publishes it as `supply`: `mode` (`fixed`, or `as_planned` with no rate),
-`target_tasks_per_hour`, `tasks_per_hour` (the rate now), `max_change_per_hour`, `buffer_tasks`,
+`target_tasks_per_hour`, `tasks_per_hour` (the rate now), `released_tasks_per_hour` (what actually went out, over
+about the last ten minutes), `max_change_per_hour`, `buffer_tasks`,
 `buffer_minutes`, `ready_tasks`, and `scheduled` (`tasks_per_hour`, `from`, `reached_by`) when a change is
 set or under way.
 

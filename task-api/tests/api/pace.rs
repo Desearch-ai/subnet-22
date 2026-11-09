@@ -25,6 +25,8 @@ async fn per_minute(h: &Harness, queue: &TaskQueue, start: f64, minutes: usize, 
         let mut moved = 0;
         for second in 0..60 {
             moved += queue.release_paced(&h.redis, start + (minute * 60 + second) as f64, per_hour, AT_ONCE).await.unwrap().0;
+            // Miners take what is released.
+            let _: i64 = h.redis.clone().del(&queue.ready).await.unwrap();
         }
         released.push(moved);
     }
@@ -49,7 +51,7 @@ async fn a_fixed_rate_holds_output_flat_through_a_stalled_planner_and_through_a_
     fill(&h, &queue, "burst", 3000, start + 1200.0).await;
     let flooded = per_minute(&h, &queue, start + 1200.0, 5, 3600.0).await;
     assert!(flooded.iter().all(|&moved| moved == 60), "as flat through the burst: {flooded:?}");
-    assert_eq!(queue.held_and_ready(&h.redis).await.unwrap(), (1800 + 3000 - 25 * 60, 25 * 60), "the rest stands in the buffer");
+    assert_eq!(queue.held_and_ready(&h.redis).await.unwrap(), (1800 + 3000 - 25 * 60, 0), "the rest stands in the buffer");
 }
 
 #[tokio::test]
@@ -130,6 +132,125 @@ async fn the_rate_and_its_buffer_survive_a_restart_of_the_api_in_redis() {
     assert_eq!(other.release_paced(&h.redis, t0 + 71.0, 3600.0, AT_ONCE).await.unwrap().0, 5, "another copy goes on where the first stopped");
     let kept: Option<String> = h.redis.clone().hget(EMBED_PACE, "rate").await.unwrap();
     assert_eq!(kept.as_deref(), Some("3600"));
+}
+
+#[tokio::test]
+async fn tasks_nobody_takes_stay_held_so_miners_back_from_an_outage_find_no_pile() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    let t0 = 1_000_000.0;
+    fill(&h, &queue, "buffer", 2000, t0).await;
+    queue.release_paced(&h.redis, t0 + 61.0, 3600.0, AT_ONCE).await.unwrap();
+    for second in 1..=1800 {
+        queue.release_paced(&h.redis, t0 + 61.0 + second as f64, 3600.0, AT_ONCE).await.unwrap();
+    }
+    assert_eq!(queue.held_and_ready(&h.redis).await.unwrap(), (1990, 10), "half an hour with no miners leaves ten seconds' worth ready");
+    let _: i64 = h.redis.clone().del(&queue.ready).await.unwrap();
+    let back = per_minute(&h, &queue, t0 + 1861.0, 2, 3600.0).await;
+    assert_eq!(back, [69, 60], "and they come back to the same rate, ten seconds' worth banked at most");
+}
+
+#[tokio::test]
+async fn a_clock_going_back_between_copies_never_releases_a_task_twice_over() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    let t0 = 1_000_000.0;
+    fill(&h, &queue, "skew", 1000, t0).await;
+    queue.release_paced(&h.redis, t0 + 100.0, 3600.0, AT_ONCE).await.unwrap();
+    let mut moved = 0;
+    // Two copies five seconds apart, each stepping for thirty seconds.
+    for second in 0..30 {
+        for skew in [0.0, -5.0] {
+            moved += queue.release_paced(&h.redis, t0 + 100.0 + second as f64 + skew, 3600.0, AT_ONCE).await.unwrap().0;
+            let _: i64 = h.redis.clone().del(&queue.ready).await.unwrap();
+        }
+    }
+    assert!(moved <= 30, "thirty seconds at a task a second, however the copies' clocks differ: {moved}");
+}
+
+#[tokio::test]
+async fn the_overview_says_what_really_went_out_when_the_buffer_has_run_dry() {
+    let h = Harness::with(paced(3600.0)).await;
+    let queue = &h.state.embed;
+    let t = now();
+    fill(&h, queue, "little", 30, t - 120.0).await;
+    queue.release_paced(&h.redis, t, 3600.0, AT_ONCE).await.unwrap();
+    per_minute(&h, queue, t + 1.0, 30, 3600.0).await;
+    let supply = h.public("/v1/overview?kind=embed").await.1["supply"].clone();
+    assert_eq!((supply["tasks_per_hour"].clone(), supply["buffer_tasks"].clone()), (json!(3600.0), json!(0)), "the rate stands");
+    let released = supply["released_tasks_per_hour"].as_f64().unwrap();
+    assert!(released < 1000.0, "but what went out shows the fall: {released}");
+}
+
+#[tokio::test]
+async fn inputs_of_two_lanes_in_turns_all_open_in_one_step_and_nothing_is_lost() {
+    let h = Harness::with(paced(3600.0)).await;
+    let mut entries = inputs(60);
+    for (at, entry) in entries.iter_mut().enumerate() {
+        if at % 2 == 0 {
+            entry["lane"] = "fresh".into();
+        }
+        let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    }
+    lifecycle::open_waiting_embed_rounds(&h.state).await.unwrap();
+    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(left, 0, "at a round a step, these sixty would take two minutes, holding miners to 1,800 tasks an hour");
+    assert_eq!(h.public("/v1/room?kind=embed").await.1["unrevealed"], 60);
+}
+
+#[tokio::test]
+async fn with_no_rate_a_step_opens_one_round_as_before() {
+    let h = Harness::with(|s| s.embed_tasks = true).await;
+    let entries = inputs(250);
+    for entry in &entries {
+        let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    }
+    lifecycle::open_waiting_embed_rounds(&h.state).await.unwrap();
+    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(left, 50, "two hundred inputs a step");
+}
+
+#[tokio::test]
+async fn a_round_closing_ahead_of_older_ones_leaves_them_to_log_refusals_in() {
+    let h = Harness::with(paced(3600.0)).await;
+    let older = embed_rounds(&h, inputs(2)).await;
+    let mut fresh = input();
+    fresh["input_key"] = "embed-inputs/fresher.parquet".into();
+    fresh["lane"] = "fresh".into();
+    let newer = embed_rounds(&h, vec![fresh]).await;
+    assert_eq!(h.state.current_round("embed"), newer);
+    let t = now();
+    h.state.embed.release_paced(&h.redis, t + 120.0, 3600.0, AT_ONCE).await.unwrap();
+    h.state.embed.release_paced(&h.redis, t + 121.5, 3600.0, AT_ONCE).await.unwrap();
+    let task = crate::embed::embed_task(&h, &h.miner).await;
+    assert_eq!(task["round_id"], json!(newer));
+    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
+    score(&h, &task_id(&task), embed_score("pass", "matched", "ok")).await;
+    assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [newer.as_str()]);
+    assert_eq!(h.state.current_round("embed"), older);
+}
+
+#[tokio::test]
+async fn a_round_counted_as_open_has_its_tasks_queued() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    let order = fill(&h, &queue, "whole", 3, now()).await;
+    let open: i64 = h.redis.clone().scard(lifecycle::open_round_key("whole")).await.unwrap();
+    assert_eq!((open, queue.depth(&h.redis).await.unwrap()), (order.len() as i64, 3));
+}
+
+#[tokio::test]
+async fn a_fresh_input_goes_ahead_of_a_buffer_longer_than_an_hour() {
+    let h = Harness::with(paced(3600.0)).await;
+    let older = fill(&h, &h.state.embed, "older", 2, now() - 3.0 * 3600.0).await;
+    let mut fresh = input();
+    fresh["lane"] = "fresh".into();
+    embed_rounds(&h, vec![fresh]).await;
+    let t = now();
+    h.state.embed.release_paced(&h.redis, t, 3600.0, AT_ONCE).await.unwrap();
+    assert_eq!(h.state.embed.release_paced(&h.redis, t + 1.5, 3600.0, AT_ONCE).await.unwrap().0, 1);
+    let ready: Vec<String> = h.redis.clone().zrange(&h.state.embed.ready, 0, -1).await.unwrap();
+    assert!(!older.contains(&ready[0]), "the fresh task goes first, not one held for three hours: {ready:?}");
 }
 
 #[tokio::test]

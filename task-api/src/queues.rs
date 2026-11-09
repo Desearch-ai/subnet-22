@@ -77,6 +77,11 @@ static VVOTE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/
 static VSETTLE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/vsettle.lua"))));
 static PRETURN: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/preturn.lua")));
 
+/// The tasks of a round not finished yet; it closes once none are left.
+pub fn open_round_key(round_id: &str) -> String {
+    format!("round:{round_id}:open")
+}
+
 pub fn ready_key(kind: &str) -> String {
     if kind == "crawl" {
         QUEUE.into()
@@ -213,6 +218,10 @@ impl TaskQueue {
         let base = base * ROUND_SPAN;
         let mut pipe = redis::pipe();
         pipe.atomic();
+        // With the tasks, so a round counted as open always has them queued.
+        if !order.is_empty() {
+            pipe.sadd(open_round_key(round_id), order).ignore();
+        }
         for (position, task_id) in order.iter().enumerate() {
             let rank = base + position as i64;
             let mut payload = payloads.get(task_id).and_then(Value::as_object).cloned().unwrap_or_default();

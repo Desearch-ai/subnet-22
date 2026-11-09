@@ -126,6 +126,22 @@ pub(crate) fn listed(value: &str) -> Vec<String> {
     value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect()
 }
 
+/// The fixed rate and any change coming; a setting that would quietly do nothing, or publish nonsense to miners, stops the start.
+fn embed_release(per_hour: f64, next_per_hour: f64, next_at: f64) -> Result<(f64, Option<(f64, f64)>)> {
+    for (name, value) in [("PER_HOUR", per_hour), ("NEXT_PER_HOUR", next_per_hour), ("NEXT_AT", next_at)] {
+        if !value.is_finite() || value < 0.0 {
+            bail!("TASK_API_EMBED_RELEASE_{name}={value} must be a finite number, 0 or more");
+        }
+    }
+    let next = match (next_per_hour > 0.0, next_at > 0.0) {
+        (true, true) if per_hour > 0.0 => Some((next_per_hour, next_at)),
+        (true, true) => bail!("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR needs TASK_API_EMBED_RELEASE_PER_HOUR"),
+        (false, false) => None,
+        _ => bail!("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR and TASK_API_EMBED_RELEASE_NEXT_AT go together"),
+    };
+    Ok((per_hour, next))
+}
+
 impl Settings {
     /// Seconds a miner has to upload a task of this kind after claiming it.
     pub fn claim_ttl_for(&self, kind: &str) -> f64 {
@@ -165,6 +181,11 @@ impl Settings {
             _ => SeedsMode::Local { block_seconds: number("TASK_API_BLOCK_SECONDS", 12.0)?, genesis: number("TASK_API_GENESIS", 0.0)? },
         };
         let key_uri = text("TASK_API_KEY_URI", "");
+        let (embed_release_per_hour, embed_release_next) = embed_release(
+            number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,
+            number("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR", 0.0)?,
+            number("TASK_API_EMBED_RELEASE_NEXT_AT", 0.0)?,
+        )?;
         let pages_store = PagesStore::from(|name| std::env::var(name).ok())?;
         let pages_bucket = text("CF_R2_PAGES_BUCKET", "desearch-pages");
         let embed_tasks = text("TASK_API_EMBED_TASKS", "0") == "1";
@@ -199,11 +220,8 @@ impl Settings {
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
             embed_input_max_age: number("TASK_API_EMBED_INPUT_MAX_AGE_S", 72_000.0)?,
             release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
-            embed_release_per_hour: number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,
-            embed_release_next: match (number("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR", 0.0)?, number("TASK_API_EMBED_RELEASE_NEXT_AT", 0.0)?) {
-                (per_hour, at) if per_hour > 0.0 && at > 0.0 => Some((per_hour, at)),
-                _ => None,
-            },
+            embed_release_per_hour,
+            embed_release_next,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,
             embed_model,
@@ -241,6 +259,25 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn a_fixed_rate_that_would_quietly_do_nothing_or_publish_nonsense_stops_the_start() {
+        assert_eq!(embed_release(0.0, 0.0, 0.0).unwrap(), (0.0, None));
+        assert_eq!(embed_release(3000.0, 0.0, 0.0).unwrap(), (3000.0, None));
+        assert_eq!(embed_release(3000.0, 3300.0, 1e9).unwrap(), (3000.0, Some((3300.0, 1e9))));
+        for (per_hour, next, at) in [
+            (f64::NAN, 0.0, 0.0),
+            (f64::INFINITY, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (3000.0, 3300.0, 0.0),
+            (3000.0, 0.0, 1e9),
+            (0.0, 3300.0, 1e9),
+            (3000.0, f64::NAN, 1e9),
+            (3000.0, -5.0, 1e9),
+        ] {
+            assert!(embed_release(per_hour, next, at).is_err(), "{per_hour} {next} {at}");
+        }
+    }
 
     #[test]
     fn the_pages_bucket_gets_its_own_endpoint_only_with_all_its_keys() {

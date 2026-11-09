@@ -60,7 +60,9 @@ holds. A starting planner waits up to three minutes for the one it replaces to l
 API is full, slow to answer (2 s or more) or does not answer in time, or fails twice more 1 s and 2 s apart, inputs wait,
 and the planner asks for room at the end of each pass and at most every 30 s in between; after a restart it asks
 before reading the log. While the rest lane holds `PLANNER_MAX_PENDING` (100) inputs, the log stops before its
-next change file and reads it next pass.
+next change file and reads it next pass (`log_held` counts it while the log has files to read). With the bulk or
+passage lane on, the backfill stops at half that, where those lanes stop, and a shortage of room falls on what is
+planned last in a pass: the bulk lane, then the backfill, then the passage lane.
 
 After a pass, at most once a minute, the planner logs its place in the log, its counts since it started, and the
 seconds it spent since then reading the log and planning waiting pages, waiting on change files for each, waiting
@@ -124,8 +126,11 @@ on input writes and writing its state.
   its last shard, so a page the log passed by is planned once `current/` holds it. No page of a shard comes before
   every row of it is picked, and `PLANNER_BACKFILL_READ_AHEAD` (1) shards are read ahead of the one being planned, so
   a sweep whose shards take less time to plan than to pick stops between shards with budget left, and the supply of
-  whatever it plans swings with it. More shards read ahead take that away, for more reads and threads at once; the
-  pages held in memory stay as they are. The report line counts what ended each pass that read no further:
+  whatever it plans swings with it. More shards read ahead shorten those stops, and end them once shards read ahead ×
+  the time to plan one reaches the time to pick one, for more reads and threads at once (64 ahead at most). The pages
+  waiting to be planned stay as many, and each shard more also holds up to 10,000 pages being decoded and 16 runs of
+  16 MB fetched ahead. A read that failed before its turn came is read again at once, at no cost. The report line says
+  how many change files the log is `behind` and how many pages are `waiting_now`, and counts what ended each pass that read no further:
   `backfill_starved` (no page ready from the reader), `backfill_no_place` (budget or room), `backfill_no_passages`
   (the passage budget), `backfill_not_due` (a retry or the next sweep is not due).
 - **Bulk lane** (`PLANNER_BULK_PAGES_PER_HOUR`, 0 by default, which leaves it off): reads the bulk feed (`bulk/`)

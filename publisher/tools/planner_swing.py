@@ -30,6 +30,9 @@ WATCHED = (
     "backfill_not_due",
 )
 
+# Levels rather than totals: shown as they stood at the end of each span.
+LEVELS = ("behind", "waiting_now")
+
 
 def counts(line: str) -> dict[str, int]:
     return {name: int(value) for name, value in re.findall(r"\b(\w+): (\d+)\b", line)}
@@ -50,7 +53,8 @@ def rows(lines, minutes: int):
         if start is None or (last and seen["planned"] < last["planned"]):
             start_at, start = at, seen
         elif (at - start_at).total_seconds() >= minutes * 60:
-            yield at, {name: seen.get(name, 0) - start.get(name, 0) for name in WATCHED if name in seen}
+            row = {name: seen.get(name, 0) - start.get(name, 0) for name in WATCHED if name in seen}
+            yield at, row | {name: seen[name] for name in LEVELS if name in seen}
             start_at, start = at, seen
         last = seen
 
