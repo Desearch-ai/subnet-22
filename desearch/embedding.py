@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from dataclasses import dataclass
 
 import aiohttp
@@ -76,7 +77,7 @@ def decode_vector(raw: bytes | None, dims: int) -> np.ndarray | None:
 
 
 class EmbeddingClient:
-    """An OpenAI-compatible /embeddings endpoint, such as vLLM, serving the model under its name."""
+    """OpenAI-compatible /embeddings endpoints, such as vLLM, serving the model under its name; a comma separates several GPUs."""
 
     def __init__(
         self,
@@ -87,13 +88,30 @@ class EmbeddingClient:
         timeout: float = 120.0,
         in_flight: int = 4,
     ):
-        self.url = url
+        self.urls = [part.strip() for part in url.split(",") if part.strip()]
+        self.url = self.urls[0]
         self.model = model
         self.api_key = api_key
         self.batch = batch
-        self.in_flight = in_flight
+        self.in_flight = in_flight * len(self.urls)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.load = dict.fromkeys(self.urls, 0)
         self.session: aiohttp.ClientSession | None = None
+        self.free = asyncio.Event()
+        self.free.set()
+        self.paused_s = 0.0
+        self.paused_at = 0.0
+
+    def pause(self) -> None:
+        """Real tasks wait between batches, so a capacity test has the server to itself."""
+        if self.free.is_set():
+            self.paused_at = time.monotonic()
+        self.free.clear()
+
+    def resume(self) -> None:
+        if not self.free.is_set():
+            self.paused_s += time.monotonic() - self.paused_at
+        self.free.set()
 
     def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
@@ -103,13 +121,21 @@ class EmbeddingClient:
             self.session = aiohttp.ClientSession(timeout=self.timeout, headers=headers)
         return self.session
 
+    @property
+    def servers(self) -> int:
+        return len(self.urls)
+
     async def served_models(self) -> list[str]:
-        """The model names the server answers to, from its /models list."""
-        url = self.url.rsplit("/embeddings", 1)[0] + "/models"
-        async with self._session().get(url) as response:
-            response.raise_for_status()
-            answer = await response.json()
-        return [row["id"] for row in answer.get("data", [])]
+        """The model names every server answers to, from their /models lists."""
+        served: list[str] | None = None
+        for url in self.urls:
+            models = url.rsplit("/embeddings", 1)[0] + "/models"
+            async with self._session().get(models) as response:
+                response.raise_for_status()
+                answer = await response.json()
+            names = [row["id"] for row in answer.get("data", [])]
+            served = names if served is None else [n for n in served if n in names]
+        return served or []
 
     async def embed(self, texts: list[str]) -> np.ndarray:
         """Vectors in the texts' order; a few batches in flight keep the server busy."""
@@ -117,7 +143,8 @@ class EmbeddingClient:
 
         async def batch(start: int) -> list[np.ndarray]:
             async with slots:
-                return await self._embed(texts[start : start + self.batch])
+                await self.free.wait()
+                return await self.embed_now(texts[start : start + self.batch])
 
         parts = await asyncio.gather(
             *(batch(start) for start in range(0, len(texts), self.batch))
@@ -125,16 +152,23 @@ class EmbeddingClient:
         vectors = [vector for part in parts for vector in part]
         return np.array(vectors, dtype=np.float32).reshape(len(texts), self.model.dims)
 
-    async def _embed(self, texts: list[str]) -> list[np.ndarray]:
+    async def embed_now(self, texts: list[str]) -> list[np.ndarray]:
+        """One batch, whether or not real tasks are paused."""
         body = {
             "model": self.model.name,
             "input": texts,
             "encoding_format": "base64",
             "truncate_prompt_tokens": self.model.max_tokens,
         }
-        async with self._session().post(self.url, json=body) as response:
-            response.raise_for_status()
-            answer = await response.json()
+        # The least busy server, so a faster GPU takes more batches.
+        url = min(self.urls, key=self.load.__getitem__)
+        self.load[url] += 1
+        try:
+            async with self._session().post(url, json=body) as response:
+                response.raise_for_status()
+                answer = await response.json()
+        finally:
+            self.load[url] -= 1
         rows = sorted(answer["data"], key=lambda row: row["index"])
         vectors = [
             np.frombuffer(base64.b64decode(row["embedding"]), dtype=np.float32)

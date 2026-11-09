@@ -30,6 +30,11 @@ class Settings(FetchSettings):
     embed_model: str = "desearch-4b-v1"
     embed_api_url: str = LOCAL_EMBEDDINGS
     embed_api_key: str = ""
+    capacity_test: int = 0
+    capacity_chain: str = "finney"
+    capacity_netuid: int = 22
+    capacity_in_flight: int = 4
+    capacity_stop_blocks: int = 2
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
@@ -60,6 +65,11 @@ class Settings(FetchSettings):
             embed_model=get("EMBED_MODEL", cls.embed_model),
             embed_api_url=get("EMBED_API_URL", cls.embed_api_url),
             embed_api_key=get("EMBED_API_KEY", cls.embed_api_key),
+            capacity_test=get("CAPACITY_TEST", cls.capacity_test),
+            capacity_chain=get("CAPACITY_CHAIN", cls.capacity_chain),
+            capacity_netuid=get("CAPACITY_NETUID", cls.capacity_netuid),
+            capacity_in_flight=get("CAPACITY_IN_FLIGHT", cls.capacity_in_flight),
+            capacity_stop_blocks=get("CAPACITY_STOP_BLOCKS", cls.capacity_stop_blocks),
         )
 
     def keypair(self) -> Keypair:
