@@ -369,8 +369,8 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     let mut filled = Vec::new();
     for round in state.lookups.read(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
-        // Its tasks are queued only if they exist, whatever a copy from before they were queued together left in its open set.
-        let keys: Vec<String> = round.order.iter().map(|task_id| format!("task:{task_id}")).collect();
+        // Its tasks were queued only if any exists, queued or being checked, whatever a copy from before they were queued together left in its open set.
+        let keys: Vec<String> = round.order.iter().flat_map(|task_id| [format!("task:{task_id}"), format!("vjob:{task_id}")]).collect();
         let queued: i64 = if keys.is_empty() { 0 } else { redis::cmd("EXISTS").arg(&keys).query_async(&mut state.redis.clone()).await? };
         if open > 0 && queued > 0 {
             let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));

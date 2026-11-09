@@ -13,7 +13,14 @@ end
 local limit = math.max(1, rate * burst / 3600)
 tokens = math.min(limit, math.max(-rate / 6, tokens) + since * rate / 3600)
 local moved = 0
-local whole = math.min(math.floor(tokens), most, math.floor(limit) - redis.call('ZCARD', ready))
+-- Only tasks no one has taken yet count: one that came back may be one nobody left can take, and must not stop the rest.
+-- The walk reaches past any buffer the room allows; whatever it does not reach counts as untaken, so nothing piles up.
+local first = redis.call('ZRANGE', ready, 0, 4999)
+local untaken = redis.call('ZCARD', ready) - #first
+for _, task_id in ipairs(first) do
+  if redis.call('EXISTS', 'holders:' .. task_id) == 0 then untaken = untaken + 1 end
+end
+local whole = math.min(math.floor(tokens), most, math.floor(limit) - untaken)
 if whole > 0 then
   local due = redis.call('ZRANGEBYSCORE', held, '-inf', ARGV[1], 'LIMIT', 0, whole)
   for _, task_id in ipairs(due) do

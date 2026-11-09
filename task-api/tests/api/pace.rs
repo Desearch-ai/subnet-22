@@ -263,6 +263,30 @@ async fn hand_backs_cost_the_rate_so_miners_are_given_no_more_than_it_says() {
 }
 
 #[tokio::test]
+async fn tasks_every_miner_has_held_do_not_stop_the_rest_being_released() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("embed", 60.0);
+    let t0 = 1_000_000.0;
+    fill(&h, &queue, "live", 300, t0).await;
+    queue.release_paced(&h.redis, t0 + 61.0, 3600.0, AT_ONCE).await.unwrap();
+    let mut clock = t0 + 61.0;
+    // Many more tasks than the limit, each taken and handed back by the only miner there is.
+    for _ in 0..250 {
+        clock += 2.0;
+        queue.release_paced(&h.redis, clock, 3600.0, AT_ONCE).await.unwrap();
+        if let Ok(claims) = queue.claim(&h.redis, "only", 50, 100, 1, clock).await.unwrap() {
+            queue.abandon(&h.redis, &claims[0].task_id, "only").await.unwrap();
+        }
+    }
+    for _ in 0..60 {
+        clock += 1.0;
+        queue.release_paced(&h.redis, clock, 3600.0, AT_ONCE).await.unwrap();
+    }
+    let (_, ready) = queue.held_and_ready(&h.redis).await.unwrap();
+    assert_eq!(ready, 260, "the 250 only that miner held, and ten seconds' worth for anyone else, with no pile behind them");
+}
+
+#[tokio::test]
 async fn hand_backs_cost_the_rate_nothing_without_one() {
     let h = Harness::start().await;
     let queue = TaskQueue::new("embed", 60.0);
@@ -285,9 +309,8 @@ async fn an_input_that_is_not_text_stops_no_round() {
     assert_eq!(left, 0);
 }
 
-#[tokio::test]
-async fn a_round_marked_open_with_no_tasks_is_filled() {
-    let h = Harness::with(|s| s.embed_tasks = true).await;
+/// A revealed round not yet marked filled, with its open set written, as a copy from before the two went together could leave it.
+async fn revealed_and_marked_open(h: &Harness) -> Vec<String> {
     let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, input().to_string()).await.unwrap();
     let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round");
     let id = round.round_id.clone();
@@ -301,10 +324,25 @@ async fn a_round_marked_open_with_no_tasks_is_filled() {
     task_api::rounds::reveal(&mut revealed, &seed);
     let saved = revealed.clone();
     h.state.db.run(move |conn| task_api::roundstore::mark_revealed(conn, &saved)).await.unwrap();
-    // As a copy from before the two went together could leave it.
     let _: i64 = h.redis.clone().sadd(lifecycle::open_round_key(&round.round_id), &revealed.order).await.unwrap();
+    revealed.order
+}
+
+#[tokio::test]
+async fn a_round_marked_open_with_no_tasks_is_filled() {
+    let h = Harness::with(|s| s.embed_tasks = true).await;
+    revealed_and_marked_open(&h).await;
     lifecycle::fill_missing(&h.state).await.unwrap();
     assert_eq!(h.state.embed.depth(&h.redis).await.unwrap(), 1, "its task is queued, not lost with the round open for good");
+}
+
+#[tokio::test]
+async fn a_round_with_its_tasks_being_checked_is_not_filled_again() {
+    let h = Harness::with(|s| s.embed_tasks = true).await;
+    let order = revealed_and_marked_open(&h).await;
+    let _: () = h.redis.clone().set(format!("vjob:{}", order[0]), "{}").await.unwrap();
+    lifecycle::fill_missing(&h.state).await.unwrap();
+    assert_eq!(h.state.embed.depth(&h.redis).await.unwrap(), 0, "a task already done is not given out again");
 }
 
 #[tokio::test]
