@@ -112,9 +112,10 @@ With `--news-lane`, a listed news site's lane files are polled on their own: Goo
 and Atom feeds, and files of up to 5,000 entries whose newest entry is under two days old. A poll reads
 the one lane file due first, with the validators of its last read, on fetch slots of its own, and leaves
 the site's standing and its next visit as they were; robots.txt, read by the site's visits within the
-last two days, and the site's Crawl-delay apply, and polls of one site are at least a minute apart. The
-sites whose lane files find the most new pages are polled every 2 minutes, the rest every 12, and a
-site's visits come when its other files are due. The pages a news site's lists gain go out first in the
+last two days, and the site's Crawl-delay apply, and polls of one site are at least 10 seconds apart. The
+sites whose lane files find the most new pages are polled every 2 minutes, the rest every 12; a lane
+file that did not change waits half as long again each time, up to five times that, and a site's visits
+come when its other files are due. The pages a news site's lists gain go out first in the
 next dispatch pass. A news site whose lane files' newest story is over two hours old has its homepage
 read in the lane as a list of the links shaped like the articles its lane files list (`/post/123`,
 `/2026/11/10/a-story/`), not its sections or tags; a read that finds new ones brings the homepage back in

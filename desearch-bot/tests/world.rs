@@ -1263,6 +1263,36 @@ async fn a_news_lane_poll_reads_only_the_due_lane_file_and_leaves_the_site_as_it
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lane_file_that_did_not_change_waits_half_as_long_again_before_its_next_poll() {
+    let web: Shared = Arc::default();
+    let host = "quiet.test";
+    lane_site(&web, host, &["/story/1"]);
+    let body = news_urlset(host, &["/story/1"]);
+    web.lock().unwrap().add(host, "/news.xml", 200, Some("v1"), body.as_bytes());
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600)] {
+            record.insert(name.into(), at.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 1, "next": now - 60, "lane": true, "etag": "v1", "interval": 720, "newest": now - 600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-quiet", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    crawl.step().await.unwrap();
+    let hits: Vec<(String, Option<String>)> = web.lock().unwrap().hits.iter().map(|(_, path, validator)| (path.clone(), validator.clone())).collect();
+    assert_eq!(hits, [("/news.xml".to_string(), Some("v1".to_string()))], "one conditional request");
+    let news = buckets.store(host).sitemap(host, &format!("http://{host}/news.xml")).unwrap().unwrap();
+    assert_eq!(news["interval"].as_i64(), Some(1_080), "unchanged, it waits half as long again: up to five times its tier");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_site_whose_lane_files_lag_has_its_homepage_read_for_article_links_and_feeds() {
     let web: Shared = Arc::default();
     let host = "lagging.test";

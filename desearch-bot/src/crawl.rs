@@ -53,8 +53,8 @@ const LINKS_BUSY_WAIT: i64 = 60;
 const LINKS_LEAST_WAIT: i64 = 10 * 60;
 /// A news site that a visit or link work is busy with is polled this many seconds later.
 const NEWS_BUSY_WAIT: i64 = 60;
-/// Seconds between two news lane polls of one site at the least.
-const NEWS_GAP: i64 = 60;
+/// Seconds between two news lane polls of one site at the least; a site with many lane files has one read every this often, Crawl-delay aside.
+const NEWS_GAP: i64 = 10;
 /// How often the news sites polled every two minutes are chosen again, by the new pages their lane files found.
 const NEWS_TIER_EVERY: Duration = Duration::from_secs(300);
 /// The weight a poll's new pages an hour carry against a site's rate so far.

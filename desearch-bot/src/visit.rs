@@ -106,6 +106,8 @@ const HOME_SLOW: i64 = 6 * schedule::HOUR;
 const HOME_LEAD: usize = 2;
 /// A news site whose lane files' newest story is older than this has its homepage checked.
 const HOME_STALE: i64 = 2 * schedule::HOUR;
+/// How many times its tier's interval a lane file waits at most while it does not change.
+const LANE_QUIET_MOST: i64 = 5;
 /// Article shapes a lane file keeps: the commonest, each at least this share of its entries.
 const SHAPES_KEPT: usize = 12;
 const SHAPE_SHARE: f64 = 0.05;
@@ -1633,7 +1635,8 @@ impl Run<'_> {
         update.interval = if polled && update.kind.as_deref() == Some(HOMEPAGE_KIND) {
             (update.interval * 2).clamp(HOME_FAST, HOME_SLOW)
         } else if polled {
-            lane_interval
+            // A lane file that did not change waits longer, up to five times its tier, so a site with many of them is read where its stories are.
+            (update.interval * 3 / 2).clamp(lane_interval, lane_interval * LANE_QUIET_MOST)
         } else {
             schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news)
         };
