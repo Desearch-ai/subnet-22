@@ -34,6 +34,10 @@ pub const POLL_WINDOW_S: f64 = 10.0;
 pub const MINUTE: f64 = 60.0;
 const DEV_RECEIPT_KEY: &str = "//TaskApi";
 
+fn told_wait_key(kind: &str, hotkey: &str) -> String {
+    format!("told_wait:{kind}:{hotkey}")
+}
+
 pub struct State {
     pub settings: Settings,
     pub redis: Redis,
@@ -254,6 +258,22 @@ impl State {
             return Ok(None);
         }
         Ok(Some(0.01f64.max(round_to((window + 1) as f64 * POLL_WINDOW_S - at, 3))))
+    }
+
+    /// Holds a hotkey told there is no task of this kind for it to the wait it was told.
+    pub async fn told_to_wait(&self, kind: &str, hotkey: &str, code: &str, seconds: f64) -> Result<()> {
+        let millis = (seconds * 1000.0).round() as i64;
+        if millis > 0 {
+            let _: () = self.redis.clone().pset_ex(told_wait_key(kind, hotkey), code, millis as u64).await?;
+        }
+        Ok(())
+    }
+
+    /// What a hotkey was told for this kind of task and the seconds it still has to wait, None once it may ask.
+    pub async fn still_told_to_wait(&self, kind: &str, hotkey: &str) -> Result<Option<(String, f64)>> {
+        let key = told_wait_key(kind, hotkey);
+        let (told, left): (Option<String>, i64) = redis::pipe().get(&key).pttl(&key).query_async(&mut self.redis.clone()).await?;
+        Ok(told.filter(|_| left > 0).map(|told| (told, round_to(left as f64 / 1000.0, 3))))
     }
 
     /// Only the first of a run of identical refusals is signed into the log.

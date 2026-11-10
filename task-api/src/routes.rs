@@ -145,6 +145,13 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
     }
+    if state.settings.hold_to_wait {
+        if let Some((told, retry_after)) = state.still_told_to_wait(kind, &who.hotkey).await? {
+            // Not logged either: it is a poll the miner was told not to make.
+            let refusal = json!({"code": "RATE_LIMITED", "inputs": {"told": told, "retry_after": retry_after}});
+            return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
+        }
+    }
     if kind == EMBED && !state.settings.embed_tasks {
         return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
     }
@@ -187,7 +194,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     for _ in 0..CLAIM_DRAWS {
         let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
             Ok(claims) => claims,
-            Err(refusal) => return refused(state, &round_id, &who, refusal).await,
+            Err(refusal) => return nothing_for(state, &round_id, &who, kind, refusal).await,
         };
         steps.mark("queue");
         let drawn = claims.len();
@@ -221,7 +228,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     if issued.is_empty() && dropped > 0 {
         let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
-        return refused(state, &round_id, &who, refusal).await;
+        return nothing_for(state, &round_id, &who, kind, refusal).await;
     }
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));
@@ -241,6 +248,18 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         task["upload"]["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
     }
     Ok(Json(json!({"tasks": issued, "receipts": receipts})))
+}
+
+/// Refusals that mean the queue holds nothing this miner may take now: asking again before the wait it is told gains a race, not work.
+const TOLD_TO_WAIT: [&str; 2] = ["QUEUE_EMPTY", "ALREADY_HELD"];
+
+/// A refusal from the queue itself; one saying there is nothing for the miner holds it to the wait it is told, where that is switched on.
+async fn nothing_for(state: &State, round_id: &str, who: &Caller, kind: &str, refusal: Refusal) -> Answer {
+    if state.settings.hold_to_wait && TOLD_TO_WAIT.contains(&refusal.code) {
+        let wait = refusal.inputs.get("retry_after").and_then(Value::as_f64).unwrap_or_else(|| retry_after_for(refusal.code));
+        state.told_to_wait(kind, &who.hotkey, refusal.code, wait).await?;
+    }
+    refused(state, round_id, who, refusal).await
 }
 
 async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {

@@ -56,6 +56,8 @@ pub struct Settings {
     pub embed_claim_ttl: f64,
     pub validation_ttl: f64,
     pub poll_rate: f64,
+    /// A miner told there is no task for it waits what it was told before it may ask for that kind again, so asking more often than told gains nothing.
+    pub hold_to_wait: bool,
     pub reads_per_minute: i64,
     pub log_reads_per_minute: i64,
     pub failed_writes_per_minute: i64,
@@ -119,6 +121,19 @@ where
     match std::env::var(name) {
         Ok(value) => value.trim().parse().with_context(|| format!("{name}={value:?} is not a number")),
         Err(_) => Ok(default),
+    }
+}
+
+/// A setting that is on or off; anything else stops the start rather than quietly leaving it off.
+fn switch(name: &str) -> Result<bool> {
+    on_off(name, &text(name, "0"))
+}
+
+fn on_off(name: &str, value: &str) -> Result<bool> {
+    match value.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        other => bail!("{name}={other:?} must be 0 or 1"),
     }
 }
 
@@ -204,6 +219,7 @@ impl Settings {
             embed_claim_ttl: number("TASK_API_EMBED_CLAIM_TTL", EMBED_CLAIM_TTL_S as f64)?,
             validation_ttl: number("TASK_API_VALIDATION_TTL", 900.0)?,
             poll_rate: number("TASK_API_POLL_RATE", 0.5)?,
+            hold_to_wait: switch("TASK_API_HOLD_TO_WAIT")?,
             reads_per_minute: number("TASK_API_READS_PER_MINUTE", 120)?,
             log_reads_per_minute: number("TASK_API_LOG_READS_PER_MINUTE", 60)?,
             failed_writes_per_minute: number("TASK_API_FAILED_WRITES_PER_MINUTE", 30)?,
@@ -259,6 +275,15 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn a_switch_that_is_neither_on_nor_off_stops_the_start() {
+        assert!(!on_off("X", "0").unwrap());
+        assert!(on_off("X", " 1 ").unwrap());
+        for value in ["true", "yes", "2", ""] {
+            assert!(on_off("X", value).is_err(), "{value:?}");
+        }
+    }
 
     #[test]
     fn a_fixed_rate_that_would_quietly_do_nothing_or_publish_nonsense_stops_the_start() {

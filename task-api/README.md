@@ -45,6 +45,13 @@ reaches the API inside the claim, however long the API then takes over it; a fil
 completion reached the API is refused. Sending the same completion again returns the first one's
 answer. A miner is never given a batch it held before.
 
+A refused claim says in `retry_after` how many seconds to wait before asking again, 10 when there is
+no task for the miner (`QUEUE_EMPTY`, `ALREADY_HELD`). A hotkey may still ask 5 times in 10 seconds
+(`TASK_API_POLL_RATE`), so a miner that asks again at once catches a released task sooner than one
+that waits as told. With `TASK_API_HOLD_TO_WAIT=1` the API holds miners to the wait: a claim of that
+kind before it is over is answered `RATE_LIMITED`, with `told` naming the refusal, and is not logged.
+A miner that was given tasks may ask again at once.
+
 **Which uploads are checked.** On completion the API writes a signed note beside the upload (the
 task's URLs, its entity tag and the completion block). Once the block ten blocks after that exists,
 its hash decides whether validators check the upload, so no miner can know while uploading. Checked
@@ -341,6 +348,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
 | `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
+| `TASK_API_HOLD_TO_WAIT` | 0 | 1 holds a miner told there is no task for it to the `retry_after` it was told, for that kind of task |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
@@ -417,7 +425,13 @@ Lists return a page at a time (`limit`, at most 100) with a `next` value to pass
 - Log reads have their own database connection and thread, so they never delay claims or verdicts;
   when too many wait, the API answers `503` with `Retry-After`.
 - The caller's address is taken from Cloudflare's `CF-Connecting-IP` header, so serve the API only
-  through Cloudflare.
+  through Cloudflare. The API cannot tell who set that header: let the host accept connections only
+  from [Cloudflare's addresses](https://www.cloudflare.com/ips/), or use a Cloudflare Tunnel.
+  Otherwise a client that finds the host's address can set any address it likes and skip Cloudflare's
+  route, which is shorter only for it.
+- Once a minute the API logs how long requests spent inside it, per route (`time inside the API`,
+  with p50, p90, p99 and worst), and any over 5 seconds inside it or signed over 10 seconds before
+  they arrived. Time spent before a request reaches the API, in Cloudflare or the proxy, is not in it.
 
 ## Storage
 
