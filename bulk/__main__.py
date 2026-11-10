@@ -6,7 +6,10 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+from pyarrow.fs import S3FileSystem
 
 from bulk import arxiv, pmc, pubmed, wikipedia
 from bulk.rows import Batches, parse_as_of
@@ -78,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="a folder of <name>.json and <name>.xml pairs instead of the bucket",
     )
+    found.add_argument(
+        "--names",
+        type=Path,
+        help="version names to read from the bucket in this order, one per line, as `pmc-order` writes them",
+    )
     found.add_argument("--workers", type=int, default=32)
     found.add_argument(
         "--pmids-out",
@@ -112,6 +120,16 @@ def main(argv: list[str] | None = None) -> int:
         "pmc-inventory", help="download the PMC bucket's newest inventory CSV files"
     )
     inventory.add_argument("--out", type=Path, required=True)
+    ordered = commands.add_parser(
+        "pmc-order",
+        help="the newest version of each PMC article, most cited per year first, by OpenAlex's counts",
+    )
+    ordered.add_argument("--inventory", type=Path, nargs="+", required=True)
+    ordered.add_argument(
+        "--pmc-ids", type=Path, required=True, help=f"NCBI's PMCID table, from {pmc.PMC_IDS}"
+    )
+    ordered.add_argument("--out", type=Path, required=True)
+    ordered.add_argument("--workers", type=int, default=8)
     pmids = commands.add_parser("pmc-pmids", help="PMIDs of the PMC versions taken, from metadata alone")
     pmids.add_argument("--inventory", type=Path, nargs="+", required=True)
     pmids.add_argument("--out", type=Path, required=True)
@@ -131,6 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pmc-inventory":
         for path in pmc.latest_inventory(args.out, USER_AGENT):
             print(path)
+        return 0
+    if args.command == "pmc-order":
+        names = pmc.latest_versions(pmc.inventory_keys(args.inventory))
+        ids = pmc.pmc_ids(args.pmc_ids)
+        wanted = {ids[p][0] for p in names if p in ids and ids[p][0]}
+        files = pmc.openalex_files(USER_AGENT)
+        cited = pmc.citations(files, S3FileSystem(anonymous=True, region="us-east-1"), wanted, args.workers)
+        ordered = pmc.order(names, ids, cited, datetime.now(timezone.utc).year)
+        args.out.write_text("".join(f"{name}\n" for name in ordered))
+        print(json.dumps({"versions": len(ordered), "with_pmid": len(wanted), "cited": len(cited), "out": str(args.out)}))
         return 0
     if args.command == "pmc-pmids":
         names = pmc.latest_versions(pmc.inventory_keys(args.inventory))
@@ -159,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "pmc":
         if args.folder:
             found = pmc.from_folder(args.folder)
+        elif args.names:
+            found = pmc.from_bucket(args.names.read_text().split(), USER_AGENT, args.workers)
         else:
             names = pmc.latest_versions(pmc.inventory_keys(args.inventory or []))
             found = pmc.from_bucket(sorted(names.values()), USER_AGENT, args.workers)

@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from lxml import etree
 from lxml import html as lhtml
 
@@ -20,6 +22,10 @@ from bulk.rows import Batches, authors_line, paper_page, upload_row
 from desearch.extraction.text.markdown import Line, render
 
 BUCKET = "https://pmc-oa-opendata.s3.amazonaws.com"
+# NCBI's PMCID-PMID-DOI table, and OpenAlex's works snapshot whose citation counts order a run.
+PMC_IDS = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz"
+OPENALEX_WORKS = "https://openalex.s3.amazonaws.com/data/parquet/works/manifest.json"
+PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/"
 SEPARATOR = re.compile(r"[\s,;\u2013\u2014-]*")
 EMPTY_BRACKETS = re.compile(r"\s*(\[[\s,;\u2013-]*\]|\([\s,;\u2013-]*\))")
 SITE = "PMC"
@@ -255,9 +261,11 @@ def inventory_keys(paths: Iterable[Path]) -> Iterator[str]:
 
 
 def fetch(key: str, user_agent: str) -> bytes:
-    request = urllib.request.Request(
-        f"{BUCKET}/{key}", headers={"User-Agent": user_agent}
-    )
+    return fetch_url(f"{BUCKET}/{key}", user_agent)
+
+
+def fetch_url(url: str, user_agent: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -284,6 +292,57 @@ def taken_pmids(names: Iterable[str], user_agent: str, workers: int) -> Iterator
 
     with ThreadPoolExecutor(workers) as pool:
         yield from (pmid for pmid in pool.map(one, names) if pmid)
+
+
+def pmc_ids(path: Path) -> dict[str, tuple[str, int]]:
+    """PMCID to its PMID and year, from NCBI's PMC-ids.csv.gz."""
+    with gzip.open(path, "rt", newline="") as source:
+        return {
+            row["PMCID"]: (row["PMID"], int(row["Year"]) if row["Year"].isdigit() else 0)
+            for row in csv.DictReader(source)
+            if row["PMCID"]
+        }
+
+
+def openalex_files(user_agent: str) -> list[str]:
+    """The works snapshot's Parquet files, as bucket paths."""
+    manifest = json.loads(fetch_url(OPENALEX_WORKS, user_agent))
+    return [entry["url"].removeprefix("s3://") for entry in manifest["files"]]
+
+
+def citations(paths: list[str], filesystem, wanted: set[str], workers: int) -> dict[str, int]:
+    """OpenAlex citation counts of the PMIDs in `wanted`, read from works Parquet files a few columns at a time."""
+
+    def one(path: str) -> dict[str, int]:
+        table = pq.read_table(path, columns=["ids", "cited_by_count"], filesystem=filesystem)
+        pmid = pc.map_lookup(table.column("ids"), "pmid", "first")
+        has = pc.is_valid(pmid)
+        found: dict[str, int] = {}
+        for url, cited in zip(pmid.filter(has).to_pylist(), table.column("cited_by_count").filter(has).to_pylist()):
+            key = url.removeprefix(PUBMED_URL)
+            if key in wanted:
+                found[key] = max(found.get(key, 0), cited or 0)
+        return found
+
+    counts: dict[str, int] = {}
+    with ThreadPoolExecutor(workers) as pool:
+        for found in pool.map(one, paths):
+            for key, cited in found.items():
+                counts[key] = max(counts.get(key, 0), cited)
+    return counts
+
+
+def order(
+    names: dict[str, str], ids: dict[str, tuple[str, int]], cited: dict[str, int], year: int
+) -> list[str]:
+    """Version names, most cited per year since publication first, the newest PMCID first among equals."""
+
+    def rank(pmcid: str) -> tuple[float, int]:
+        pmid, published = ids.get(pmcid, ("", 0))
+        per_year = cited.get(pmid, 0) / max(year - published + 1, 1) if published else 0.0
+        return -per_year, -int(pmcid.removeprefix("PMC") or 0)
+
+    return [names[pmcid] for pmcid in sorted(names, key=rank)]
 
 
 def from_folder(folder: Path) -> Iterator[tuple[dict, bytes | None]]:

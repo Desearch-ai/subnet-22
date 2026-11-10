@@ -42,6 +42,9 @@ python -m bulk pmc-inventory --out inventory
 python -m bulk pmc-pmids --inventory inventory/*.csv.gz --out pmc-pmids.txt
 python -m bulk pubmed --out runs/pubmed-n0001 --as-of 2026-01-29T00:00:00Z --skip-pmids pmc-pmids.txt pubmed26n0001.xml.gz
 python -m bulk pmc --out runs/pmc-1027 --as-of 2026-10-27T01:00:00Z --inventory inventory/*.csv.gz
+curl -O https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz
+python -m bulk pmc-order --inventory inventory/*.csv.gz --pmc-ids PMC-ids.csv.gz --out pmc-order.txt
+python -m bulk pmc --out runs/pmc-1110-01 --run 20261110-01 --as-of 2026-11-10T00:00:00Z --names pmc-order-01.txt
 python -m bulk arxiv-harvest --out oai --from 2026-10-01 --until 2026-10-27
 python -m bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
 python -m bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
@@ -68,6 +71,10 @@ in the run folder lists the batch files already published. Bulk files hold at mo
 | `arxiv-text` | Common Pile's `arxiv_papers` files, with the OAI-PMH pages for each paper's licence | full text without references, at the paper's HTML view (`arxiv.org/html/<id>` from 2312 on, `ar5iv.labs.arxiv.org/html/<id>` before) | papers whose arXiv record is CC BY, CC BY-SA or CC0 |
 | `pmc` | the `pmc-oa-opendata` bucket, newest version of each article | full text without references, with its DOI | open access under CC0, CC BY, CC BY-SA or CC BY-ND, not retracted |
 | `wikipedia` | Wikimedia Enterprise snapshots | the article as the live page shows it | namespace 0, no disambiguation pages |
+
+`pmc-order` lists the newest version of every PMC article, most cited per year since publication first, by
+OpenAlex's citation counts (joined by PMID through NCBI's PMCID table), so a run fed slices of that list embeds the
+most-read articles first.
 
 Wikipedia articles are framed as the live page frames them and read by the same `extract()` a crawl uses, so the text
 matches a crawl of the live page. Hidden categories come from the category-namespace snapshot.

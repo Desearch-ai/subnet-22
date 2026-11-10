@@ -137,6 +137,48 @@ def test_pmc_takes_only_open_commercial_unretracted_versions_and_the_newest_of_e
     assert pmc.latest_versions(keys) == {"PMC1": "PMC1.3", "PMC2": "PMC2.1"}
 
 
+def test_pmc_versions_go_most_cited_per_year_first_by_their_pmid_in_openalex(tmp_path):
+    import pyarrow as pa
+    import pyarrow.fs as pafs
+    import pyarrow.parquet as pq
+
+    ids = tmp_path / "PMC-ids.csv.gz"
+    with gzip.open(ids, "wt", newline="") as out:
+        out.write("Journal Title,ISSN,eISSN,Year,Volume,Issue,Page,DOI,PMCID,PMID,Manuscript Id,Release Date\n")
+        out.write("J,,,2006,1,1,1,10.1/a,PMC1,11,,live\n")
+        out.write("J,,,2025,1,1,1,10.1/b,PMC2,22,,live\n")
+        out.write("J,,,2025,1,1,1,10.1/c,PMC3,33,,live\n")
+        out.write("J,,,2024,1,1,1,10.1/d,PMC4,,,live\n")
+        out.write("J,,,2020,1,1,1,10.1/e,PMC9,99,,live\n")
+    works = tmp_path / "part_0000.parquet"
+    pubmed = "https://pubmed.ncbi.nlm.nih.gov/"
+    pq.write_table(
+        pa.table(
+            {
+                "ids": pa.array(
+                    [
+                        [("openalex", "W1"), ("pmid", pubmed + "11")],
+                        [("openalex", "W2"), ("pmid", pubmed + "22")],
+                        [("openalex", "W3"), ("doi", "https://doi.org/10.1/c")],
+                        [("openalex", "W9"), ("pmid", pubmed + "99")],
+                    ],
+                    type=pa.map_(pa.string(), pa.string()),
+                ),
+                "cited_by_count": [210, 18, 500, 70],
+            }
+        ),
+        works,
+    )
+    pmids = pmc.pmc_ids(ids)
+    assert pmids["PMC2"] == ("22", 2025) and pmids["PMC4"] == ("", 2024)
+    cited = pmc.citations([str(works)], pafs.LocalFileSystem(), {"11", "22", "33"}, workers=1)
+    assert cited == {"11": 210, "22": 18}, "PMIDs outside the wanted set are not kept"
+    names = {"PMC1": "PMC1.2", "PMC2": "PMC2.1", "PMC3": "PMC3.1", "PMC4": "PMC4.1", "PMC5": "PMC5.1"}
+    assert pmc.order(names, pmids, cited, 2026) == ["PMC1.2", "PMC2.1", "PMC5.1", "PMC4.1", "PMC3.1"], (
+        "210 citations in 21 years beat 18 in 2; the rest go newest first"
+    )
+
+
 def test_arxiv_records_become_abstract_pages_and_deleted_records_removals(tmp_path):
     source = tmp_path / "oai-000001.xml"
     source.write_text(ARXIV)
