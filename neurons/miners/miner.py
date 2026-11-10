@@ -40,6 +40,8 @@ HEADROOM = 0.7
 ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
+# Where claims wait in line, how long to hold a place before asking again; ignored where they do not.
+CLAIM_WAIT_S = 20
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
@@ -55,8 +57,9 @@ class TaskWorker:
     """Claims one kind of task and runs up to max_tasks of them at once."""
 
     kind = ""
-    # Seconds the API client allows a call, here a claim that may wait.
-    api_timeout = 30.0
+    # Seconds the API client allows a call. A claim may wait, and a lost answer to one is a lost task and a strike,
+    # so the wait comes on top of what a call may take.
+    api_timeout = CLAIM_WAIT_S + 30.0
 
     def __init__(self, settings: Settings, api: TaskApiClient | None = None):
         self.settings = settings
@@ -161,7 +164,7 @@ class TaskWorker:
         return 1
 
     def claim_body(self) -> dict:
-        return {"kind": self.kind, "count": self.wanted()}
+        return {"kind": self.kind, "count": self.wanted(), "wait_s": CLAIM_WAIT_S}
 
     def claimed(self, task: dict) -> None:
         pass

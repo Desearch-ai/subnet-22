@@ -149,7 +149,7 @@ async fn claim_tasks(state: &Arc<State>, signed: &Signed<'_>, waited: &mut Durat
         let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
     }
-    let in_line = kind == EMBED && state.settings.embed_line;
+    let in_line = state.settings.line(kind).on;
     // In line, asking more often gains nothing anyway, and a polling miner is told less than a wait.
     if state.settings.hold_to_wait && !in_line {
         if let Some((told, retry_after)) = state.still_told_to_wait(kind, &who.hotkey).await? {
@@ -190,7 +190,7 @@ async fn claim_tasks(state: &Arc<State>, signed: &Signed<'_>, waited: &mut Durat
         None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
     };
     steps.mark("budget");
-    let mut waiting = (in_line && body.wait_s > 0.0).then(|| state.waiters.wait(&who.hotkey, state.redis.clone()));
+    let mut waiting = (in_line && body.wait_s > 0.0).then(|| state.waiters.wait(kind, &who.hotkey, state.redis.clone()));
     let wait_s = body.wait_s.min(MAX_WAIT_S);
     let ask = Ask { who: who.clone(), kind, budget, count: body.count, in_line };
     let answer = serve(state, &round_id, ask, waiting.as_ref(), Instant::now() + Duration::from_secs_f64(wait_s), steps, waited).await;
@@ -292,7 +292,7 @@ async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, Ap
     let tasks = state.tasks(kind);
     let limit = WAITING_PER_BUDGET * budget;
     let drawing = if in_line {
-        let (keep, places) = (state.settings.embed_line_keep, state.settings.embed_line_places);
+        let (keep, places) = (state.settings.line_keep, state.settings.line(kind).places);
         tasks.claim_in_line(&state.redis, &who.hotkey, budget, limit, count, now(), keep, places).await?
     } else {
         tasks.claim(&state.redis, &who.hotkey, budget, limit, count, now()).await?
@@ -313,7 +313,7 @@ async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, Ap
                 dropped += 1;
                 // A task that was never going anywhere costs no one their turn.
                 if let Some(since) = got.waited_from {
-                    tasks.keep_place(&state.redis, &who.hotkey, since, now(), state.settings.embed_line_keep).await?;
+                    tasks.keep_place(&state.redis, &who.hotkey, since, now(), state.settings.line_keep).await?;
                 }
                 continue;
             }

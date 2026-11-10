@@ -1,4 +1,4 @@
-//! Embed claims waiting in line: the next released task goes to the place that has waited longest, polling miners keep working and never get ahead, and the order can be checked afterwards.
+//! Claims waiting in line: the next released task goes to the place that has waited longest, polling miners keep working and never get ahead, and the order can be checked afterwards. Embed and crawl each have a line of their own.
 
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::embed::{embed_rounds, embed_score, inputs, score};
-use crate::harness::{task_id, vectors, Client, Harness, MINER, RIVAL};
+use crate::harness::{first_url, parquet, score as crawl_score, task_id, urls, vectors, Client, Harness, MINER, RIVAL};
 
 const THIRD: &str = "//LineThird";
 // Within what miners' clients allow and what a signature is good for.
@@ -26,7 +26,7 @@ fn body(wait_s: i64, count: i64) -> Value {
 async fn in_line(tune: impl FnOnce(&mut task_api::settings::Settings)) -> (Harness, watch::Sender<bool>) {
     let h = Harness::with(|s| {
         s.embed_tasks = true;
-        s.embed_line = true;
+        s.embed_line.on = true;
         s.embed_release_per_hour = 3600.0;
         tune(s);
     })
@@ -143,7 +143,7 @@ async fn polling_never_gets_ahead_of_waiting_and_polling_miners_keep_their_turn(
 
 #[tokio::test]
 async fn a_place_nobody_asks_for_is_let_go_and_the_next_in_line_is_served() {
-    let (h, _stop) = in_line(|s| s.embed_line_keep = 1.0).await;
+    let (h, _stop) = in_line(|s| s.line_keep = 1.0).await;
     embed_rounds(&h, inputs(1)).await;
     let mut release = Release::start(&h).await;
     assert_eq!(poll(&h.rival).await["refusal"]["inputs"]["ahead"], 0);
@@ -200,7 +200,7 @@ async fn a_miner_with_no_capacity_is_told_so_at_once_and_holds_no_place() {
 
 #[tokio::test]
 async fn a_miner_allowed_more_places_holds_one_for_each_task_and_keeps_the_older_ones() {
-    let (h, _stop) = in_line(|s| s.embed_line_places = 3).await;
+    let (h, _stop) = in_line(|s| s.embed_line.places = 3).await;
     let hotkey = h.miner.ss58();
     h.state
         .db
@@ -453,7 +453,7 @@ async fn a_client_gone_as_it_is_served_leaves_no_claim_without_a_receipt() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chain_of_hotkeys_holds_a_task_no_longer_than_a_place_lasts() {
     const KEEP: f64 = 2.0;
-    let (h, _stop) = in_line(|s| s.embed_line_keep = KEEP).await;
+    let (h, _stop) = in_line(|s| s.line_keep = KEEP).await;
     let clients: Vec<Client> = (0..4).map(|at| h.client(&format!("//LineChain{at}"), &h.url)).collect();
     embed_rounds(&h, inputs(1)).await;
     let mut release = Release::start(&h).await;
@@ -522,7 +522,7 @@ async fn with_the_line_off_a_claim_that_asks_to_wait_is_answered_at_once_as_befo
 }
 
 #[tokio::test]
-async fn crawl_claims_are_not_in_line() {
+async fn crawl_claims_are_not_in_line_while_only_the_embed_line_is_on() {
     let (h, _stop) = in_line(|_| {}).await;
     let started = Instant::now();
     let refused = h.miner.post("/v1/tasks/claim", json!({"kind": "crawl", "wait_s": 15})).await.unwrap();
@@ -603,4 +603,172 @@ async fn every_uid_waiting_at_once_is_served_in_the_order_it_came_and_soon() {
     let worst =
         served.iter().enumerate().map(|(at, (_, waited))| (at as i64 - served.iter().filter(|(_, other)| other < waited).count() as i64).abs()).max().unwrap();
     assert!(worst <= 30, "the furthest any was served from its turn: {worst} ({overtaken} neighbours out of order)");
+}
+
+fn crawl(wait_s: i64, count: i64) -> Value {
+    json!({"kind": "crawl", "wait_s": wait_s, "count": count})
+}
+
+/// A harness with crawl claims waiting in line, and waiting claims woken as in service.
+async fn crawl_in_line(tune: impl FnOnce(&mut task_api::settings::Settings)) -> (Harness, watch::Sender<bool>) {
+    let h = Harness::with(|s| {
+        s.crawl_line.on = true;
+        tune(s);
+    })
+    .await;
+    let (stop, stopped) = watch::channel(false);
+    tokio::spawn(line::keep_waking(h.state.clone(), stopped));
+    (h, stop)
+}
+
+/// A crawl round of one task, revealed and released at once.
+async fn one_crawl_task(h: &Harness) -> String {
+    h.enqueue(urls(3)).await["round_id"].as_str().unwrap().to_string()
+}
+
+async fn crawl_budget(h: &Harness, hotkey: String, budget: i64) {
+    h.state
+        .db
+        .run(move |conn| {
+            task_api::budgets::get_or_create(conn, &hotkey, "crawl")?;
+            Ok(conn.execute("UPDATE miners SET budget = ? WHERE hotkey = ? AND pool = 'crawl'", rusqlite::params![budget, hotkey])?)
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn crawl_claims_wait_in_a_line_of_their_own_and_its_order_can_be_checked() {
+    let (h, _stop) = crawl_in_line(|_| {}).await;
+    let third = h.client(THIRD, &h.url);
+    for (client, ahead) in [(&h.miner, 0), (&h.rival, 1), (&third, 2)] {
+        let refused = client.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap();
+        let inputs = &refused["refusal"]["inputs"];
+        assert_eq!(
+            (refused["refusal"]["code"].clone(), inputs["ahead"].clone(), inputs["retry_after"].clone()),
+            (json!("QUEUE_EMPTY"), json!(ahead), json!(5))
+        );
+    }
+    let embed_line: i64 = h.redis.clone().zcard("line:embed").await.unwrap();
+    assert_eq!(embed_line, 0, "the embed line is not touched");
+
+    let first_round = one_crawl_task(&h).await;
+    assert_eq!(tasks(&third.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 0, "not its turn");
+    assert_eq!(tasks(&h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 0, "nor this one's");
+    let first = h.miner.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap();
+    assert_eq!(tasks(&first), 1, "the first place: {first}");
+    one_crawl_task(&h).await;
+    assert_eq!(tasks(&third.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 0);
+    assert_eq!(tasks(&h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 1);
+    one_crawl_task(&h).await;
+    assert_eq!(tasks(&third.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 1);
+
+    let events = h.public("/v1/events?outcome=issued&kind=crawl").await.1;
+    let issued = events["events"].as_array().unwrap();
+    assert_eq!(issued.len(), 3);
+    assert!(issued.iter().all(|event| event["kind"] == "crawl" && event["waited_from"].is_f64()), "{issued:?}");
+    assert_eq!(h.public("/v1/events?outcome=issued&kind=embed").await.1["events"], json!([]));
+    assert_eq!(h.public("/v1/overview?kind=crawl").await.1["supply"], json!({"mode": "as_planned", "waiting_line": true}));
+    assert_eq!(h.public("/v1/overview?kind=embed").await.1["supply"]["waiting_line"], false);
+
+    let task = first["tasks"][0].clone();
+    let id = task_id(&task);
+    let body = parquet(&task);
+    h.put(task["upload"]["url"].as_str().unwrap(), body.clone()).await;
+    let report = json!({"key": task["upload"]["key"], "rows": 3, "ok": 3, "errors": 0, "bytes": body.len()});
+    h.miner.post(&format!("/v1/tasks/{id}/complete"), report).await.unwrap();
+    h.opened(Some(&h.validator), Some(&id)).await;
+    h.validator.post(&format!("/v1/validation/{id}/score"), crawl_score("pass", 3, "ok", None, &first_url(&task))).await.unwrap();
+    assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [first_round.as_str()]);
+    if let Ok(python) = std::env::var("TASK_API_TEST_PYTHON") {
+        let url = h.url.clone();
+        let done = tokio::task::spawn_blocking(move || {
+            let round = std::process::Command::new(&python)
+                .args([concat!(env!("CARGO_MANIFEST_DIR"), "/tools/verify_round.py"), "--api", &url, "--round", &first_round])
+                .output()
+                .unwrap();
+            let line = std::process::Command::new(&python)
+                .args([concat!(env!("CARGO_MANIFEST_DIR"), "/tools/verify_line.py"), "--api", &url, "--kind", "crawl"])
+                .output()
+                .unwrap();
+            (round, line)
+        });
+        let (round, line) = done.await.unwrap();
+        assert!(round.status.success(), "verify_round.py:\n{}", String::from_utf8_lossy(&round.stdout));
+        assert!(line.status.success(), "verify_line.py:\n{}", String::from_utf8_lossy(&line.stdout));
+        assert!(String::from_utf8_lossy(&line.stdout).contains("3 tasks given from the line"), "{}", String::from_utf8_lossy(&line.stdout));
+    }
+}
+
+#[tokio::test]
+async fn a_crawl_claim_in_line_takes_a_task_for_each_place_whatever_it_asks_for() {
+    let (h, _stop) = crawl_in_line(|_| {}).await;
+    crawl_budget(&h, h.miner.ss58(), 3).await;
+    for _ in 0..3 {
+        one_crawl_task(&h).await;
+    }
+    assert_eq!(tasks(&h.miner.post("/v1/tasks/claim", crawl(0, 3)).await.unwrap()), 1, "one place, one task");
+    assert_eq!(tasks(&h.miner.post("/v1/tasks/claim", crawl(0, 3)).await.unwrap()), 1, "asked again, at the back of a line of none");
+}
+
+#[tokio::test]
+async fn a_crawl_claim_allowed_more_places_takes_a_task_for_each() {
+    let (h, _stop) = crawl_in_line(|s| s.crawl_line.places = 2).await;
+    crawl_budget(&h, h.miner.ss58(), 3).await;
+    for _ in 0..3 {
+        one_crawl_task(&h).await;
+    }
+    assert_eq!(tasks(&h.miner.post("/v1/tasks/claim", crawl(0, 3)).await.unwrap()), 2, "two places allowed");
+}
+
+#[tokio::test]
+async fn a_crawl_claim_waiting_beside_an_embed_one_is_woken_when_its_task_comes() {
+    let (h, _stop) = crawl_in_line(|s| {
+        s.embed_tasks = true;
+        s.embed_line.on = true;
+    })
+    .await;
+    let client = h.client(MINER, &h.url);
+    let embed = tokio::spawn(async move { client.post("/v1/tasks/claim", body(6, 1)).await.unwrap() });
+    settle().await;
+    let client = h.client(MINER, &h.url);
+    let crawling = tokio::spawn(async move { client.post("/v1/tasks/claim", crawl(15, 1)).await.unwrap() });
+    settle().await;
+    one_crawl_task(&h).await;
+    let released = Instant::now();
+    let answer = answered(crawling).await;
+    assert_eq!(tasks(&answer), 1, "{answer}");
+    assert!(released.elapsed() < Duration::from_secs(1), "woken in {:?}, not left to its own check every 3 s", released.elapsed());
+    assert!(!embed.is_finished(), "the embed claim waits on");
+    let embed = tokio::time::timeout(Duration::from_secs(8), embed).await.expect("answered when its wait ends").unwrap();
+    assert_eq!((embed["refusal"]["code"].clone(), embed["refusal"]["inputs"]["retry_after"].clone()), (json!("QUEUE_EMPTY"), json!(0)));
+}
+
+#[tokio::test]
+async fn a_miner_gone_from_its_crawl_wait_lets_go_of_its_crawl_place_only() {
+    let (h, _stop) = crawl_in_line(|s| {
+        s.embed_tasks = true;
+        s.embed_line.on = true;
+    })
+    .await;
+    assert_eq!(poll(&h.miner).await["refusal"]["inputs"]["ahead"], 0, "an embed place");
+    let client = h.client(MINER, &h.url);
+    let claim = tokio::spawn(async move { client.post("/v1/tasks/claim", crawl(15, 1)).await });
+    settle().await;
+    assert_eq!(h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()["refusal"]["inputs"]["ahead"], 1);
+    claim.abort();
+    settle().await;
+    assert_eq!(h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()["refusal"]["inputs"]["ahead"], 0, "its crawl place is let go");
+    assert_eq!(poll(&h.rival).await["refusal"]["inputs"]["ahead"], 1, "its embed place stands");
+}
+
+#[tokio::test]
+async fn with_the_crawl_line_on_a_hold_on_waiting_does_not_apply_to_crawl() {
+    let (h, _stop) = crawl_in_line(|s| s.hold_to_wait = true).await;
+    for _ in 0..3 {
+        let refused = h.miner.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap();
+        assert_eq!(refused["refusal"]["code"], "QUEUE_EMPTY", "in line a poll is told 5 s and keeps its place: {refused}");
+    }
+    let embed = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap();
+    assert_eq!(embed["refusal"]["code"], "KIND_CLOSED");
 }

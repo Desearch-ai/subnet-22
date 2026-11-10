@@ -52,7 +52,8 @@ that waits as told. With `TASK_API_HOLD_TO_WAIT=1` the API holds miners to the w
 second so a miner waiting exactly as told is never held: a claim of that kind sooner is answered
 `RATE_LIMITED`, with `told` naming the refusal, and is not logged. The hold is the hotkey's, for that
 kind, and ends when any of its claims of that kind is given tasks. A claim whose draws found only tasks
-being dropped is not held, as tasks it may take can be queued behind them.
+being dropped is not held, as tasks it may take can be queued behind them. Where that kind's
+[waiting line](#waiting-line) is on, asking more often gains nothing anyway, so the hold does not apply there.
 
 **Which uploads are checked.** On completion the API writes a signed note beside the upload (the
 task's URLs, its entity tag and the completion block). Once the block ten blocks after that exists,
@@ -256,15 +257,17 @@ covered: uploads then wait for their verdicts, and miners stop at `WAITING_FOR_V
 `target_tasks_per_hour`, `tasks_per_hour` (the rate now), `released_tasks_per_hour` (what actually went out, over
 about the last ten minutes), `max_change_per_hour`, `buffer_tasks`,
 `buffer_minutes`, `ready_tasks`, and `scheduled` (`tasks_per_hour`, `from`, `reached_by`) when a change is
-set or under way.
+set or under way. Its `waiting_line` says whether claims of that kind wait in line, for crawl too
+(`GET /v1/overview?kind=crawl` gives `mode` and `waiting_line` only).
 
-### Waiting line for embed tasks
+### Waiting line
 
 With `TASK_API_EMBED_LINE=1`, a released embed task goes to the place that has waited longest, so timing the
-claim API earns nothing.
+claim API earns nothing. `TASK_API_CRAWL_LINE=1` does the same for crawl tasks. Each kind has a line of its own,
+and a hotkey may wait in both at once.
 
 - **A place** is taken the first time a miner asks for a task with none ready for it, one a hotkey unless
-  `TASK_API_EMBED_LINE_PLACES` allows more, within its budget, and kept for `TASK_API_EMBED_LINE_KEEP_S` after it last
+  `TASK_API_EMBED_LINE_PLACES` (`TASK_API_CRAWL_LINE_PLACES`) allows more, within its budget, and kept for `TASK_API_LINE_KEEP_S` after it last
   asked, or until a waiting claim's connection closes. Asking again keeps a place; it never moves it up. The edge moves
   from timing to places: a hotkey with four places gets about four times the tasks while the line is long. A claim may take a task only while as many are ready as there are places
   ahead of it, so asking more often gains nothing, and neither does holding a connection open. Budget, the
@@ -275,7 +278,7 @@ claim API earns nothing.
   places are `ahead` and `in_line`.
 - **Polling miners** need no change. A poll is a claim with no wait: it takes a place, gets `retry_after` 5 and
   gets a task on the poll that finds its place's turn has come. That turn holds one task back for up to 5 s
-  more, or `TASK_API_EMBED_LINE_KEEP_S` when the miner has gone. With a long line they get their share, about the
+  more, or `TASK_API_LINE_KEEP_S` when the miner has gone. With a long line they get their share, about the
   same as waiting miners at a task a second across 250 hotkeys; with a short line each poll's wait costs them turns. A
   miner that polls less often than its place lasts starts again from the back each time.
 - **Signed requests** are checked as they arrive, so a wait does not run into the 60 s a signature is good for,
@@ -285,8 +288,8 @@ claim API earns nothing.
   later place served before an earlier one means the earlier miner had not asked again yet, or that a task it was due
   went nowhere, and the earlier place is then next however long the next task takes. So
   `tools/verify_round.py` checks that no place was passed by later places for longer than a place lasts (`--line-keep`
-  where `TASK_API_EMBED_LINE_KEEP_S` is not the default), and `tools/verify_line.py`
-  checks the same over the last issues of every round from `/v1/events`.
+  where `TASK_API_LINE_KEEP_S` is not the default), and `tools/verify_line.py --kind embed` (or `crawl`)
+  checks the same over the last issues of that kind from `/v1/events?kind=`.
 - **Load:** a waiting claim costs one open connection, one script when it joins and every 3 s after, and each
   copy of the API makes one or two Redis reads every 100 ms however many wait. With every miner waiting 20 s at a time
   that is fewer requests than the polling it replaces. Any proxy in front must allow a response to take over 20 s.
@@ -417,9 +420,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal; with a fixed rate, this is what makes room for the buffer |
 | `TASK_API_EMBED_RELEASE_PER_HOUR` | 0 | embed tasks released an hour however fast the planner hands inputs over, the rest waiting as a buffer; 0 leaves release to `TASK_API_RELEASE_SPREAD_S` alone |
 | `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it, published in `GET /v1/overview?kind=embed` ahead of that |
-| `TASK_API_EMBED_LINE` | 0 | 1 makes embed claims wait in line ([waiting line](#waiting-line-for-embed-tasks)) |
-| `TASK_API_EMBED_LINE_KEEP_S` | 30 | seconds a place in line lasts after its miner last asked, from 15 to 600 |
-| `TASK_API_EMBED_LINE_PLACES` | 1 | places one hotkey can hold in line at once, up to 50: tasks follow places, so this decides how tasks split between hotkeys |
+| `TASK_API_EMBED_LINE`, `TASK_API_CRAWL_LINE` | 0 | 1 makes claims of that kind wait in line ([waiting line](#waiting-line)) |
+| `TASK_API_LINE_KEEP_S` | 30 | seconds a place in either line lasts after its miner last asked, from 15 to 600 |
+| `TASK_API_EMBED_LINE_PLACES`, `TASK_API_CRAWL_LINE_PLACES` | 1 | places one hotkey can hold in that line at once, up to 50: tasks follow places, so this decides how tasks split between hotkeys, and a crawl claim in line takes one task a place whatever it asks for |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
@@ -453,7 +456,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
 | `GET /v1/validators` | every validator's votes, how often it agreed with the final result, and its standing |
 | `GET /v1/validators/{hotkey}` | the same for one validator |
-| `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome` |
+| `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome`, `kind` (each event names its round's `kind`) |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/room` | how many tasks the queue can take now, for the bot |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |

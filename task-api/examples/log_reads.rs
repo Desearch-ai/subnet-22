@@ -383,12 +383,15 @@ fn time(dir: &Path) -> Result<()> {
         votes(VoteFilter { validator: Some(validator.into()), agreed: Some(false), limit: 50, ..VoteFilter::default() }),
         Vec::len,
     )?;
-    let events =
-        |miner: Option<&'static str>, outcome: Option<&'static str>| move || roundlog::events(conn, miner, None, outcome, None, 50).map(|(found, _)| found);
+    let events = |miner: Option<&'static str>, outcome: Option<&'static str>| {
+        move || roundlog::events(conn, &roundlog::EventFilter { miner, outcome, ..Default::default() }, 50).map(|(found, _)| found)
+    };
     let leaked: &'static str = Box::leak(miner.clone().into_boxed_str());
     timed("events: one miner 50", events(Some(leaked), None), Vec::len)?;
     timed("events: refused 50", events(None, Some("refused")), Vec::len)?;
     timed("events: dropped 50", events(None, Some("dropped")), Vec::len)?;
+    let embed_issues = || roundlog::events(conn, &roundlog::EventFilter { outcome: Some("issued"), kind: Some("embed"), ..Default::default() }, 100);
+    timed("events: embed issued 100", embed_issues, |(found, _)| found.len())?;
     let tasks = |filter: TaskFilter| move || validations::recent(conn, &filter);
     let filter = |f: fn(&mut TaskFilter)| {
         let mut filter = TaskFilter { before: Some(until), limit: 50, ..TaskFilter::default() };

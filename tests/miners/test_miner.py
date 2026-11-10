@@ -29,7 +29,7 @@ from desearch.fetch import (
 )
 from neurons.miners import miner as miner_script
 from neurons.miners.config import Settings
-from neurons.miners.miner import Miner
+from neurons.miners.miner import CLAIM_WAIT_S, Miner
 from neurons.miners.rows import (
     ROW_GROUP_ROWS,
     UploadWriter,
@@ -273,6 +273,28 @@ class ClaimApi:
 
     async def aclose(self) -> None:
         pass
+
+
+def test_a_crawl_claim_asks_to_wait_in_line_and_the_client_outlasts_the_wait():
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({}))
+    assert miner.claim_body() == {"kind": "crawl", "count": 1, "wait_s": CLAIM_WAIT_S}
+    assert Miner.api_timeout >= CLAIM_WAIT_S + 30
+
+
+def test_a_crawl_claim_answered_after_its_wait_asks_again_at_once_and_one_answered_at_once_waits():
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({}))
+
+    async def answer(refusal):
+        async def post(path, body=None):
+            return {"tasks": [], "refusal": refusal}
+
+        miner.api.post = post
+        return await miner.poll()
+
+    in_line = {"code": "QUEUE_EMPTY", "inputs": {"ahead": 3, "retry_after": 0}}
+    assert asyncio.run(answer(in_line)) == 0.05, "a place lasts only while it asks"
+    held = {"code": "RATE_LIMITED", "inputs": {"told": "QUEUE_EMPTY", "retry_after": 7.5}}
+    assert asyncio.run(answer(held)) == 7.5, "held to a wait, it waits what is left"
 
 
 def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):

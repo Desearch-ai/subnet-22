@@ -77,7 +77,7 @@ its task comes on the poll after its turn comes. It gets nothing ahead of anyone
 gets somewhat less than a miner that waits, so update when you can.
 
 Each receipt says when its place was taken (`waited_from`), and `task-api/tools/verify_line.py` checks that order
-across miners from the public events.
+across miners from the public events. Crawl tasks may have a line of their own, which works the same way.
 
 ## How it is checked
 

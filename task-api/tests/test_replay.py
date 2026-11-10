@@ -225,21 +225,21 @@ def test_a_log_from_before_the_line_has_nothing_to_check():
     assert ok, why
 
 
-def test_the_line_tool_reads_the_public_events_oldest_first(monkeypatch):
+def test_the_line_tool_reads_one_kind_of_the_public_events_oldest_first(monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "verify_line", VERIFIER.with_name("verify_line.py")
     )
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
     pages = {
-        "/v1/events?outcome=issued&limit=100": {
+        "/v1/events?outcome=issued&kind=crawl&limit=100": {
             "events": [{"id": 3}, {"id": 2}],
             "next": 2,
         },
-        "/v1/events?outcome=issued&limit=100&before=2": {
+        "/v1/events?outcome=issued&kind=crawl&limit=100&before=2": {
             "events": [{"id": 1}],
             "next": None,
         },
     }
     monkeypatch.setattr(tool.verify_round, "get", lambda api, path: pages[path])
-    assert [event["id"] for event in tool.issues("api", 10)] == [1, 2, 3]
+    assert [event["id"] for event in tool.issues("api", "crawl", 10)] == [1, 2, 3]

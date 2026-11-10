@@ -403,13 +403,14 @@ async fn overview_of(state: &Arc<State>, hours: i64, kind: &'static str) -> Resu
     }))
 }
 
-/// What miners can plan on: the fixed rate embed tasks are released at, what it is changing to and how many tasks stand behind it; None for a kind with no such promise.
+/// What miners can plan on: whether claims wait in line, and the fixed rate embed tasks are released at, what it is changing to and how many tasks stand behind it.
 async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError> {
-    if kind != EMBED {
-        return Ok(Value::Null);
-    }
     let settings = &state.settings;
-    let Some(target) = settings.embed_release_target(at) else { return Ok(json!({"mode": "as_planned", "waiting_line": settings.embed_line})) };
+    let waiting_line = settings.line(kind).on;
+    if kind != EMBED {
+        return Ok(json!({"mode": "as_planned", "waiting_line": waiting_line}));
+    }
+    let Some(target) = settings.embed_release_target(at) else { return Ok(json!({"mode": "as_planned", "waiting_line": waiting_line})) };
     let (held, ready) = state.embed.held_and_ready(&state.redis).await?;
     let kept: Vec<Option<String>> = redis::cmd("HMGET").arg(EMBED_PACE).arg("rate").arg("released").query_async(&mut state.redis.clone()).await?;
     let read = |at: usize| kept.get(at).and_then(Clone::clone).and_then(|value| value.parse::<f64>().ok());
@@ -430,7 +431,7 @@ async fn supply_of(state: &State, kind: &str, at: f64) -> Result<Value, ApiError
         "buffer_minutes": round_to(held as f64 / rate * 60.0, 1),
         "ready_tasks": ready,
         "scheduled": scheduled,
-        "waiting_line": settings.embed_line,
+        "waiting_line": waiting_line,
     }))
 }
 
@@ -715,9 +716,17 @@ pub async fn events(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
     let miner = id_param(&query, "miner")?;
     let task_id = id_param(&query, "task_id")?;
     let outcome = literal_param(&query, "outcome", &["issued", "completed", "refused", "reclaimed", "dropped"])?;
+    let kind = literal_param(&query, "kind", &KINDS)?;
     let before = optional_int(&query, "before")?;
     let limit = int_param(&query, "limit", PAGE, 1, MAX_PAGE)?;
-    let (found, next) = state.reader.read(move |conn| roundlog::events(conn, miner.as_deref(), task_id.as_deref(), outcome.as_deref(), before, limit)).await?;
+    let (found, next) = state
+        .reader
+        .read(move |conn| {
+            let filter =
+                roundlog::EventFilter { miner: miner.as_deref(), task_id: task_id.as_deref(), outcome: outcome.as_deref(), kind: kind.as_deref(), before };
+            roundlog::events(conn, &filter, limit)
+        })
+        .await?;
     Ok(Json(json!({"events": found, "next": next})))
 }
 

@@ -449,7 +449,8 @@ async fn the_overview_publishes_the_rate_what_it_is_changing_to_and_the_buffer()
     assert_eq!((supply["scheduled"]["tasks_per_hour"].clone(), supply["scheduled"]["from"].clone()), (json!(3300.0), json!(later)));
     let ramp = supply["scheduled"]["reached_by"].as_f64().unwrap() - later;
     assert!((3400.0..3500.0).contains(&ramp), "a tenth an hour takes an hour less a bit: {ramp}");
-    assert_eq!(h.public("/v1/overview?kind=crawl").await.1["supply"], Value::Null, "crawl makes no such promise");
+    let crawl = h.public("/v1/overview?kind=crawl").await.1["supply"].clone();
+    assert_eq!(crawl, json!({"mode": "as_planned", "waiting_line": false}), "crawl promises no rate, only says whether it has a line");
     assert_eq!(h.state.settings.embed_release_target(later), Some(3300.0), "the target changes when it said it would");
 }
 

@@ -14,7 +14,7 @@ use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use task_api::lifecycle;
 use task_api::manifest::OPEN_LIST_KEY;
-use task_api::settings::{RegistryMode, SeedsMode, Settings};
+use task_api::settings::{Line, RegistryMode, SeedsMode, Settings};
 use task_api::state::{redis_from, State};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
@@ -176,9 +176,9 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         embed_queue_target: 100,
         embed_input_max_age: 72_000.0,
         release_spread: 0.0,
-        embed_line: false,
-        embed_line_keep: 30.0,
-        embed_line_places: 1,
+        embed_line: Line { on: false, places: 1 },
+        crawl_line: Line { on: false, places: 1 },
+        line_keep: 30.0,
         embed_release_per_hour: 0.0,
         embed_release_next: None,
         task_urls: 3,
