@@ -48,9 +48,11 @@ answer. A miner is never given a batch it held before.
 A refused claim says in `retry_after` how many seconds to wait before asking again, 10 when there is
 no task for the miner (`QUEUE_EMPTY`, `ALREADY_HELD`). A hotkey may still ask 5 times in 10 seconds
 (`TASK_API_POLL_RATE`), so a miner that asks again at once catches a released task sooner than one
-that waits as told. With `TASK_API_HOLD_TO_WAIT=1` the API holds miners to the wait: a claim of that
-kind before it is over is answered `RATE_LIMITED`, with `told` naming the refusal, and is not logged.
-A miner that was given tasks may ask again at once.
+that waits as told. With `TASK_API_HOLD_TO_WAIT=1` the API holds miners to the wait, less half a
+second so a miner waiting exactly as told is never held: a claim of that kind sooner is answered
+`RATE_LIMITED`, with `told` naming the refusal, and is not logged. The hold is the hotkey's, for that
+kind, and ends when any of its claims of that kind is given tasks. A claim whose draws found only tasks
+being dropped is not held, as tasks it may take can be queued behind them.
 
 **Which uploads are checked.** On completion the API writes a signed note beside the upload (the
 task's URLs, its entity tag and the completion block). Once the block ten blocks after that exists,
@@ -429,9 +431,10 @@ Lists return a page at a time (`limit`, at most 100) with a `next` value to pass
   from [Cloudflare's addresses](https://www.cloudflare.com/ips/), or use a Cloudflare Tunnel.
   Otherwise a client that finds the host's address can set any address it likes and skip Cloudflare's
   route, which is shorter only for it.
-- Once a minute the API logs how long requests spent inside it, per route (`time inside the API`,
-  with p50, p90, p99 and worst), and any over 5 seconds inside it or signed over 10 seconds before
-  they arrived. Time spent before a request reaches the API, in Cloudflare or the proxy, is not in it.
+- Once a minute the API logs how long requests spent inside it for its 8 busiest routes (`time inside
+  the API`, with p50, p90, p99 and worst; the quantiles from a sample of at most 20,000 a route, drawn
+  evenly over the minute), and any over 5 seconds inside it or signed over 10 seconds before they
+  arrived. Time spent before a request reaches the API, in Cloudflare or the proxy, is not in it.
 
 ## Storage
 

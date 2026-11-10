@@ -225,6 +225,12 @@ impl Inside {
         self.worst = self.worst.max(took);
         if self.took.len() < TIMES_KEPT {
             self.took.push(took);
+        } else {
+            // A sample drawn evenly from the whole minute, so a flood late in it shows.
+            let at = rand::Rng::gen_range(&mut rand::thread_rng(), 0..self.count);
+            if let Some(kept) = self.took.get_mut(at as usize) {
+                *kept = took;
+            }
         }
     }
 
@@ -370,6 +376,15 @@ mod tests {
         flood.add(9.0);
         assert_eq!((flood.count, flood.took.len()), (TIMES_KEPT as u64 + 6, TIMES_KEPT), "a flood keeps its count and worst, not every time");
         assert!(flood.line("GET /v1/ping").ends_with("worst 9000 ms"));
+        let mut late = Inside::default();
+        for _ in 0..TIMES_KEPT {
+            late.add(0.001);
+        }
+        for _ in 0..TIMES_KEPT {
+            late.add(0.5);
+        }
+        let line = late.line("POST /v1/tasks/claim");
+        assert!(line.contains("p90 500 ms") && line.contains("p99 500 ms"), "the slow second half shows: {line}");
     }
 
     #[test]

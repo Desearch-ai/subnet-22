@@ -227,11 +227,15 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         }
     }
     if issued.is_empty() && dropped > 0 {
+        // Not held: the draws ran out on dropped tasks, and tasks it may take can still be queued behind them.
         let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
-        return nothing_for(state, &round_id, &who, kind, refusal).await;
+        return refused(state, &round_id, &who, refusal).await;
     }
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));
+    }
+    if state.settings.hold_to_wait {
+        state.served(kind, &who.hotkey).await?;
     }
     steps.mark("issue");
     let receipts = state.record(receipts).await?;

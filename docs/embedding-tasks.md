@@ -92,9 +92,9 @@ The embed miner in this repository does all of this. It is here for anyone writi
 
 **Claim** with `POST /v1/tasks/claim` and the body `{"kind": "embed", "models": ["desearch-4b-v1"]}`. A
 claim that does not list the tasks' model is refused with `MODEL_MISMATCH`, at no cost. A refusal's
-`inputs.retry_after` is the number of seconds to wait before asking again. The API may hold you to it:
-a claim sooner is then answered `RATE_LIMITED` and earns nothing. Each task in the answer's `tasks`
-list looks like this:
+`inputs.retry_after` is the number of seconds to wait before asking again. When it says there is no task
+for you (`QUEUE_EMPTY`, `ALREADY_HELD`), the API may hold you to that wait: a claim sooner is then answered
+`RATE_LIMITED` and earns nothing. Each task in the answer's `tasks` list looks like this:
 
 ```json
 {
