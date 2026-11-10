@@ -148,6 +148,8 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
         // Records from before the news lane know only their Google News flag.
         lane: record.get("lane").and_then(Value::as_bool).or_else(|| record.get("gnews").and_then(Value::as_bool)).unwrap_or(false),
+        shapes: record.get("shapes").and_then(Value::as_array).map(|shapes| shapes.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        newest: moment(record.get("newest")),
         fetched_at: moment(record.get("fetched")),
     })
 }
@@ -280,6 +282,14 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
         record.insert("kind".into(), kind.clone().into());
     }
     record.insert("lane".into(), update.lane.into());
+    if !update.shapes.is_empty() {
+        record.insert("shapes".into(), update.shapes.clone().into());
+    } else if update.changed {
+        record.remove("shapes");
+    }
+    if let Some(newest) = update.newest {
+        record.insert("newest".into(), seconds(Some(newest)));
+    }
     if update.google_news {
         record.insert("gnews".into(), true.into());
     } else if update.changed {
@@ -346,6 +356,8 @@ mod tests {
             generated_until: None,
             google_news: true,
             lane: true,
+            shapes: vec!["story/#".into()],
+            newest: Some(900 * SECOND),
         };
         let first = written_sitemap(None, &read, 1_000 * SECOND);
         let known = known_sitemap(&read.url, &first).unwrap();

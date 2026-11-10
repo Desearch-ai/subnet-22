@@ -1263,6 +1263,45 @@ async fn a_news_lane_poll_reads_only_the_due_lane_file_and_leaves_the_site_as_it
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_site_whose_lane_files_lag_has_its_homepage_read_for_article_links_and_feeds() {
+    let web: Shared = Arc::default();
+    let host = "lagging.test";
+    lane_site(&web, host, &["/post/1", "/post/2"]);
+    {
+        let links: String = ["/post/101", "/post/102", "/world", "/tag/ukraine", "/about"].iter().map(|path| format!("<a href=\"{path}\">{path}</a>")).collect();
+        let home = format!("<html lang=\"en\"><head><link rel=\"alternate\" type=\"application/rss+xml\" href=\"/feed.xml\"></head><body><p>{ENGLISH}</p>{links}</body></html>");
+        web.lock().unwrap().add(host, "/", 200, None, home.as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 1, "status": "ok", "urls": 2, "next": later, "lane": true, "shapes": ["post/#"], "newest": now - 10 * 3_600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-home", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    crawl.step().await.unwrap();
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/"], "its lane file is not due and its newest story is ten hours old, so the homepage is read, alone");
+    let store = buckets.store(host);
+    let stored = |path: &str| store.url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/post/101") && stored("/post/102"), "the article links the sitemaps lag behind are kept");
+    assert!(!stored("/world") && !stored("/tag/ukraine") && !stored("/about"), "sections, tags and other pages are not");
+    let home = store.sitemap(host, &format!("http://{host}/")).unwrap().unwrap();
+    assert_eq!((home["lane"].as_bool(), home["interval"].as_i64()), (Some(true), Some(300)), "a homepage that found new articles is read again in five minutes");
+    assert!(store.sitemap(host, &format!("http://{host}/feed.xml")).unwrap().is_some(), "and the feed it names waits for the site's next visit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_sites_news_file_is_read_before_its_other_due_files_and_those_longest_due_first() {
     let web: Shared = Arc::default();
     let host = "many-files.test";

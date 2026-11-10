@@ -18,7 +18,7 @@ use crate::schedule::{HOUR, NEWS_SLOW, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{is_listing, robots_allow, Crash, FollowLinks, Known, LinksAt, Visit, Visitor, LINKS_KIND};
+use crate::visit::{is_listing, lane_next, robots_allow, Crash, FollowLinks, Known, LaneFile, LinksAt, Visit, Visitor, LINKS_KIND};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -1149,9 +1149,8 @@ fn next_lane(known: &Known, visit: &Visit, state: State, now: i64) -> Option<i64
         return None;
     }
     let read: HashSet<&str> = visit.sitemaps.iter().map(|u| u.url.as_str()).collect();
-    let held = known.sitemaps.values().filter(|s| s.lane && !read.contains(s.url.as_str())).map(|s| s.next_check_at);
-    let fresh = visit.sitemaps.iter().filter(|u| u.lane).map(|u| u.next_check_at);
-    held.chain(fresh).map(|next| next.unwrap_or(now)).min()
+    let held = known.sitemaps.values().filter(|s| !read.contains(s.url.as_str())).map(LaneFile::of);
+    lane_next(held.chain(visit.sitemaps.iter().map(LaneFile::read)), now).map(|(at, _)| at)
 }
 
 /// Link work for a site taken off the queue; one excluded since, or no longer listed, leaves the queue at no cost to the site.

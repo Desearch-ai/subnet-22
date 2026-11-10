@@ -115,7 +115,11 @@ the site's standing and its next visit as they were; robots.txt, read by the sit
 last two days, and the site's Crawl-delay apply, and polls of one site are at least a minute apart. The
 sites whose lane files find the most new pages are polled every 2 minutes, the rest every 12, and a
 site's visits come when its other files are due. The pages a news site's lists gain go out first in the
-next dispatch pass.
+next dispatch pass. A news site whose lane files' newest story is over two hours old has its homepage
+read in the lane as a list of the links shaped like the articles its lane files list (`/post/123`,
+`/2026/11/10/a-story/`), not its sections or tags; a read that finds new ones brings the homepage back in
+5 minutes, and one that does not doubles the wait, up to 6 hours. Feeds the homepage names are read on the
+site's next visit.
 
 A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
 the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
