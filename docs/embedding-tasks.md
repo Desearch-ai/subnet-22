@@ -55,10 +55,29 @@ for a number rather than for a peak. `GET /v1/overview?kind=embed` publishes it 
   when the two differ.
 - `buffer_minutes` is how long the rate holds if no new work comes in. Once it reaches 0, tasks come only
   as fast as they are made, and that fall has no limit on its speed.
-- `mode` is `as_planned` while no rate is set: tasks then come as they are made, and only `mode` is given.
+- `mode` is `as_planned` while no rate is set: tasks then come as they are made, and only `mode` and
+  `waiting_line` are given.
 
 Tasks hold about 1,300 texts and 2 million characters on average, though that varies with what is being
 embedded; the public stats (`/v1/stats/series?kind=embed`) show what they have held lately.
+
+## Waiting for a task
+
+Where embed claims wait in line (`"waiting_line": true` in `supply`), the next released task goes to the
+miner that has waited longest, so there is nothing to gain from timing or from asking more often. A claim
+takes a place in line the first time it finds no task for it, and keeps it as long as you keep asking.
+
+Add `"wait_s": 20` to the claim's body, 20 seconds being the most it waits, to have the answer held until
+a task comes. If none does, it answers `QUEUE_EMPTY` with `retry_after` 0: ask again straight away, as a place
+lasts 30 seconds after you last asked. Give your HTTP client a timeout of at least 50 seconds, since a task issued
+to a connection that has silently died still counts as claimed. The embed miner in this repository does all of this.
+
+A miner that does not send `wait_s` keeps working as long as it waits what `retry_after` says: its place holds, and
+its task comes on the poll after its turn comes. It gets nothing ahead of anyone by polling, and with a short line it
+gets somewhat less than a miner that waits, so update when you can.
+
+Each receipt says when its place was taken (`waited_from`), and `task-api/tools/verify_line.py` checks that order
+across miners from the public events. Crawl tasks may have a line of their own, which works the same way.
 
 ## How it is checked
 
@@ -90,7 +109,8 @@ lockouts separate from crawling; see [Emission](./emission.md).
 
 The embed miner in this repository does all of this. It is here for anyone writing their own.
 
-**Claim** with `POST /v1/tasks/claim` and the body `{"kind": "embed", "models": ["desearch-4b-v1"]}`. A
+**Claim** with `POST /v1/tasks/claim` and the body `{"kind": "embed", "models": ["desearch-4b-v1"]}`, with
+`"wait_s": 20` to [wait for a task](#waiting-for-a-task). A
 claim that does not list the tasks' model is refused with `MODEL_MISMATCH`, at no cost. A refusal's
 `inputs.retry_after` is the number of seconds to wait before asking again. When it says there is no task
 for you (`QUEUE_EMPTY`, `ALREADY_HELD`), the API may hold you to that wait: a claim sooner is then answered

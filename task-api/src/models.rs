@@ -247,13 +247,15 @@ pub struct ClaimBody {
     pub count: i64,
     /// The embedding models the miner runs; an embed task goes only to a miner that runs its model.
     pub models: Vec<String>,
+    /// Seconds the miner would rather wait for a task than be told there is none, where claims wait in line.
+    pub wait_s: f64,
 }
 
 impl ClaimBody {
     pub fn parse(body: &Value) -> Result<ClaimBody, Invalid> {
         let Some(input) = body.as_object() else {
             if body.is_null() {
-                return Ok(ClaimBody { kind: "crawl".into(), count: 1, models: Vec::new() });
+                return Ok(ClaimBody { kind: "crawl".into(), count: 1, models: Vec::new(), wait_s: 0.0 });
             }
             return Err(Invalid::single("model_attributes_type", &["body"], "Input should be a valid dictionary or object to extract fields from"));
         };
@@ -275,7 +277,20 @@ impl ClaimBody {
                 }
             }
         }
-        fields.invalid.result(ClaimBody { kind: kind.unwrap_or_default(), count, models })
+        let wait_s = match input.get("wait_s") {
+            None => 0.0,
+            Some(wait) => {
+                match wait.as_f64().or_else(|| wait.as_str().and_then(|wait| wait.trim().parse().ok())).filter(|wait| wait.is_finite() && *wait >= 0.0) {
+                    Some(wait) => wait,
+                    None => {
+                        let loc = at(&fields.loc, "wait_s");
+                        fields.invalid.add("greater_than_equal", &loc, "Input should be a number of seconds, 0 or more");
+                        0.0
+                    }
+                }
+            }
+        };
+        fields.invalid.result(ClaimBody { kind: kind.unwrap_or_default(), count, models, wait_s })
     }
 }
 

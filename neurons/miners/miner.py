@@ -40,6 +40,8 @@ HEADROOM = 0.7
 ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
+# Where claims wait in line, how long to hold a place before asking again; ignored where they do not.
+CLAIM_WAIT_S = 20
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
@@ -55,14 +57,20 @@ class TaskWorker:
     """Claims one kind of task and runs up to max_tasks of them at once."""
 
     kind = ""
+    # Seconds the API client allows a call. A claim may wait, and a lost answer to one is a lost task and a strike,
+    # so the wait comes on top of what a call may take.
+    api_timeout = CLAIM_WAIT_S + 30.0
 
     def __init__(self, settings: Settings, api: TaskApiClient | None = None):
         self.settings = settings
-        self.api = api or TaskApiClient(settings.task_api_url, settings.keypair())
+        self.api = api or TaskApiClient(
+            settings.task_api_url, settings.keypair(), self.api_timeout
+        )
         self.upload_http: aiohttp.ClientSession | None = None
         self.stopping = asyncio.Event()
         self.in_flight: set[asyncio.Task] = set()
         self.idle_polls = 0
+        self.claiming = False
 
     def stop(self) -> None:
         if self.stopping.is_set():
@@ -87,8 +95,17 @@ class TaskWorker:
                     )
                     continue
 
+                polling = asyncio.create_task(self.poll())
+                await asyncio.wait(
+                    {stopped, polling}, return_when=asyncio.FIRST_COMPLETED
+                )
+                # A claim still waiting is let go at once: the API gives back any task it was just drawing.
+                if not polling.done() and self.claiming:
+                    polling.cancel()
                 try:
-                    delay = await self.poll()
+                    delay = await polling
+                except asyncio.CancelledError:
+                    break
                 except Exception:
                     log.exception("claim poll failed")
                     delay = ERROR_BACKOFF
@@ -106,11 +123,14 @@ class TaskWorker:
             await self.aclose()
 
     async def poll(self) -> float:
+        self.claiming = True
         try:
             answer = await self.api.post("/v1/tasks/claim", self.claim_body())
         except TaskApiError as exc:
             log.warning("claim failed: %s", exc)
             return ERROR_BACKOFF
+        finally:
+            self.claiming = False
         receipts = answer.get("receipts") or [answer.get("receipt")]
         if self.settings.receipts_file:
             for receipt in filter(None, receipts):
@@ -144,7 +164,7 @@ class TaskWorker:
         return 1
 
     def claim_body(self) -> dict:
-        return {"kind": self.kind, "count": self.wanted()}
+        return {"kind": self.kind, "count": self.wanted(), "wait_s": CLAIM_WAIT_S}
 
     def claimed(self, task: dict) -> None:
         pass

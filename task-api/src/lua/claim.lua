@@ -1,3 +1,4 @@
+local function take(asked)
 local queue, claims, mine, unscored = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local hotkey, ttl, now = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
 local budget, page, most = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[7])
@@ -6,7 +7,7 @@ local held = redis.call('SCARD', mine)
 if held >= budget then return {'full', tostring(held)} end
 local waiting = redis.call('SCARD', unscored)
 if waiting >= tonumber(ARGV[8]) then return {'waiting', tostring(waiting)} end
-local wanted = math.min(tonumber(ARGV[9]), budget - held)
+local wanted = math.min(asked, budget - held)
 local taken = {'tasks'}
 local seen, start = 0, 0
 while start < most and (#taken - 1) / 3 < wanted do
@@ -39,3 +40,4 @@ end
 if #taken > 1 then return taken end
 if seen > 0 then return {'held', tostring(seen)} end
 return {'empty'}
+end

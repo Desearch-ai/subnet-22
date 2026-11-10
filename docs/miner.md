@@ -117,6 +117,10 @@ not paid, so a crawl miner needs proxies.
 - It stops 30 seconds before the end (longer if your uploads have been slow) to write and upload the
   file. Unfinished pages go in as timed out, and the log says how many, so you know to raise
   `CRAWL_CONCURRENCY` or lower `MAX_TASKS`.
+- Where crawl claims wait in line (`"waiting_line": true` in `supply` at `/v1/overview?kind=crawl`), the
+  next task goes to the miner that has waited longest, as for [embed tasks](./embedding-tasks.md#waiting-for-a-task).
+  The miner waits up to 20 seconds a claim for its turn, and a claim takes one task for each place in line,
+  however many it asks for.
 
 **Proxies:**
 - A page refused for its address (403, 408, 429) or served a challenge is retried through the next

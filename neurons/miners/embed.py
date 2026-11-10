@@ -20,7 +20,7 @@ from desearch.embedding import (
 )
 from desearch.kinds import EMBED
 from neurons.miners.config import ENV_FILE, Settings
-from neurons.miners.miner import HEADROOM, TaskWorker, with_retries
+from neurons.miners.miner import CLAIM_WAIT_S, HEADROOM, TaskWorker, with_retries  # noqa: F401
 
 log = logging.getLogger("embed_miner")
 

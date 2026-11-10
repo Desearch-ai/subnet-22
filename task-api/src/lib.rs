@@ -12,6 +12,7 @@ pub mod hours;
 pub mod http;
 pub mod janitor;
 pub mod lifecycle;
+pub mod line;
 pub mod logs;
 pub mod manifest;
 pub mod models;
