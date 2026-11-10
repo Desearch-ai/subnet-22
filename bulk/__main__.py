@@ -55,6 +55,17 @@ def main(argv: list[str] | None = None) -> int:
         "arxiv", "arXiv OAI-PMH pages (.xml) or the Kaggle metadata snapshot (.json)"
     )
     found.add_argument("files", type=Path, nargs="+")
+    found = source(
+        "arxiv-text",
+        "Common Pile's arXiv full texts (.jsonl.gz), for papers under CC BY, CC BY-SA or CC0",
+    )
+    found.add_argument("files", type=Path, nargs="+")
+    found.add_argument(
+        "--oai",
+        type=Path,
+        required=True,
+        help="a folder of OAI-PMH pages from `arxiv-harvest`, whose licences decide which papers are taken",
+    )
     found = source("pmc", "PMC open-access articles under commercial-use licenses")
     found.add_argument(
         "--inventory",
@@ -142,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
         counts = pubmed.run(args.files, batches, as_of, skip, args.limit)
     elif args.command == "arxiv":
         counts = arxiv.run(args.files, batches, as_of, args.limit)
+    elif args.command == "arxiv-text":
+        papers = arxiv.open_papers(sorted(args.oai.glob("*.xml")))
+        counts = arxiv.run_text(args.files, papers, batches, as_of, args.limit)
     elif args.command == "pmc":
         if args.folder:
             found = pmc.from_folder(args.folder)

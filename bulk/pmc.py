@@ -175,9 +175,14 @@ def article_page(xml: bytes, meta: dict):
             )
         elif contrib.find("collab") is not None:
             authors.append(text_of(contrib.find("collab")))
+    doi = text_of(front.find("article-id[@pub-id-type='doi']"))
     lines = [
         Line(t)
-        for t in (authors_line(authors), " ".join((meta.get("citation") or "").split()))
+        for t in (
+            authors_line(authors),
+            " ".join((meta.get("citation") or "").split()),
+            f"DOI: {doi}" if doi else "",
+        )
         if t
     ]
     for abstract in front.iterfind("abstract"):

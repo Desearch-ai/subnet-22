@@ -1,6 +1,6 @@
 # Bulk ingest
 
-Some sources come from their own bulk data, not from crawling: Wikipedia snapshots, PubMed, PMC and arXiv. The ingest
+Some sources come from their own bulk data, not from crawling: Wikipedia snapshots, PubMed, PMC, arXiv and Common Pile's arXiv full texts. The ingest
 lane turns a source's records into page rows in the bulk feed, so the compactor, the planner, miners' embedding and the
 index treat them like crawled pages.
 
@@ -30,7 +30,8 @@ source files ─► python -m bulk <source> ─► run folder ─► publisher b
   `--as-of`.
 - **Pages only.** The bulk feed carries no removals. Records a source deletes (PubMed `DeleteCitation`, arXiv deleted
   records) are kept in the run's `removed.txt` for the change log's removal path.
-- **Papers** have the page type `paper`, and the planner keeps a paper's first 12 parts.
+- **Papers** have the page type `paper`. The planner embeds a paper's page text and its first 4 parts, the abstract and
+  the start of the body; the whole text stays in the page for keyword search and highlights.
 
 ## Run
 
@@ -43,6 +44,7 @@ python -m bulk pubmed --out runs/pubmed-n0001 --as-of 2026-01-29T00:00:00Z --ski
 python -m bulk pmc --out runs/pmc-1027 --as-of 2026-10-27T01:00:00Z --inventory inventory/*.csv.gz
 python -m bulk arxiv-harvest --out oai --from 2026-10-01 --until 2026-10-27
 python -m bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
+python -m bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
 python -m bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
 python -m bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
 ```
@@ -63,11 +65,12 @@ in the run folder lists the batch files already published. Bulk files hold at mo
 |---|---|---|---|
 | `pubmed` | baseline and daily update files | one per citation | citations with an abstract; `--skip-pmids` leaves out those PMC has in full |
 | `arxiv` | OAI-PMH pages or the Kaggle metadata file | one abstract page per paper | every paper (arXiv metadata is CC0) |
-| `pmc` | the `pmc-oa-opendata` bucket, newest version of each article | full text without references | open access under CC0, CC BY, CC BY-SA or CC BY-ND, not retracted |
+| `arxiv-text` | Common Pile's `arxiv_papers` files, with the OAI-PMH pages for each paper's licence | full text without references, at the paper's HTML view (`arxiv.org/html/<id>` from 2312 on, `ar5iv.labs.arxiv.org/html/<id>` before) | papers whose arXiv record is CC BY, CC BY-SA or CC0 |
+| `pmc` | the `pmc-oa-opendata` bucket, newest version of each article | full text without references, with its DOI | open access under CC0, CC BY, CC BY-SA or CC BY-ND, not retracted |
 | `wikipedia` | Wikimedia Enterprise snapshots | the article as the live page shows it | namespace 0, no disambiguation pages |
 
 Wikipedia articles are framed as the live page frames them and read by the same `extract()` a crawl uses, so the text
 matches a crawl of the live page. Hidden categories come from the category-namespace snapshot.
 
-Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), and PMC asks users to credit NLM
-as the source.
+Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), PMC asks users to credit NLM
+as the source, and an arXiv full text keeps its paper's CC licence (credit the authors, link the paper).

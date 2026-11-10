@@ -1,3 +1,4 @@
+import gzip
 import json
 from datetime import datetime, timezone
 
@@ -24,7 +25,7 @@ PUBMED = """<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID Version="1">
 <ArticleTitle>No abstract</ArticleTitle></Article></MedlineCitation></PubmedArticle>
 <DeleteCitation><PMID Version="1">22213645</PMID></DeleteCitation></PubmedArticleSet>"""
 
-JATS = """<article xml:lang="en"><front><article-meta><title-group><article-title>Risk factors</article-title></title-group>
+JATS = """<article xml:lang="en"><front><article-meta><article-id pub-id-type="doi">10.1002/npr2.12310</article-id><title-group><article-title>Risk factors</article-title></title-group>
 <contrib-group><contrib contrib-type="author"><name><surname>Masataka</surname><given-names>Yuji</given-names></name></contrib></contrib-group>
 <pub-date pub-type="epub"><day>19</day><month>12</month><year>2022</year></pub-date>
 <abstract><title>Abstract</title><sec><title>Aim</title><p>To determine risk factors.</p></sec></abstract>
@@ -93,6 +94,7 @@ def test_pmc_full_text_drops_citation_marks_formulas_and_references():
         "Risk factors",
         "Yuji Masataka",
         "Neuropsychopharmacol Rep. 2022;43(1):85-94.",
+        "DOI: 10.1002/npr2.12310",
         "## Abstract",
         "### Aim",
         "To determine risk factors.",
@@ -153,6 +155,98 @@ def test_arxiv_records_become_abstract_pages_and_deleted_records_removals(tmp_pa
         "Legged robots on sand.",
     ]
     assert (row["published"], row["modified"]) == ("2013-03-29", "2026-10-26")
+
+
+def oai_record(arxiv_id: str, licence: str) -> str:
+    return f"""<record><header><identifier>oai:arXiv.org:{arxiv_id}</identifier></header><metadata>
+<arXiv xmlns="http://arxiv.org/OAI/arXiv/"><id>{arxiv_id}</id><created>2024-01-02</created>
+<authors><author><keyname>Tian</keyname><forenames>Zehua</forenames></author></authors>
+<title>Probing cosmic strings</title><categories>gr-qc</categories>{licence}<abstract>Short.</abstract></arXiv></metadata></record>"""
+
+
+COMMON_PILE_TEXT = """# Probing cosmic strings
+
+Zehua Tian, Email: tianzh@ustc.edu.cn CAS Key Laboratory of
+Microscale Magnetic Resonance, Hefei 230026, China
+
+###### Abstract
+
+Quantum metrology studies the ultimate precision limit
+of physical quantities.
+
+CAS Key Laboratory, Hefei 230026, China (tianzh@ustc.edu.cn)
+
+##  1 Introduction
+
+Cosmic strings are line-like
+defects. """ + "They bend light. " * 120 + """
+
+######  Lemma 1
+
+The deficit angle is small. Fig. 3\\. shows $\\Delta_{12}$.
+
+  * first point
+  * second point
+
+## References
+
+  * (1) M. S. Turner, Science 262, 861 (1993).
+"""
+
+
+def test_arxiv_full_text_is_taken_for_openly_licensed_papers_onto_their_html_view(tmp_path):
+    by = "<license>http://creativecommons.org/licenses/by/4.0/</license>"
+    oai = tmp_path / "oai"
+    oai.mkdir()
+    (oai / "oai-000001.xml").write_text(
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><ListRecords>'
+        + oai_record("2401.00001", by)
+        + oai_record("2208.05351", "<license>http://creativecommons.org/publicdomain/zero/1.0/</license>")
+        + oai_record("2402.00002", "<license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>")
+        + oai_record("2403.00003", "")
+        + oai_record("2404.00004", by)
+        + "</ListRecords></OAI-PMH>"
+    )
+    pile = tmp_path / "00000_arxiv-papers.jsonl.gz"
+    with gzip.open(pile, "wt", encoding="utf-8") as out:
+        for arxiv_id, text in (
+            ("2401.00001", COMMON_PILE_TEXT),
+            ("2208.05351", "# Isotope effects\n\nV.G. Plekhanov\nCollege, Tallinn\n\nAbstract. " + "Isotopes shift the exciton. " * 80),
+            ("2402.00002", COMMON_PILE_TEXT),
+            ("2403.00003", COMMON_PILE_TEXT),
+            ("2404.00004", "# Probing cosmic strings\n\nToo short."),
+            ("2405.00005", COMMON_PILE_TEXT),
+        ):
+            out.write(json.dumps({"id": arxiv_id, "text": text}) + "\n")
+    papers = arxiv.open_papers(sorted(oai.glob("*.xml")))
+    assert sorted(papers) == ["2208.05351", "2401.00001", "2404.00004"]
+    batches = Batches(tmp_path / "run", "arxiv-text", "20261110", AS_OF)
+    counts = arxiv.run_text([pile], papers, batches, AS_OF)
+    assert (counts["pages"], counts["not_open"], counts["short"]) == (2, 3, 1)
+    batches.close(dict(counts))
+    rows = {r["url"]: r for r in rows_of(tmp_path / "run")[0]}
+    assert sorted(rows) == [
+        "https://ar5iv.labs.arxiv.org/html/2208.05351",
+        "https://arxiv.org/html/2401.00001",
+    ]
+    row = rows["https://arxiv.org/html/2401.00001"]
+    assert row["text"].splitlines() == [
+        "Probing cosmic strings",
+        "Zehua Tian",
+        "arXiv:2401.00001 · gr-qc · Submitted 2024-01-02",
+        "## Abstract",
+        "Quantum metrology studies the ultimate precision limit of physical quantities.",
+        "## 1 Introduction",
+        "Cosmic strings are line-like defects. " + ("They bend light. " * 120).strip(),
+        "Lemma 1",
+        "The deficit angle is small. Fig. 3. shows $\\Delta_{12}$.",
+        "* first point",
+        "* second point",
+    ]
+    assert (row["page_type"], row["content_type"], row["published"]) == ("paper", "text/html", "2024-01-02")
+    assert rows["https://ar5iv.labs.arxiv.org/html/2208.05351"]["text"].splitlines()[3].startswith(
+        "Abstract. Isotopes shift the exciton."
+    ), "without an abstract heading, the text starts at the paragraph that opens with Abstract"
 
 
 def article(revision: int, body: str, **extra) -> dict:

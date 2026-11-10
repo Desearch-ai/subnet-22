@@ -27,7 +27,7 @@ ROW_GROUP_ROWS = 500
 MANIFEST = "manifest.json"
 REMOVED = "removed.txt"
 MAX_TAGS = 20
-# The planner keeps a paper's first 12 parts.
+# The planner keeps a paper's page text and its first 4 parts.
 PAPER = "paper"
 
 

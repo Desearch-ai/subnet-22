@@ -144,14 +144,14 @@ fn a_v2_page_text_holds_the_title_once_then_the_description_and_the_markdown() {
 }
 
 #[test]
-fn a_paper_keeps_its_first_twelve_parts() {
+fn a_paper_keeps_its_first_four_parts() {
     let mut paper = v2(record("https://pmc.ncbi.nlm.nih.gov/articles/PMC1/", &article(60), PAPER, "en"));
     let capped = texts("pages/pmc.ncbi.nlm.nih.gov/a", &paper);
     paper.page_type = Some("article".into());
     let whole = texts("pages/pmc.ncbi.nlm.nih.gov/a", &paper);
-    assert_eq!(capped.len(), 13, "a page text and 12 parts");
-    assert!(whole.len() > 13, "the same text as an article keeps more");
-    assert_eq!(capped[..], whole[..13], "the parts kept are the article's first twelve");
+    assert_eq!(capped.len(), 5, "a page text and 4 parts");
+    assert!(whole.len() > 5, "the same text as an article keeps more");
+    assert_eq!(capped[..], whole[..5], "the parts kept are the article's first four");
 }
 
 #[test]
@@ -3461,7 +3461,7 @@ async fn with_the_bulk_lane_off_the_backfill_plans_bulk_pages_of_current_by_the_
     let urls: HashSet<&str> = planned.keys().map(String::as_str).collect();
     assert_eq!(urls, HashSet::from([wiki, paper.record.url.as_str()]), "both bulk hosts are in by the bulk rule; other.example is not in the set");
     assert_eq!(planned[wiki].0, snapshot.record.content_sha1, "the snapshot is newer than the crawl, so it stands");
-    assert_eq!(planned[&paper.record.url].1, 13, "a paper's page text and its first 12 parts");
+    assert_eq!(planned[&paper.record.url].1, 5, "a paper's page text and its first 4 parts");
 
     for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
         let _: i64 = redis.rpush(EMBED_DROPPED, &raw).await.unwrap();

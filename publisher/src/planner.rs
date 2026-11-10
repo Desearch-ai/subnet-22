@@ -65,7 +65,7 @@ const PASSAGES_A_PAGE: f64 = 8.0;
 const PASSAGE_FILE_TRIES: u32 = 3;
 /// The page type the bulk lane gives papers, whose parts stop at `MAX_PASSAGES_PAPER`.
 pub const PAPER: &str = "paper";
-const MAX_PASSAGES_PAPER: usize = 12;
+const MAX_PASSAGES_PAPER: usize = 4;
 const FENCE: &str = "```";
 /// The task API's list of inputs waiting for a round.
 pub const EMBED_INPUTS: &str = "embed:inputs";
