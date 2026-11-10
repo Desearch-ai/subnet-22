@@ -6,6 +6,8 @@ import csv
 import gzip
 import json
 import re
+import time
+import urllib.error
 import urllib.request
 from collections import Counter
 from collections.abc import Iterable, Iterator
@@ -26,6 +28,9 @@ BUCKET = "https://pmc-oa-opendata.s3.amazonaws.com"
 PMC_IDS = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz"
 OPENALEX_WORKS = "https://openalex.s3.amazonaws.com/data/parquet/works/manifest.json"
 PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/"
+# Tries of one read; S3 asks clients to retry its 500 and 503 answers.
+TRIES = 6
+RETRIED = frozenset((500, 502, 503, 504))
 SEPARATOR = re.compile(r"[\s,;\u2013\u2014-]*")
 EMPTY_BRACKETS = re.compile(r"\s*(\[[\s,;\u2013-]*\]|\([\s,;\u2013-]*\))")
 SITE = "PMC"
@@ -229,6 +234,8 @@ def article_page(xml: bytes, meta: dict):
 
 def left_out(meta: dict) -> str | None:
     """Why an article version stays out, or None for one we take."""
+    if meta.get("gone"):
+        return "gone"
     if not meta.get("is_pmc_openaccess"):
         return "not_open_access"
     if meta.get("license_code") not in COMMERCIAL:
@@ -265,9 +272,19 @@ def fetch(key: str, user_agent: str) -> bytes:
 
 
 def fetch_url(url: str, user_agent: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        return response.read()
+    for attempt in range(TRIES):
+        request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code not in RETRIED or attempt == TRIES - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == TRIES - 1:
+                raise
+        time.sleep(2**attempt)
+    raise AssertionError("unreachable")
 
 
 def from_bucket(
@@ -276,8 +293,14 @@ def from_bucket(
     """Each version's metadata, with its XML only when the version is taken."""
 
     def one(name: str) -> tuple[dict, bytes | None]:
-        meta = json.loads(fetch(f"metadata/{name}.json", user_agent))
-        return meta, None if left_out(meta) else fetch(f"{name}/{name}.xml", user_agent)
+        try:
+            meta = json.loads(fetch(f"metadata/{name}.json", user_agent))
+            return meta, None if left_out(meta) else fetch(f"{name}/{name}.xml", user_agent)
+        except urllib.error.HTTPError as error:
+            # A version withdrawn after the inventory was written.
+            if error.code != 404:
+                raise
+            return {"pmcid": name.partition(".")[0], "gone": True}, None
 
     with ThreadPoolExecutor(workers) as pool:
         yield from pool.map(one, names)

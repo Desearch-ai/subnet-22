@@ -137,6 +137,30 @@ def test_pmc_takes_only_open_commercial_unretracted_versions_and_the_newest_of_e
     assert pmc.latest_versions(keys) == {"PMC1": "PMC1.3", "PMC2": "PMC2.1"}
 
 
+def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_inventory(monkeypatch):
+    import io
+    import urllib.error
+
+    calls = {}
+
+    def urlopen(request, timeout):
+        url = request.full_url
+        calls[url] = calls.get(url, 0) + 1
+        if "PMC2.1" in url:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        if url.endswith("PMC1.1.json") and calls[url] < 3:
+            raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, None)
+        body = b'{"pmcid": "PMC1", "is_pmc_openaccess": true, "license_code": "CC BY"}' if url.endswith(".json") else b"<article/>"
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(pmc.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(pmc.time, "sleep", lambda s: None)
+    found = list(pmc.from_bucket(["PMC1.1", "PMC2.1"], "test", workers=1))
+    assert found[0] == ({"pmcid": "PMC1", "is_pmc_openaccess": True, "license_code": "CC BY"}, b"<article/>")
+    assert calls[f"{pmc.BUCKET}/metadata/PMC1.1.json"] == 3, "two server errors, then the read"
+    assert pmc.left_out(found[1][0]) == "gone" and found[1][1] is None
+
+
 def test_pmc_versions_go_most_cited_per_year_first_by_their_pmid_in_openalex(tmp_path):
     import pyarrow as pa
     import pyarrow.fs as pafs
