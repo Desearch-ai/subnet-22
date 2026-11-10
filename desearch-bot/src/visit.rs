@@ -871,9 +871,11 @@ impl Run<'_> {
     async fn walk(&mut self, roots: Vec<String>) -> Result<(), Crash> {
         let known = self.known.clone();
         let mut queue: VecDeque<Child> = roots.into_iter().map(|url| (url, 0, None, None, false)).collect();
-        queue.extend(
-            known.sitemaps.values().filter(|s| s.depth > 0 && due(s, self.now)).map(|s| (s.url.clone(), s.depth, s.parent_id, None, false)),
-        );
+        // A visit reads only so many files: a news site's news files go first, then those due longest, so no file waits behind the same others every visit.
+        let news = self.listed_news();
+        let mut due_children: Vec<&KnownSitemap> = known.sitemaps.values().filter(|s| s.depth > 0 && due(s, self.now)).collect();
+        due_children.sort_by_key(|s| (!(news && s.google_news), s.next_check_at.unwrap_or(i64::MIN)));
+        queue.extend(due_children.into_iter().map(|s| (s.url.clone(), s.depth, s.parent_id, None, false)));
         let mut seen: HashSet<String> = HashSet::new();
         while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.result.paced && !self.visitor.pause.load(Ordering::Relaxed) {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
@@ -1539,16 +1541,7 @@ impl Run<'_> {
             return;
         }
         let updates = &self.result.sitemaps;
-        if self.known.state == State::Active {
-            let mut roots = updates.iter().filter(|u| u.depth == 0).peekable();
-            if self.result.requests - self.result.aside > 0 && !self.answered {
-                self.stop(Outcome::Unreachable, self.network_error.clone());
-            } else if roots.peek().is_some() && !self.found && roots.all(|u| u.status == "gone") {
-                self.stop(Outcome::NoSitemap, Some("sitemap_gone".into()));
-            }
-            return;
-        }
-        // Sitemaps that answered when last read and are not due again still list what they listed: a recheck between two reads finds them as they were.
+        // Sitemaps that answered when last read and are not due again still list what they listed: a visit between two reads finds them as they were.
         let read: HashSet<&str> = updates.iter().map(|u| u.url.as_str()).collect();
         let standing: Vec<&KnownSitemap> = self
             .known
@@ -1556,6 +1549,15 @@ impl Run<'_> {
             .values()
             .filter(|s| s.ok && s.url_count > 0 && is_sitemap(s.kind.as_deref()) && !read.contains(s.url.as_str()) && !due(s, self.now))
             .collect();
+        if self.known.state == State::Active {
+            let mut roots = updates.iter().filter(|u| u.depth == 0).peekable();
+            if self.result.requests - self.result.aside > 0 && !self.answered {
+                self.stop(Outcome::Unreachable, self.network_error.clone());
+            } else if roots.peek().is_some() && !self.found && standing.is_empty() && roots.all(|u| u.status == "gone") {
+                self.stop(Outcome::NoSitemap, Some("sitemap_gone".into()));
+            }
+            return;
+        }
         let index = updates.iter().any(|u| u.kind.as_deref() == Some("index")) || standing.iter().any(|s| s.kind.as_deref() == Some("index"));
         let listed = self.result.listed + self.kept + standing.iter().map(|s| s.url_count).sum::<i64>();
         if !self.found && standing.is_empty() {

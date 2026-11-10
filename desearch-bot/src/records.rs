@@ -240,6 +240,13 @@ pub fn listed_unread(record: &Json) -> bool {
     record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str()) && record.get("listed").and_then(Value::as_bool) != Some(true)
 }
 
+/// A domain set aside because the roots its last visit read were gone, while a sitemap it holds answered when last read and lists pages.
+pub fn parked_with_sitemaps(record: &Json, sitemaps: &[(String, Json)]) -> bool {
+    record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str())
+        && record.get("reason").and_then(Value::as_str) == Some("sitemap_gone")
+        && sitemaps.iter().filter_map(|(url, raw)| known_sitemap(url, raw)).any(|s| s.ok && s.url_count > 0 && crate::visit::is_sitemap(s.kind.as_deref()))
+}
+
 /// The sitemap record after a read; its counts change only when its content did.
 pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64) -> Json {
     let mut record = previous.cloned().unwrap_or_default();

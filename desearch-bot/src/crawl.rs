@@ -176,9 +176,14 @@ fn wake_spread(hosts: usize) -> i64 {
     spread / SECOND
 }
 
-/// Listed domains found without sitemaps on a visit made while unlisted.
+/// Listed domains found without sitemaps on a visit made while unlisted, and ones set aside as gone while a sitemap they hold still works.
 fn unread(buckets: &Buckets) -> Vec<String> {
-    buckets.listed().into_iter().filter(|host| buckets.store(host).domain(host).ok().flatten().is_some_and(|record| records::listed_unread(&record))).collect()
+    buckets.listed().into_iter().filter(|host| buckets.store(host).domain(host).ok().flatten().is_some_and(|record| wakes(buckets, host, &record))).collect()
+}
+
+fn wakes(buckets: &Buckets, host: &str, record: &Json) -> bool {
+    let gone = record.get("reason").and_then(serde_json::Value::as_str) == Some("sitemap_gone");
+    records::listed_unread(record) || (gone && buckets.store(host).sitemaps(host).is_ok_and(|sitemaps| records::parked_with_sitemaps(record, &sitemaps)))
 }
 
 pub fn now_micros() -> i64 {
@@ -771,7 +776,7 @@ impl Loop {
         if !hosts.is_empty() {
             let spread = wake_spread(hosts.len());
             self.wake_by = now_micros() / SECOND + spread;
-            println!("[rs] {} listed domains without sitemaps, not yet visited as listed, come due within {} minutes", hosts.len(), spread / 60);
+            println!("[rs] {} listed domains without sitemaps, unvisited as listed or set aside while a sitemap still works, come due within {} minutes", hosts.len(), spread / 60);
         }
         self.to_wake = hosts;
     }
@@ -788,7 +793,7 @@ impl Loop {
             let Ok(Some(mut record)) = self.buckets.store(&host).domain(&host) else {
                 continue;
             };
-            if !records::listed_unread(&record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
+            if !wakes(&self.buckets, &host, &record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
                 continue;
             }
             let quiet = records::int(record.get("quiet")).unwrap_or(0);

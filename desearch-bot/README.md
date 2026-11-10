@@ -99,7 +99,10 @@ name within the host's registrable domain.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
-are read again within 30 minutes.
+are read again within 30 minutes. A visit reads at most 40 files: a news site's Google News sitemaps
+first, then the files due longest. An active site whose roots read on a visit are gone stays active
+while another sitemap it holds answered when last read; a listed site set aside as gone while one does
+is due again when the list loads.
 
 A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
 the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
