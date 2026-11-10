@@ -370,7 +370,7 @@ def main() -> int:
         "--line-keep",
         type=float,
         default=LINE_KEEP_S,
-        help="seconds a place in line lasts, where TASK_API_EMBED_LINE_KEEP_S is not the default",
+        help="seconds a place in line lasts, where TASK_API_LINE_KEEP_S is not the default",
     )
     parser.add_argument(
         "--receipts",

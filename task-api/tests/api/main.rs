@@ -250,6 +250,81 @@ async fn an_excess_poll_is_refused_with_a_retry_after_and_not_logged() {
 }
 
 #[tokio::test]
+async fn a_miner_told_there_is_no_task_waits_what_it_was_told_before_it_may_ask_again() {
+    let h = Harness::with(|s| s.hold_to_wait = true).await;
+    let told = |hotkey: String, kind: &str| format!("told_wait:{kind}:{hotkey}");
+    let empty = h.miner.claim().await;
+    assert_eq!((empty["refusal"]["code"].clone(), empty["refusal"]["inputs"]["retry_after"].clone()), (json!("QUEUE_EMPTY"), json!(10.0)));
+    h.enqueue(urls(6)).await;
+
+    let early = h.miner.claim().await;
+    assert_eq!((early["refusal"]["code"].clone(), early["refusal"]["inputs"]["told"].clone()), (json!("RATE_LIMITED"), json!("QUEUE_EMPTY")), "{early}");
+    let left = early["refusal"]["inputs"]["retry_after"].as_f64().unwrap();
+    assert!(left > 8.0 && left <= 9.5, "held half a second less than told, so a miner waiting as told is never held: {left}");
+    assert!(early["receipt"].is_null(), "a poll it was told not to make is not signed into the log");
+    assert_eq!(h.rival.claim().await["tasks"].as_array().unwrap().len(), 1, "another miner is not held");
+    let embed = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap();
+    assert_eq!(embed["refusal"]["code"], "KIND_CLOSED", "nor is the same miner's other kind");
+
+    let _: i64 = redis::AsyncCommands::del(&mut h.redis.clone(), told(h.miner.ss58(), "crawl")).await.unwrap();
+    let task = h.miner.claim().await["tasks"][0].clone();
+    assert_eq!(h.miner.claim().await["refusal"]["code"], "NO_CAPACITY", "a miner just served is not held: it may ask again at once");
+
+    h.miner.post(&format!("/v1/tasks/{}/abandon", task_id(&task)), json!({})).await.unwrap();
+    // As if the 2 s after its grant, when a refusal of its own does not hold it, were over.
+    let _: i64 = redis::AsyncCommands::del(&mut h.redis.clone(), format!("served:crawl:{}", h.miner.ss58())).await.unwrap();
+    assert_eq!(h.miner.claim().await["refusal"]["code"], "ALREADY_HELD", "the only task queued is one it held");
+    let early = h.miner.claim().await;
+    assert_eq!((early["refusal"]["code"].clone(), early["refusal"]["inputs"]["told"].clone()), (json!("RATE_LIMITED"), json!("ALREADY_HELD")));
+    let third = h.client("//third-miner-api-test", &h.url);
+    assert_eq!(third.claim().await["tasks"][0]["task_id"], task["task_id"], "the task it gave back goes to another");
+
+    let logged = h
+        .state
+        .db
+        .run(|conn| {
+            let mut codes = conn.prepare("SELECT json_extract(refusal, '$.code') FROM entries WHERE refusal IS NOT NULL")?;
+            let codes = codes.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(codes)
+        })
+        .await
+        .unwrap();
+    assert_eq!(logged, ["QUEUE_EMPTY", "KIND_CLOSED", "NO_CAPACITY", "ALREADY_HELD"], "polls it was told not to make are not logged");
+}
+
+#[tokio::test]
+async fn a_refusal_racing_a_grant_to_the_same_hotkey_never_holds_it() {
+    let h = Harness::with(|s| s.hold_to_wait = true).await;
+    let held = |hotkey: String| {
+        let mut redis = h.redis.clone();
+        async move {
+            let told: Option<String> = redis::AsyncCommands::get(&mut redis, format!("told_wait:crawl:{hotkey}")).await.unwrap();
+            told.is_some()
+        }
+    };
+    h.state.told_to_wait("crawl", &h.rival.ss58(), "QUEUE_EMPTY", 10.0).await.unwrap();
+    assert!(held(h.rival.ss58()).await);
+    h.state.served("crawl", &h.rival.ss58()).await.unwrap();
+    assert!(!held(h.rival.ss58()).await, "a grant after the refusal ends the hold");
+
+    h.enqueue(urls(3)).await;
+    assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
+    h.state.told_to_wait("crawl", &h.miner.ss58(), "QUEUE_EMPTY", 10.0).await.unwrap();
+    assert!(!held(h.miner.ss58()).await, "nor does a refusal just after a grant hold it");
+}
+
+#[tokio::test]
+async fn a_miner_asking_again_at_once_is_answered_as_before_while_waits_are_not_held() {
+    let h = Harness::start().await;
+    assert_eq!(h.miner.claim().await["refusal"]["code"], "QUEUE_EMPTY");
+    assert_eq!(h.miner.claim().await["refusal"]["code"], "QUEUE_EMPTY");
+    h.enqueue(urls(3)).await;
+    assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
+    let held: Option<String> = redis::AsyncCommands::get(&mut h.redis.clone(), format!("told_wait:crawl:{}", h.miner.ss58())).await.unwrap();
+    assert!(held.is_none(), "nothing is remembered while the setting is off");
+}
+
+#[tokio::test]
 async fn a_locked_out_miner_is_refused_until_the_lockout_ends() {
     let h = Harness::start().await;
     let hotkey = h.miner.ss58();

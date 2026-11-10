@@ -149,6 +149,15 @@ async fn claim_tasks(state: &Arc<State>, signed: &Signed<'_>, waited: &mut Durat
         let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
     }
+    let in_line = state.settings.line(kind).on;
+    // In line, asking more often gains nothing anyway, and a polling miner is told less than a wait.
+    if state.settings.hold_to_wait && !in_line {
+        if let Some((told, retry_after)) = state.still_told_to_wait(kind, &who.hotkey).await? {
+            // Not logged either: it is a poll the miner was told not to make.
+            let refusal = json!({"code": "RATE_LIMITED", "inputs": {"told": told, "retry_after": retry_after}});
+            return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
+        }
+    }
     if kind == EMBED && !state.settings.embed_tasks {
         return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
     }
@@ -181,8 +190,7 @@ async fn claim_tasks(state: &Arc<State>, signed: &Signed<'_>, waited: &mut Durat
         None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
     };
     steps.mark("budget");
-    let in_line = kind == EMBED && state.settings.embed_line;
-    let mut waiting = (in_line && body.wait_s > 0.0).then(|| state.waiters.wait(&who.hotkey, state.redis.clone()));
+    let mut waiting = (in_line && body.wait_s > 0.0).then(|| state.waiters.wait(kind, &who.hotkey, state.redis.clone()));
     let wait_s = body.wait_s.min(MAX_WAIT_S);
     let ask = Ask { who: who.clone(), kind, budget, count: body.count, in_line };
     let answer = serve(state, &round_id, ask, waiting.as_ref(), Instant::now() + Duration::from_secs_f64(wait_s), steps, waited).await;
@@ -247,7 +255,10 @@ async fn serve(
                 draws += usize::from(!ask.in_line);
             }
             Drawn::Refused(mut refusal) => {
-                if !ask.in_line || refusal.code != "QUEUE_EMPTY" {
+                if !ask.in_line {
+                    return nothing_for(state, round_id, &who, ask.kind, refusal).await;
+                }
+                if refusal.code != "QUEUE_EMPTY" {
                     return refused(state, round_id, &who, refusal).await;
                 }
                 let Some(waiting) = waiting else {
@@ -270,6 +281,7 @@ async fn serve(
             }
         }
     }
+    // Not held: the draws ran out on dropped tasks, and tasks it may take can still be queued behind them.
     let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": state.tasks(ask.kind).depth(&state.redis).await?}));
     refused(state, round_id, &who, refusal).await
 }
@@ -280,7 +292,7 @@ async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, Ap
     let tasks = state.tasks(kind);
     let limit = WAITING_PER_BUDGET * budget;
     let drawing = if in_line {
-        let (keep, places) = (state.settings.embed_line_keep, state.settings.embed_line_places);
+        let (keep, places) = (state.settings.line_keep, state.settings.line(kind).places);
         tasks.claim_in_line(&state.redis, &who.hotkey, budget, limit, count, now(), keep, places).await?
     } else {
         tasks.claim(&state.redis, &who.hotkey, budget, limit, count, now()).await?
@@ -301,7 +313,7 @@ async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, Ap
                 dropped += 1;
                 // A task that was never going anywhere costs no one their turn.
                 if let Some(since) = got.waited_from {
-                    tasks.keep_place(&state.redis, &who.hotkey, since, now(), state.settings.embed_line_keep).await?;
+                    tasks.keep_place(&state.redis, &who.hotkey, since, now(), state.settings.line_keep).await?;
                 }
                 continue;
             }
@@ -322,6 +334,9 @@ async fn draw(state: Arc<State>, ask: Ask, mut steps: Steps) -> Result<Drawn, Ap
     }
     if issued.is_empty() {
         return if dropped > 0 { Ok(Drawn::AllDropped) } else { Err(ApiError::status(503, "upload signing is unavailable")) };
+    }
+    if state.settings.hold_to_wait {
+        state.served(kind, &who.hotkey).await?;
     }
     steps.mark("issue");
     let receipts = state.record(receipts).await?;
@@ -395,6 +410,18 @@ async fn locked_out(state: &State, who: &Caller, kind: &str) -> Result<Option<Re
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
     let locked = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await?;
     Ok(locked.map(|until| Refusal::new("LOCKED_OUT", json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)}))))
+}
+
+/// Refusals that mean the queue holds nothing this miner may take now: asking again before the wait it is told gains a race, not work.
+const TOLD_TO_WAIT: [&str; 2] = ["QUEUE_EMPTY", "ALREADY_HELD"];
+
+/// A refusal from the queue itself; one saying there is nothing for the miner holds it to the wait it is told, where that is switched on.
+async fn nothing_for(state: &State, round_id: &str, who: &Caller, kind: &str, refusal: Refusal) -> Answer {
+    if state.settings.hold_to_wait && TOLD_TO_WAIT.contains(&refusal.code) {
+        let wait = refusal.inputs.get("retry_after").and_then(Value::as_f64).unwrap_or_else(|| retry_after_for(refusal.code));
+        state.told_to_wait(kind, &who.hotkey, refusal.code, wait).await?;
+    }
+    refused(state, round_id, who, refusal).await
 }
 
 async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {

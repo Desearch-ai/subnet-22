@@ -147,30 +147,37 @@ pub fn entries(conn: &Connection, round_id: &str) -> Result<Vec<Value>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Entries newest first, and the cursor of the next page when there is one.
-pub fn events(
-    conn: &Connection,
-    miner: Option<&str>,
-    task_id: Option<&str>,
-    outcome: Option<&str>,
-    before: Option<i64>,
-    limit: i64,
-) -> Result<(Vec<Value>, Option<i64>)> {
+/// What `events` may be narrowed to.
+#[derive(Default)]
+pub struct EventFilter<'a> {
+    pub miner: Option<&'a str>,
+    pub task_id: Option<&'a str>,
+    pub outcome: Option<&'a str>,
+    /// The kind of the entry's round; an entry outside any round, or of a round no longer kept, has none.
+    pub kind: Option<&'a str>,
+    pub before: Option<i64>,
+}
+
+/// Entries newest first, each with the kind of its round, and the cursor of the next page when there is one.
+pub fn events(conn: &Connection, filter: &EventFilter<'_>, limit: i64) -> Result<(Vec<Value>, Option<i64>)> {
     let mut clauses = vec!["1"];
     let mut args: Vec<&dyn ToSql> = Vec::new();
-    for (clause, value) in [("hotkey = ?", &miner), ("task_id = ?", &task_id), ("outcome = ?", &outcome)] {
+    for (clause, value) in
+        [("e.hotkey = ?", &filter.miner), ("e.task_id = ?", &filter.task_id), ("e.outcome = ?", &filter.outcome), ("r.kind = ?", &filter.kind)]
+    {
         if let Some(value) = value.as_ref().filter(|v| !v.is_empty()) {
             clauses.push(clause);
             args.push(value);
         }
     }
-    if let Some(before) = &before {
-        clauses.push("id < ?");
+    if let Some(before) = &filter.before {
+        clauses.push("e.id < ?");
         args.push(before);
     }
     args.push(&limit);
     let sql = format!(
-        "SELECT id, round_id, hotkey, served_at, outcome, task_id, refusal, cause, waited_from FROM entries WHERE {} ORDER BY id DESC LIMIT ?",
+        "SELECT e.id, e.round_id, e.hotkey, e.served_at, e.outcome, e.task_id, e.refusal, e.cause, e.waited_from, r.kind
+         FROM entries e LEFT JOIN rounds r ON r.round_id = e.round_id WHERE {} ORDER BY e.id DESC LIMIT ?",
         clauses.join(" AND ")
     );
     let mut statement = conn.prepare(&sql)?;
@@ -188,6 +195,7 @@ pub fn events(
                 "refusal": refusal.map_or(Value::Null, |r| serde_json::from_str(&r).unwrap_or(Value::Null)),
                 "cause": json_of(row.get_ref(7)?),
                 "waited_from": json_of(row.get_ref(8)?),
+                "kind": json_of(row.get_ref(9)?),
             }),
         ))
     })?;
@@ -230,6 +238,32 @@ mod tests {
         record(&conn, &receipt, "cd", 3.0).unwrap();
         assert_eq!(receipt.body()["waited_from"], 1.5);
         assert_eq!(entries(&conn, "r").unwrap()[1]["waited_from"], 1.5);
-        assert_eq!(events(&conn, None, None, Some("issued"), None, 1).unwrap().0[0]["waited_from"], 1.5);
+        crate::roundstore::create(&conn).unwrap();
+        let issued = EventFilter { outcome: Some("issued"), ..EventFilter::default() };
+        assert_eq!(events(&conn, &issued, 1).unwrap().0[0]["waited_from"], 1.5);
+    }
+
+    #[test]
+    fn events_name_the_kind_of_their_round_and_can_be_narrowed_to_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        crate::roundstore::create(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO rounds (round_id, kind, manifest_hash, seed_block, opened_at, batches) VALUES
+                ('c', 'crawl', 'h', 1, 1.0, '[]'), ('e', 'embed', 'h', 1, 1.0, '[]');",
+        )
+        .unwrap();
+        for (seq, round_id) in [(1, "c"), (2, "e"), (3, "c"), (4, "")] {
+            let receipt = Receipt { round_id: round_id.into(), hotkey: "h".into(), outcome: "issued", seq, ..Receipt::default() };
+            record(&conn, &receipt, "ab", 1.0).unwrap();
+        }
+        let of = |kind: Option<&str>| {
+            let filter = EventFilter { kind, ..EventFilter::default() };
+            events(&conn, &filter, 10).unwrap().0.iter().map(|event| (event["round_id"].clone(), event["kind"].clone())).collect::<Vec<_>>()
+        };
+        assert_eq!(of(Some("crawl")), [(json!("c"), json!("crawl")), (json!("c"), json!("crawl"))]);
+        assert_eq!(of(Some("embed")), [(json!("e"), json!("embed"))]);
+        assert_eq!(of(None).len(), 4, "unnarrowed, an entry outside any round is still listed, with no kind");
+        assert_eq!(of(None)[0], (json!(""), Value::Null));
     }
 }

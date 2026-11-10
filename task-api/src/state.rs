@@ -35,6 +35,25 @@ pub const POLL_WINDOW_S: f64 = 10.0;
 pub const MINUTE: f64 = 60.0;
 const DEV_RECEIPT_KEY: &str = "//TaskApi";
 
+/// How much sooner than told a held miner may ask again; asking that much sooner gains next to nothing.
+pub const HOLD_MARGIN_S: f64 = 0.5;
+
+/// How long a hotkey just given tasks is not held by a claim of its own refused at the same moment.
+const SERVED_MS: u64 = 2_000;
+
+fn told_wait_key(kind: &str, hotkey: &str) -> String {
+    format!("told_wait:{kind}:{hotkey}")
+}
+
+fn served_key(kind: &str, hotkey: &str) -> String {
+    format!("served:{kind}:{hotkey}")
+}
+
+/// Holds a hotkey unless it was just given tasks, in one step, so a refusal racing a grant of its own never holds it.
+static HOLD: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
+    redis::Script::new("if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2]) return 1")
+});
+
 pub struct State {
     pub settings: Settings,
     pub redis: Redis,
@@ -298,6 +317,36 @@ impl State {
             return Ok(None);
         }
         Ok(Some(0.01f64.max(round_to((window + 1) as f64 * POLL_WINDOW_S - at, 3))))
+    }
+
+    /// Holds a hotkey told there is no task of this kind for it to the wait it was told, less a margin: a miner that
+    /// waits exactly as told, timed from when the answer reached it, is never held by the clocks or the answer's own time.
+    pub async fn told_to_wait(&self, kind: &str, hotkey: &str, code: &str, seconds: f64) -> Result<()> {
+        let millis = ((seconds - HOLD_MARGIN_S) * 1000.0).round() as i64;
+        if millis > 0 {
+            let _: i64 =
+                HOLD.key(told_wait_key(kind, hotkey)).key(served_key(kind, hotkey)).arg(code).arg(millis).invoke_async(&mut self.redis.clone()).await?;
+        }
+        Ok(())
+    }
+
+    /// A hotkey given tasks of this kind is held to no wait, though another of its claims was told one, before or just after.
+    pub async fn served(&self, kind: &str, hotkey: &str) -> Result<()> {
+        let _: () = redis::pipe()
+            .del(told_wait_key(kind, hotkey))
+            .ignore()
+            .pset_ex(served_key(kind, hotkey), 1, SERVED_MS)
+            .ignore()
+            .query_async(&mut self.redis.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// What a hotkey was told for this kind of task and the seconds it still has to wait, None once it may ask.
+    pub async fn still_told_to_wait(&self, kind: &str, hotkey: &str) -> Result<Option<(String, f64)>> {
+        let key = told_wait_key(kind, hotkey);
+        let (told, left): (Option<String>, i64) = redis::pipe().get(&key).pttl(&key).query_async(&mut self.redis.clone()).await?;
+        Ok(told.filter(|_| left > 0).map(|told| (told, round_to(left as f64 / 1000.0, 3))))
     }
 
     /// Only the first of a run of identical refusals is signed into the log.

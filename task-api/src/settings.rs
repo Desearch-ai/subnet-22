@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
 
-use crate::budgets::EMBED;
+use crate::budgets::{CRAWL, EMBED};
 use crate::embedding::{self, DESEARCH_4B_V1};
 use crate::queues::ACTIVE_S;
 use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
@@ -56,6 +56,8 @@ pub struct Settings {
     pub embed_claim_ttl: f64,
     pub validation_ttl: f64,
     pub poll_rate: f64,
+    /// A miner told there is no task for it waits what it was told before it may ask for that kind again, so asking more often than told gains nothing.
+    pub hold_to_wait: bool,
     pub reads_per_minute: i64,
     pub log_reads_per_minute: i64,
     pub failed_writes_per_minute: i64,
@@ -71,12 +73,12 @@ pub struct Settings {
     pub embed_checks_per_hour: f64,
     pub queue_target: i64,
     pub embed_queue_target: i64,
-    /// Embed claims wait in line: a released task goes to the place that has waited longest, and no one gets ahead by asking more often.
-    pub embed_line: bool,
-    /// Seconds a place in line lasts after its miner last asked.
-    pub embed_line_keep: f64,
-    /// Places one hotkey can hold in line at once, so one task at a turn at most for each.
-    pub embed_line_places: i64,
+    /// The waiting line for embed claims.
+    pub embed_line: Line,
+    /// The waiting line for crawl claims.
+    pub crawl_line: Line,
+    /// Seconds a place in either line lasts after its miner last asked.
+    pub line_keep: f64,
     /// Seconds after the planner wrote an embed input that its task is dropped at its next claim; inputs are kept a day.
     pub embed_input_max_age: f64,
     /// Seconds a revealed round's tasks are released over, one by one, so miners see a steady supply rather than whole rounds at once.
@@ -128,25 +130,48 @@ where
     }
 }
 
+/// A setting that is on or off; anything else stops the start rather than quietly leaving it off.
+fn switch(name: &str) -> Result<bool> {
+    on_off(name, &text(name, "0"))
+}
+
+fn on_off(name: &str, value: &str) -> Result<bool> {
+    match value.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        other => bail!("{name}={other:?} must be 0 or 1"),
+    }
+}
+
 pub(crate) fn listed(value: &str) -> Vec<String> {
     value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect()
 }
 
-/// The waiting line's settings; values that would refuse every claim or let departed miners stand in others' way stop the start.
-fn embed_line(on: &str, keep: f64, places: i64) -> Result<(bool, f64, i64)> {
-    let on = match on {
-        "0" => false,
-        "1" => true,
-        other => bail!("TASK_API_EMBED_LINE={other:?} must be 0 or 1"),
-    };
+/// One kind's waiting line: a released task goes to the place that has waited longest, and no one gets ahead by asking more often.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line {
+    pub on: bool,
+    /// Places one hotkey can hold in this line at once, so one task at a turn at most for each.
+    pub places: i64,
+}
+
+/// One kind's line from `TASK_API_<KIND>_LINE` and `_PLACES`; values that would refuse every claim stop the start.
+fn line(kind: &str, on: &str, places: i64) -> Result<Line> {
+    let name = format!("TASK_API_{}_LINE", kind.to_uppercase());
+    let on = on_off(&name, on)?;
+    if !(1..=crate::models::MAX_CLAIM).contains(&places) {
+        bail!("{name}_PLACES={places} must be from 1 to {}", crate::models::MAX_CLAIM);
+    }
+    Ok(Line { on, places })
+}
+
+/// How long a place lasts; one too short or too long to keep a polling miner's place, or to let a departed one's go, stops the start.
+fn line_keep(keep: f64) -> Result<f64> {
     // Below this a polling miner, told to wait 5 s, could lose its place between polls.
     if !(15.0..=600.0).contains(&keep) {
-        bail!("TASK_API_EMBED_LINE_KEEP_S={keep} must be from 15 to 600 seconds");
+        bail!("TASK_API_LINE_KEEP_S={keep} must be from 15 to 600 seconds");
     }
-    if !(1..=crate::models::MAX_CLAIM).contains(&places) {
-        bail!("TASK_API_EMBED_LINE_PLACES={places} must be from 1 to {}", crate::models::MAX_CLAIM);
-    }
-    Ok((on, keep, places))
+    Ok(keep)
 }
 
 /// The fixed rate and any change coming; a setting that would quietly do nothing, or publish nonsense to miners, stops the start.
@@ -172,6 +197,15 @@ impl Settings {
             self.embed_claim_ttl
         } else {
             self.claim_ttl
+        }
+    }
+
+    /// The waiting line for claims of this kind.
+    pub fn line(&self, kind: &str) -> Line {
+        if kind == EMBED {
+            self.embed_line
+        } else {
+            self.crawl_line
         }
     }
 
@@ -204,8 +238,12 @@ impl Settings {
             _ => SeedsMode::Local { block_seconds: number("TASK_API_BLOCK_SECONDS", 12.0)?, genesis: number("TASK_API_GENESIS", 0.0)? },
         };
         let key_uri = text("TASK_API_KEY_URI", "");
-        let (embed_line, embed_line_keep, embed_line_places) =
-            embed_line(&text("TASK_API_EMBED_LINE", "0"), number("TASK_API_EMBED_LINE_KEEP_S", 30.0)?, number("TASK_API_EMBED_LINE_PLACES", 1)?)?;
+        let embed_line = line(EMBED, &text("TASK_API_EMBED_LINE", "0"), number("TASK_API_EMBED_LINE_PLACES", 1)?)?;
+        let crawl_line = line(CRAWL, &text("TASK_API_CRAWL_LINE", "0"), number("TASK_API_CRAWL_LINE_PLACES", 1)?)?;
+        if std::env::var("TASK_API_EMBED_LINE_KEEP_S").is_ok() {
+            bail!("TASK_API_EMBED_LINE_KEEP_S is now TASK_API_LINE_KEEP_S, for both lines");
+        }
+        let line_keep = line_keep(number("TASK_API_LINE_KEEP_S", 30.0)?)?;
         let (embed_release_per_hour, embed_release_next) = embed_release(
             number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,
             number("TASK_API_EMBED_RELEASE_NEXT_PER_HOUR", 0.0)?,
@@ -229,6 +267,7 @@ impl Settings {
             embed_claim_ttl: number("TASK_API_EMBED_CLAIM_TTL", EMBED_CLAIM_TTL_S as f64)?,
             validation_ttl: number("TASK_API_VALIDATION_TTL", 900.0)?,
             poll_rate: number("TASK_API_POLL_RATE", 0.5)?,
+            hold_to_wait: switch("TASK_API_HOLD_TO_WAIT")?,
             reads_per_minute: number("TASK_API_READS_PER_MINUTE", 120)?,
             log_reads_per_minute: number("TASK_API_LOG_READS_PER_MINUTE", 60)?,
             failed_writes_per_minute: number("TASK_API_FAILED_WRITES_PER_MINUTE", 30)?,
@@ -244,8 +283,8 @@ impl Settings {
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
             embed_line,
-            embed_line_keep,
-            embed_line_places,
+            crawl_line,
+            line_keep,
             embed_input_max_age: number("TASK_API_EMBED_INPUT_MAX_AGE_S", 72_000.0)?,
             release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
             embed_release_per_hour,
@@ -289,13 +328,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_switch_that_is_neither_on_nor_off_stops_the_start() {
+        assert!(!on_off("X", "0").unwrap());
+        assert!(on_off("X", " 1 ").unwrap());
+        for value in ["true", "yes", "2", ""] {
+            assert!(on_off("X", value).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
     fn line_settings_that_would_refuse_every_claim_or_block_others_stop_the_start() {
-        assert_eq!(embed_line("0", 30.0, 1).unwrap(), (false, 30.0, 1));
-        assert_eq!(embed_line("1", 60.0, 4).unwrap(), (true, 60.0, 4));
-        for (on, keep, places) in
-            [("true", 30.0, 1), ("1", f64::NAN, 1), ("1", f64::INFINITY, 1), ("1", -1.0, 1), ("1", 5.0, 1), ("1", 3600.0, 1), ("1", 30.0, 0), ("1", 30.0, 51)]
-        {
-            assert!(embed_line(on, keep, places).is_err(), "{on} {keep} {places}");
+        assert_eq!(line(EMBED, "0", 1).unwrap(), Line { on: false, places: 1 });
+        assert_eq!(line(CRAWL, "1", 4).unwrap(), Line { on: true, places: 4 });
+        for (on, places) in [("true", 1), ("1", 0), ("1", 51)] {
+            assert!(line(CRAWL, on, places).is_err(), "{on} {places}");
+        }
+        assert!(line(CRAWL, "yes", 1).unwrap_err().to_string().starts_with("TASK_API_CRAWL_LINE="));
+        assert_eq!(line_keep(60.0).unwrap(), 60.0);
+        for keep in [f64::NAN, f64::INFINITY, -1.0, 5.0, 3600.0] {
+            assert!(line_keep(keep).is_err(), "{keep}");
         }
     }
 
