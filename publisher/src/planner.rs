@@ -2563,6 +2563,11 @@ impl Planner {
             && matches!(self.state.planned_version(RECIPE_V2, &page.key), Ok(Some(planned)) if planned.page_only && planned.content_sha1 == page.record.content_sha1)
     }
 
+    /// Whether the page is planned with its page text alone, its passages left for later: never for a paper, which no lane comes back to and which keeps only its first parts.
+    fn page_first(&self, lane: Lane, record: &Record) -> bool {
+        self.settings.page_first && lane == Lane::Rest && record.page_type.as_deref() != Some(PAPER)
+    }
+
     /// Passages a page gets at most: more for a reference site's while the passage lane is on.
     fn max_passages(&self, record: &Record) -> usize {
         let reference = self.settings.passage_texts_per_hour > 0.0 && self.set.as_ref().is_some_and(|set| set.reference(&record.domain));
@@ -3049,7 +3054,7 @@ impl Planner {
         }
         let max_passages = self.max_passages(record);
         if let Some((lane, at)) = buffered {
-            let planned = planned_of(&page, &cleaned, recipe, (self.settings.page_first && lane == Lane::Rest, false), max_passages, from);
+            let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, record), false), max_passages, from);
             self.buffer_mut(lane).replace(at, planned);
             return Considered::Taken(lane);
         }
@@ -3101,7 +3106,7 @@ impl Planner {
             return Considered::Waiting;
         }
         // A page planned again for its template lines gets all its texts, as the vector it replaces may hold passages.
-        let planned = planned_of(&page, &cleaned, recipe, (self.settings.page_first && lane == Lane::Rest && !restripped, parts_only), max_passages, from);
+        let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, record) && !restripped, parts_only), max_passages, from);
         if planned.texts.is_empty() {
             self.counts.unchanged += 1;
             return Considered::Passed;

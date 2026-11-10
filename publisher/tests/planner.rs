@@ -3575,6 +3575,38 @@ async fn inputs_texts(redis: &mut ConnectionManager, planner: &Planner, temp: &B
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paper_is_planned_with_its_first_four_parts_at_once_while_page_vectors_go_first() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("paper-page-first");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let long = (0..40).map(|i| format!("## Section {i}\n{}", "word ".repeat(140))).collect::<Vec<_>>().join("\n");
+    let bulk_page = |url: &str, page_type: &str, n: usize| {
+        let mut page = v2(record(url, &long, page_type, "en"));
+        (page.domain, page.task_id, page.miner) = ("papers.example".into(), format!("bulk-run-000001-{n:06}"), String::new());
+        page
+    };
+    let (paper, article) = (bulk_page("https://papers.example/p/1", PAPER, 1), bulk_page("https://papers.example/news/1", "article", 2));
+    bulk_file(&pages, 1, vec![paper.clone(), article.clone()]).await;
+    log(&pages, 1, vec![]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "papers.example", "rule": "bulk", "source": "papers", "type": "academic"}]}).to_string()).unwrap();
+    let mut lane = settings(dir.join("state"), 0.0, 0);
+    (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start, lane.page_first) = (Some(set), None, 3600.0, Duration::from_secs(120), true);
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    let page_only = |url: &str| planner.state.planned_version(RECIPE_V2, &page_key(url).unwrap()).unwrap().map(|version| version.page_only);
+    assert_eq!((page_only(&paper.url), page_only(&article.url)), (Some(false), Some(true)), "the passage lane never comes back for a paper, so it is planned whole at once");
+    let texts: usize = inputs_texts(&mut redis, &planner, &temp).await.iter().map(Vec::len).sum();
+    assert_eq!(texts, 5 + 1, "the paper's page text and first 4 parts, the article's page text");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_passage_lane_plans_all_passages_of_reference_bulk_pages_planned_page_first_on_its_own_texts_budget() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
