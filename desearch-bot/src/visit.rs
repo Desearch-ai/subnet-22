@@ -1654,9 +1654,14 @@ impl Run<'_> {
     }
 
     fn failed(&mut self, i: usize, error: Option<String>) {
+        let polling = self.polling;
         let update = &mut self.result.sitemaps[i];
         update.status = "error";
         update.error = error;
+        // A lane file that fails or refuses us waits twice as long each time, as polls come far oftener than visits.
+        if polling {
+            update.interval = (update.interval * 2).min(HOME_SLOW);
+        }
         update.next_check_at = Some(self.now + update.interval);
     }
 
