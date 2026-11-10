@@ -137,6 +137,23 @@ def test_pmc_takes_only_open_commercial_unretracted_versions_and_the_newest_of_e
     assert pmc.latest_versions(keys) == {"PMC1": "PMC1.3", "PMC2": "PMC2.1"}
 
 
+def test_pmc_bucket_reads_keep_only_a_few_articles_ahead_of_the_reader():
+    from concurrent.futures import ThreadPoolExecutor
+
+    pulled = []
+
+    def names():
+        for i in range(1000):
+            pulled.append(i)
+            yield i
+
+    with ThreadPoolExecutor(4) as pool:
+        found = pmc.bounded_map(pool, lambda n: n * 2, names(), ahead=8)
+        assert next(found) == 0
+        assert len(pulled) <= 9, "a reader that waits holds 8 reads in flight, not every name"
+        assert list(found) == [n * 2 for n in range(1, 1000)], "results come in order"
+
+
 def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_inventory(monkeypatch):
     import io
     import urllib.error

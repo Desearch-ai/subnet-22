@@ -9,7 +9,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -28,6 +28,8 @@ BUCKET = "https://pmc-oa-opendata.s3.amazonaws.com"
 PMC_IDS = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz"
 OPENALEX_WORKS = "https://openalex.s3.amazonaws.com/data/parquet/works/manifest.json"
 PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/"
+# Reads in flight per worker; Executor.map would read every name at once and hold what the parser hasn't reached.
+AHEAD_PER_WORKER = 4
 # Tries of one read; S3 asks clients to retry its 500 and 503 answers.
 TRIES = 6
 RETRIED = frozenset((500, 502, 503, 504))
@@ -287,6 +289,17 @@ def fetch_url(url: str, user_agent: str) -> bytes:
     raise AssertionError("unreachable")
 
 
+def bounded_map(pool, fn, items: Iterable, ahead: int) -> Iterator:
+    """`pool.map` in order, with at most `ahead` calls submitted and not yet taken."""
+    window: deque = deque()
+    for item in items:
+        window.append(pool.submit(fn, item))
+        if len(window) >= ahead:
+            yield window.popleft().result()
+    while window:
+        yield window.popleft().result()
+
+
 def from_bucket(
     names: Iterable[str], user_agent: str, workers: int
 ) -> Iterator[tuple[dict, bytes | None]]:
@@ -303,7 +316,7 @@ def from_bucket(
             return {"pmcid": name.partition(".")[0], "gone": True}, None
 
     with ThreadPoolExecutor(workers) as pool:
-        yield from pool.map(one, names)
+        yield from bounded_map(pool, one, names, workers * AHEAD_PER_WORKER)
 
 
 def taken_pmids(names: Iterable[str], user_agent: str, workers: int) -> Iterator[str]:
@@ -314,7 +327,7 @@ def taken_pmids(names: Iterable[str], user_agent: str, workers: int) -> Iterator
         return "" if left_out(meta) else str(meta.get("pmid") or "")
 
     with ThreadPoolExecutor(workers) as pool:
-        yield from (pmid for pmid in pool.map(one, names) if pmid)
+        yield from (pmid for pmid in bounded_map(pool, one, names, workers * AHEAD_PER_WORKER) if pmid)
 
 
 def pmc_ids(path: Path) -> dict[str, tuple[str, int]]:
