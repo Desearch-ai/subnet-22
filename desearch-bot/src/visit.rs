@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
 use flate2::{Decompress, FlushDecompress, Status};
@@ -146,6 +146,8 @@ pub struct KnownSitemap {
     pub generated_until: Option<i64>,
     /// A Google News sitemap when last read, so a quiet read keeps its news pace.
     pub google_news: bool,
+    /// A small file a site lists its newest stories in, which the news lane polls.
+    pub lane: bool,
     /// When it was last fetched.
     pub fetched_at: Option<i64>,
 }
@@ -201,6 +203,7 @@ pub struct SitemapUpdate {
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
     pub google_news: bool,
+    pub lane: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -253,6 +256,10 @@ pub struct Visit {
     pub paced: bool,
     /// When the site's Crawl-delay lets the next request go, in microseconds; the domain is not due before it.
     pub quiet_until: Option<i64>,
+    /// The news lane polls this site's lane files, so its visits leave them out of when the site is due.
+    pub news_lane: bool,
+    /// A news lane poll: one lane file read, the site's standing left as it was.
+    pub news_only: bool,
 }
 
 /// When a site's link work comes, which never moves its visits: a first run, spread over days; a run at a time; or none, as it no longer qualifies.
@@ -300,6 +307,8 @@ impl Visit {
             links_at: None,
             paced: false,
             quiet_until: None,
+            news_lane: false,
+            news_only: false,
         }
     }
 }
@@ -528,6 +537,12 @@ pub struct Visitor {
     pub resolver: Option<Arc<dyn Resolve>>,
     /// Parsing for link work, apart from the visits' own.
     pub links_cpu: Slots,
+    /// Whether the news lane polls listed news sites' lane files.
+    pub news_lane: bool,
+    /// The news sites whose lane files are polled every two minutes: the ones that publish most.
+    pub news_fast: Arc<RwLock<HashSet<String>>>,
+    /// Lane files fetched or waiting to be parsed at once by the news lane, apart from the visits' sitemap slots.
+    pub news_bodies: Slots,
 }
 
 impl Visitor {
@@ -551,6 +566,18 @@ impl Visitor {
         run.result
     }
 
+    /// One news lane poll: the site's lane file due first, read alone on the lane's own fetch slots; the site's standing is left as it was.
+    pub async fn news(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
+        let mut run = self.run(known, now);
+        run.polling = true;
+        run.result.news_only = true;
+        let done = run.news_poll().await;
+        run.keep_clock();
+        done?;
+        run.note_quiet();
+        Ok(run.result)
+    }
+
     fn run(&self, known: Arc<Known>, now: i64) -> Run<'_> {
         let www_only = known.www_only;
         let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
@@ -566,6 +593,7 @@ impl Visitor {
                 robots_paths: known.robots_paths.clone(),
                 crawl_delay: known.crawl_delay,
                 on_list: Some(listed),
+                news_lane: self.news_lane && self.buckets.terms(&known.host).news,
                 ..Visit::new(&known.host)
             },
             known,
@@ -593,6 +621,7 @@ impl Visitor {
             home_read: None,
             stored_home: false,
             names_new: false,
+            polling: false,
         }
     }
 
@@ -616,6 +645,8 @@ struct Run<'a> {
     visitor: &'a Visitor,
     known: Arc<Known>,
     now: i64,
+    /// A news lane poll, whose files take the lane's fetch slots.
+    polling: bool,
     pacer: Pacer,
     result: Visit,
     guesses: HashSet<String>,
@@ -693,6 +724,19 @@ impl Run<'_> {
             Some(next) => LinksAt::At(next.max(self.now)),
             None => LinksAt::First,
         })
+    }
+
+    /// Read the lane file due first where robots.txt, read lately by a visit, lets us; nothing else is asked.
+    async fn news_poll(&mut self) -> Result<(), Crash> {
+        if self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= 2 * ROBOTS_EVERY) {
+            return Ok(());
+        }
+        let known = self.known.clone();
+        let file = known.sitemaps.values().filter(|s| s.lane && due(s, self.now) && self.robots_allow(&s.url)).min_by_key(|s| s.next_check_at.unwrap_or(i64::MIN));
+        if let Some(file) = file {
+            self.sitemap(file.url.clone(), file.depth, file.parent_id, None, Some(file)).await?;
+        }
+        Ok(())
     }
 
     /// Link work for a site taken off the link queue, on what earlier visits read; a site that no longer qualifies is asked nothing.
@@ -925,7 +969,7 @@ impl Run<'_> {
     ) -> Result<Vec<Child>, Crash> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
-        let budget = Some(self.visitor.bodies.clone());
+        let budget = Some(if self.polling { self.visitor.news_bodies.clone() } else { self.visitor.bodies.clone() });
         let reads_home = url == self.home || self.is_homepage(&url, stored);
         let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
         let (answer, error) = match self.get(&url, limit, validators, budget).await {
@@ -1031,7 +1075,12 @@ impl Run<'_> {
             let hubs = self.visitor.buckets.terms(&self.known.host).hubs.map_or(0, |every| i64::from(every) * SECOND);
             interval = interval.max(HOMEPAGE_INTERVAL).max(hubs);
         }
+        let lane = schedule::lane_file(read.kind, read.news, read.feed, read.newest, read.entries, self.now);
+        if lane && self.result.news_lane {
+            interval = self.lane_interval();
+        }
         self.take_read(i, &mut read, stored, interval, &url);
+        self.result.sitemaps[i].lane = lane;
         Ok(std::mem::take(&mut read.children))
     }
 
@@ -1485,6 +1534,7 @@ impl Run<'_> {
                 sketch: stored.sketch.clone(),
                 generated_until: stored.generated_until,
                 google_news: stored.google_news,
+                lane: stored.lane,
             },
             None => SitemapUpdate {
                 id: sitemap_id(url),
@@ -1508,6 +1558,7 @@ impl Run<'_> {
                 sketch: Vec::new(),
                 generated_until: None,
                 google_news: false,
+                lane: false,
             },
         };
         self.result.sitemaps.push(update);
@@ -1518,14 +1569,26 @@ impl Run<'_> {
         self.found = true;
         self.kept += stored.map_or(0, |s| s.url_count);
         let listed_news = self.listed_news();
+        let polled = self.result.news_lane && self.result.sitemaps[i].lane;
+        let lane_interval = self.lane_interval();
         let update = &mut self.result.sitemaps[i];
         let index = update.kind.as_deref() == Some("index");
-        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news);
+        update.interval = if polled {
+            lane_interval
+        } else {
+            schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news)
+        };
         update.next_check_at = Some(self.now + update.interval);
     }
 
     fn listed_news(&self) -> bool {
         self.visitor.buckets.terms(&self.known.host).news
+    }
+
+    /// A lane file's next interval: every two minutes on the news sites that publish most, every twelve on the rest.
+    fn lane_interval(&self) -> i64 {
+        let fast = self.visitor.news_fast.read().unwrap_or_else(|e| e.into_inner()).contains(self.known.host.as_str());
+        schedule::lane_interval(fast, rand::thread_rng().gen_range(-1.0..=1.0))
     }
 
     fn failed(&mut self, i: usize, error: Option<String>) {
@@ -1824,6 +1887,9 @@ struct Read {
     kind: &'static str,
     trust: Trust,
     news: bool,
+    feed: bool,
+    /// The newest plausible date an entry carries.
+    newest: Option<i64>,
     changefreq: Option<String>,
     entries: usize,
     children: Vec<Child>,
@@ -1863,6 +1929,8 @@ fn digest(mut job: FileJob) -> Result<Digested, Crash> {
         kind,
         trust,
         news: sitemaps::is_news(&body),
+        feed: kind != HOMEPAGE_KIND && sitemaps::is_feed(&body),
+        newest: dates.iter().flatten().max().copied(),
         changefreq: dominant(entries.iter().filter_map(|e| e.changefreq.as_deref())),
         entries: entries.len(),
         children: Vec::new(),

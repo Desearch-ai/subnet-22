@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
-    allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
+    allot, allot_first, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, STOCK_WORKERS, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
@@ -615,6 +615,16 @@ fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!(allot(&[want(1, 100, 3), want(500, 100, 100)], 20, 0).0, [3, 17], "the hourly allowance caps a domain");
     assert_eq!(allot(&[want(1, 4, 100)], 50, 0).0, [4]);
     assert_eq!(allot(&[], 50, 0).0, Vec::<u64>::new());
+}
+
+#[test]
+fn news_sites_whose_lists_grew_take_their_turns_before_the_rest_go_round() {
+    let want = |rank: i64, ready: u64| Want { rank, ready, allowance: 1_000, share: 1.0, weight: 1 };
+    let wants = [want(50_000, 3), want(1, 100), want(500, 100)];
+    assert_eq!(allot_first(&wants, 5, 0, 1), (vec![3, 2, 0], 1), "the grown news site goes first even at a lower rank, then the rest from where they stopped");
+    assert_eq!(allot_first(&wants, 5, 1, 1).0, [3, 0, 2], "the rest resume among themselves");
+    assert_eq!(allot_first(&wants, 2, 0, 1).0, [2, 0, 0], "a short pass serves the news site alone");
+    assert_eq!(allot_first(&wants, 13, 0, 0), allot(&wants, 13, 0), "with none first it is the plain round");
 }
 
 #[test]

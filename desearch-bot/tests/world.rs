@@ -270,6 +270,9 @@ async fn crawls_a_small_web() {
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: ["site.test", "blocked.test", "empty.test"].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
@@ -362,6 +365,9 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
@@ -458,6 +464,9 @@ async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host, "site.test"].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -524,6 +533,9 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().map(|(h, _)| *h).collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -580,6 +592,9 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -645,6 +660,9 @@ async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locat
         follow_links: FollowLinks::Off,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -701,6 +719,9 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -759,6 +780,9 @@ async fn an_outlet_with_hubs_lists_its_homepage_and_the_pages_it_links_to_beside
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -829,6 +853,9 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: resolves.iter().copied().collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -903,9 +930,12 @@ async fn crawl_adjusted(
         follow_links,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     adjust(&mut visitor);
-    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new()).with_links(paced.0, paced.1);
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new()).with_links(paced.0, paced.1).with_news(4, 10, 0);
     assert_eq!(crawl.load().unwrap(), hosts.len());
     // A site queued for link work alone is not visited.
     assert!(crawl.step().await.unwrap() <= hosts.len());
@@ -1152,6 +1182,84 @@ async fn a_listed_site_set_aside_as_gone_while_a_sitemap_it_holds_still_works_is
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(crawl.step().await.unwrap(), 1);
     assert_eq!((record(parked)["state"].as_str(), record(parked)["urls"].as_i64()), (Some("active"), Some(12)));
+}
+
+/// A Google News sitemap listing these pages, each published today.
+fn news_urlset(host: &str, paths: &[&str]) -> String {
+    let urls: String = paths
+        .iter()
+        .map(|path| format!("<url><loc>http://{host}{path}</loc><news:news><news:publication_date>2026-11-10T10:00:00Z</news:publication_date></news:news></url>"))
+        .collect();
+    format!("<?xml version=\"1.0\"?><urlset xmlns:news=\"http://www.google.com/schemas/sitemap-news/0.9\">{urls}</urlset>")
+}
+
+fn lane_site(web: &Shared, host: &str, stories: &[&str]) {
+    let mut w = web.lock().unwrap();
+    w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/sitemap.xml\n").as_bytes());
+    let index = format!("<?xml version=\"1.0\"?><sitemapindex><sitemap><loc>http://{host}/news.xml</loc></sitemap><sitemap><loc>http://{host}/archive.xml</loc></sitemap></sitemapindex>");
+    w.add(host, "/sitemap.xml", 200, None, index.as_bytes());
+    w.add(host, "/news.xml", 200, None, news_urlset(host, stories).as_bytes());
+    let old: String = (0..30).map(|i| format!("<url><loc>http://{host}/old/{i}</loc><lastmod>2020-01-01</lastmod></url>")).collect();
+    w.add(host, "/archive.xml", 200, None, format!("<?xml version=\"1.0\"?><urlset>{old}</urlset>").as_bytes());
+    w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_news_sites_lane_file_takes_the_lane_tier_and_leaves_the_sites_due_time_to_its_other_files() {
+    let web: Shared = Arc::default();
+    let host = "lane.test";
+    lane_site(&web, host, &["/story/1", "/story/2"]);
+    let now = chrono::Utc::now().timestamp();
+    let news_terms = |buckets: &Arc<Buckets>| buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+    let (buckets, _crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-tier", FollowLinks::Off, Slots::new(1), (0, 0), news_terms, |visitor| visitor.news_lane = true).await;
+    let store = buckets.store(host);
+    let file = |name: &str| store.sitemap(host, &format!("http://{host}/{name}")).unwrap().unwrap();
+    assert_eq!((file("news.xml")["lane"].as_bool(), file("archive.xml")["lane"].as_bool()), (Some(true), Some(false)), "the Google News file is in the lane, the old archive is not");
+    let slow = desearch_bot::schedule::NEWS_SLOW / desearch_bot::schedule::SECOND;
+    let interval = file("news.xml")["interval"].as_i64().unwrap();
+    assert!((slow * 9 / 10..=slow * 11 / 10).contains(&interval), "a news site outside the fast tier has its lane file read every twelve minutes or so, not {interval} s");
+    let due = store.domain(host).unwrap().unwrap()["due"].as_i64().unwrap();
+    assert!(due > now + 20 * 60, "the site is due for its index, not for the file the lane polls: in {} s", due - now);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_lane_poll_reads_only_the_due_lane_file_and_leaves_the_site_as_it_stood() {
+    let web: Shared = Arc::default();
+    let (host, stale) = ("polled.test", "stale-robots.test");
+    lane_site(&web, host, &["/story/1", "/story/2", "/story/3"]);
+    lane_site(&web, stale, &["/story/1"]);
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        let news = Terms { news: true, ..Terms::default() };
+        buckets.allow(&Allowed::with_terms([(host, news), (stale, news)]));
+        for (site, robots) in [(host, now - 3_600), (stale, now - 3 * 86_400)] {
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+            for (name, at) in [("robots", robots), ("checked", now - 3_600), ("ok", now - 3_600)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(site, &record);
+            for (name, kind, depth, next, lane) in [("sitemap.xml", "index", 0, later, false), ("archive.xml", "urlset", 1, now - 60, false), ("news.xml", "urlset", 1, now - 60, true)] {
+                let url = format!("http://{site}/{name}");
+                let file = serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": depth, "status": "ok", "urls": 2, "next": next, "lane": lane});
+                changes.sitemap(site, &url, file.as_object().unwrap());
+            }
+            buckets.store(site).write(changes).unwrap();
+        }
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host, stale], &[], "lane-poll", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    assert!(web.lock().unwrap().hits.is_empty(), "the sites' visits are not due, so nothing is asked before the lane takes them");
+    crawl.step().await.unwrap();
+    let hits: Vec<(String, String)> = web.lock().unwrap().hits.iter().map(|(site, path, _)| (site.clone(), path.clone())).collect();
+    assert_eq!(hits, [(host.to_string(), "/news.xml".to_string())], "one request, for the lane file: no robots.txt, no index, not the due archive, and nothing on a site whose robots.txt is days old");
+    let store = buckets.store(host);
+    assert!(store.url(&urls::parse(&format!("http://{host}/story/3"), host).unwrap()).unwrap().is_some(), "the poll keeps the stories it found");
+    let record = store.domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["due"].as_i64()), (Some("active"), Some(later)), "and leaves the site's standing and due time alone");
+    let news = store.sitemap(host, &format!("http://{host}/news.xml")).unwrap().unwrap();
+    assert!(news["next"].as_i64().is_some_and(|next| next > now + 5 * 60), "the file is next polled on its tier");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2538,6 +2646,9 @@ async fn a_visit_due_while_link_work_holds_the_site_still_comes_when_that_work_e
         // The link run looks up the site's address slowly, then finds no slot: it ends as a wait, writing nothing.
         resolver: Some(Arc::new(SlowResolver { addr, known: [host].into(), wait: Duration::from_secs(3) })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     crawl.load().unwrap();
@@ -2944,6 +3055,9 @@ async fn probe_crawl(web: Shared, host: &'static str, name: &str, timeout: Durat
         follow_links: FollowLinks::Off,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     crawl.load().unwrap();
