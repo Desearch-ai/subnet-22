@@ -295,7 +295,8 @@ and a hotkey may wait in both at once.
   that is fewer requests than the polling it replaces. Any proxy in front must allow a response to take over 20 s.
 - **Restarts and copies:** the line is in Redis, and every step on it one script, so any copy serves any place; a
   copy going away answers its waiting claims, whose miners ask again elsewhere and keep their places.
-- **Switching on** needs every copy of the API on this build first. An older copy reads the log without
+- **Switching on** needs every copy of the API on this build first, and every copy switched together: a copy with
+  the line off serves past it. An older copy reads the log without
   `waited_from`, so a round it anchors never verifies. Before going back to an older build, switch this off and wait
   for the rounds served from the line to close. An older `verify_round.py` does not know `waited_from` and fails such
   rounds.
@@ -422,7 +423,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it, published in `GET /v1/overview?kind=embed` ahead of that |
 | `TASK_API_EMBED_LINE`, `TASK_API_CRAWL_LINE` | 0 | 1 makes claims of that kind wait in line ([waiting line](#waiting-line)) |
 | `TASK_API_LINE_KEEP_S` | 30 | seconds a place in either line lasts after its miner last asked, from 15 to 600 |
-| `TASK_API_EMBED_LINE_PLACES`, `TASK_API_CRAWL_LINE_PLACES` | 1 | places one hotkey can hold in that line at once, up to 50: tasks follow places, so this decides how tasks split between hotkeys, and a crawl claim in line takes one task a place whatever it asks for |
+| `TASK_API_EMBED_LINE_PLACES`, `TASK_API_CRAWL_LINE_PLACES` | 1 | places one hotkey can hold in that line at once, up to 50: tasks follow places, so this decides how tasks split between hotkeys. A crawl claim in line takes one task a place whatever it asks for, so a hotkey takes at most `TASK_API_POLL_RATE` times this many crawl tasks a second, 1,800 an hour by default |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |

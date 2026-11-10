@@ -763,6 +763,24 @@ async fn a_miner_gone_from_its_crawl_wait_lets_go_of_its_crawl_place_only() {
 }
 
 #[tokio::test]
+async fn one_of_two_waiting_claims_of_a_hotkey_gone_leaves_the_other_its_place() {
+    let (h, _stop) = crawl_in_line(|_| {}).await;
+    let client = h.client(MINER, &h.url);
+    let gone = tokio::spawn(async move { client.post("/v1/tasks/claim", crawl(15, 1)).await });
+    settle().await;
+    let client = h.client(MINER, &h.url);
+    let staying = tokio::spawn(async move { client.post("/v1/tasks/claim", crawl(15, 1)).await.unwrap() });
+    settle().await;
+    assert_eq!(h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()["refusal"]["inputs"]["ahead"], 1);
+    gone.abort();
+    settle().await;
+    assert_eq!(h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()["refusal"]["inputs"]["ahead"], 1, "the claim still waiting keeps the place");
+    one_crawl_task(&h).await;
+    assert_eq!(tasks(&answered(staying).await), 1, "and is served first");
+    assert_eq!(tasks(&h.rival.post("/v1/tasks/claim", crawl(0, 1)).await.unwrap()), 0);
+}
+
+#[tokio::test]
 async fn with_the_crawl_line_on_a_hold_on_waiting_does_not_apply_to_crawl() {
     let (h, _stop) = crawl_in_line(|s| s.hold_to_wait = true).await;
     for _ in 0..3 {

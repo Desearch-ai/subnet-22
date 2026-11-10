@@ -240,6 +240,9 @@ impl Settings {
         let key_uri = text("TASK_API_KEY_URI", "");
         let embed_line = line(EMBED, &text("TASK_API_EMBED_LINE", "0"), number("TASK_API_EMBED_LINE_PLACES", 1)?)?;
         let crawl_line = line(CRAWL, &text("TASK_API_CRAWL_LINE", "0"), number("TASK_API_CRAWL_LINE_PLACES", 1)?)?;
+        if std::env::var("TASK_API_EMBED_LINE_KEEP_S").is_ok() {
+            bail!("TASK_API_EMBED_LINE_KEEP_S is now TASK_API_LINE_KEEP_S, for both lines");
+        }
         let line_keep = line_keep(number("TASK_API_LINE_KEEP_S", 30.0)?)?;
         let (embed_release_per_hour, embed_release_next) = embed_release(
             number("TASK_API_EMBED_RELEASE_PER_HOUR", 0.0)?,

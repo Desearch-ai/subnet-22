@@ -89,7 +89,8 @@ impl Drop for Waiting<'_> {
                 waiting.remove(&key);
             }
         }
-        if self.answered {
+        // Another claim of this hotkey still waiting here for this kind holds the same places, so they stay.
+        if self.answered || waiting.contains_key(&key) {
             return;
         }
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
