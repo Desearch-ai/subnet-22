@@ -1,0 +1,14 @@
+{
+ "source": "arxiv",
+ "run": "fixture",
+ "as_of": "2026-11-10T19:24:00Z",
+ "files": [
+  "arxiv-000001.parquet"
+ ],
+ "removed": "removed.txt",
+ "rows": 244,
+ "counts": {
+  "pages": 244,
+  "deleted": 2
+ }
+}

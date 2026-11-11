@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><responseDate>2026-11-10T10:00:00Z</responseDate>
+<ListRecords>
+<record><header><identifier>oai:arXiv.org:2401.00001</identifier><datestamp>2026-11-01</datestamp><setSpec>cs</setSpec></header><metadata>
+<arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<id>
+ 2401.00001 </id><created>2024-01-02</created><updated>2024-01-02</updated>
+<authors><author><keyname>de  la Cruz</keyname><forenames> María
+ José</forenames><suffix>Jr</suffix><affiliation>MIT</affiliation></author><author><keyname>Collab</keyname></author><author><forenames>Solo</forenames><keyname></keyname></author><author><keyname><!-- c -->Hidden</keyname><forenames>Shown<!-- c -->Not</forenames></author></authors>
+<authors><author><keyname>Second</keyname><forenames>List</forenames></author></authors>
+<title>A &amp; B: <![CDATA[<raw> & ]]>  done&#x2009;now  <i>inner</i> tail</title>
+<categories>cs.LG  stat.ML&#10;math.OC</categories>
+<comments>12 pages,&#13;
+ 5 figures</comments>
+<journal-ref>Phys. Rev. D 99, 1 (2019)</journal-ref>
+<doi>10.1103/x</doi>
+<license> http://creativecommons.org/licenses/by/4.0/ </license>
+<abstract>  First line
+second	line  &lt;b&gt;  </abstract>
+</arXiv>
+</metadata></record>
+<record><header status="deleted"><identifier> oai:arXiv.org:math/0101001</identifier></header></record>
+<record><header status="deleted"><identifier>oai:arXiv.org:0704.0001</identifier></header><metadata/></record>
+<record><header status="active"><identifier>oai:arXiv.org:2402.0002</identifier></header><metadata><arXiv xmlns="http://arxiv.org/OAI/arXiv/"><id>2402.0002</id><title/><abstract>Only an abstract.</abstract><created> 2024-02-03 </created><updated>2024-02-05</updated><license>https://creativecommons.org/publicdomain/zero/1.0/</license></arXiv></metadata></record>
+<record><header><identifier>oai:arXiv.org:x</identifier></header><metadata><arXiv xmlns="http://example.org/other/"><id>nope</id></arXiv><arXiv xmlns="http://arxiv.org/OAI/arXiv/"><id>2403.0003</id><title>Second arXiv element</title><title>Ignored</title><abstract>An abstract.</abstract><license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license></arXiv></metadata></record>
+<resumptionToken cursor="0" completeListSize="5">6960524|1001</resumptionToken>
+</ListRecords>
+</OAI-PMH>
