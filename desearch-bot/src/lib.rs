@@ -28,6 +28,7 @@ pub mod schedule;
 pub mod setrule;
 pub mod signing;
 pub mod sitecrawl;
+pub mod sitemapcheck;
 pub mod sitemaps;
 pub mod states;
 pub mod suffixes;

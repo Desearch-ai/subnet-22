@@ -56,6 +56,8 @@ enum Command {
     Build(BuildArgs),
     /// Crawl hosts from their home pages by links and sitemaps into a record folder, as `python -m crawler site` does.
     CrawlSites(CrawlSitesArgs),
+    /// Read each host's robots.txt and sitemaps and say whether the bot can make miner tasks from them, as JSON lines.
+    SitemapCheck(SitemapCheckArgs),
 }
 
 #[derive(clap::Args)]
@@ -138,6 +140,16 @@ struct CopyBucketsArgs {
     /// Buckets to copy, as ranges such as `0-13,20`.
     #[arg(long)]
     buckets: String,
+}
+
+#[derive(clap::Args)]
+struct SitemapCheckArgs {
+    /// Hosts, one a line.
+    hosts: PathBuf,
+    #[arg(long, default_value_t = 64)]
+    at_once: usize,
+    #[arg(long, default_value_t = 20)]
+    read_timeout_s: u64,
 }
 
 #[derive(clap::Args)]
@@ -428,6 +440,12 @@ fn main() -> Result<()> {
         Command::Unresend(args) => return unresend(args),
         Command::Build(args) => return build_run(args),
         Command::CrawlSites(args) => return crawl_sites(args),
+        Command::SitemapCheck(args) => {
+            let text = std::fs::read_to_string(&args.hosts)?;
+            let hosts: Vec<String> = text.lines().map(str::trim).filter(|h| !h.is_empty()).map(str::to_string).collect();
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
+            return rt.block_on(desearch_bot::sitemapcheck::run(hosts, args.at_once, Duration::from_secs(args.read_timeout_s)));
+        }
         Command::Replay(args) => {
             let args = desearch_bot::replay::ReplayArgs {
                 buckets_dir: args.buckets_dir,
