@@ -257,3 +257,16 @@ def test_wildcard_paths_expand_to_the_files_they_match(tmp_path):
         (tmp_path / name).write_text("")
     assert refresh.expand("{work}/*.xml", {"work": str(tmp_path)}) == [str(tmp_path / "a.xml"), str(tmp_path / "b.xml")]
     assert refresh.expand("{python}", {}) == [sys.executable]
+
+
+def test_the_discord_line_says_what_was_published_or_why_not():
+    ok = {
+        "source": "bittensor", "run": "20261116-0200", "ok": True, "hidden": 1, "seconds": 812,
+        "builds": {"subnets": {"new": 2, "changed": 5, "removed": 1, "seen": 130, "published": "1 files, 7 pages, bulk files [4701]", "large": False}},
+    }
+    assert refresh.summary(ok) == (
+        "refresh bittensor 20261116-0200: subnets 2 new, 5 changed, 1 removed of 130, "
+        "1 files, 7 pages, bulk files [4701]; 1 hidden; 812 s"
+    )
+    bad = {"source": "arxiv", "ok": False, "refused": True, "error": "Refused('short')", "seconds": 3}
+    assert refresh.summary(bad) == "⚠️ refresh arxiv refused after 3 s: Refused('short')"

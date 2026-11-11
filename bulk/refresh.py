@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,8 @@ READY = ".ready"
 RECEIPT_POLL_S = 30
 HIDE_SSH = "refresh-hide"
 STATUS = "status.jsonl"
+WEBHOOK_ENV = "REFRESH_DISCORD_WEBHOOK"
+USER_AGENT = "DesearchRefresh/1.0 (+https://desearch.ai)"
 MIN_SEEN_SHARE = 0.95
 LARGE_SHARE = 0.30
 COMMAND_TIMEOUT_S = 6 * 3600
@@ -335,6 +338,33 @@ def refresh(
     return report
 
 
+def summary(report: dict) -> str:
+    """The Discord line for a run: what each build published, or why the run stopped."""
+    head = f"refresh {report['source']} {report.get('run', '')}".strip()
+    if not report.get("ok"):
+        kind = "refused" if report.get("refused") else "failed"
+        return f"⚠️ {head} {kind} after {report.get('seconds', 0)} s: {report.get('error', '')[:600]}"
+    parts = []
+    for name, c in report.get("builds", {}).items():
+        flag = " ⚠️ over 30% changed" if c.get("large") else ""
+        sent = f", {c['published']}" if c.get("published") else ""
+        parts.append(f"{name} {c['new']} new, {c['changed']} changed, {c['removed']} removed of {c['seen']}{sent}{flag}")
+    dry = " (dry run)" if report.get("dry_run") else ""
+    return f"{head}{dry}: " + "; ".join(parts) + f"; {report.get('hidden', 0)} hidden; {report.get('seconds', 0)} s"
+
+
+def notify(report: dict) -> None:
+    hook = os.environ.get(WEBHOOK_ENV)
+    if not hook:
+        return
+    body = json.dumps({"content": summary(report)[:1900]}).encode()
+    request = urllib.request.Request(hook, body, {"Content-Type": "application/json", "User-Agent": USER_AGENT})
+    try:
+        urllib.request.urlopen(request, timeout=20).close()
+    except OSError as e:
+        print(f"Discord post failed: {e!r}", file=sys.stderr)
+
+
 def seed(con: sqlite3.Connection, build: Build, folders: list[Path]) -> int:
     """Records runs published before the runner, so its first diff sends only what changed since."""
     pages = 0
@@ -396,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         report["finished"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with (root / STATUS).open("a") as status:
             status.write(json.dumps(report) + "\n")
+    notify(report)
     print(json.dumps(report, indent=1))
     return 0 if report["ok"] else 1
 
