@@ -5,9 +5,9 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/refresh/subnet-22
+WorkingDirectory=/home/ubuntu/refresh
 EnvironmentFile=-/home/ubuntu/refresh/env
-ExecStart=/home/ubuntu/refresh/venv/bin/python -m bulk.refresh run %i
+ExecStart=/home/ubuntu/refresh/bin/refresh run %i
 Nice=19
 IOSchedulingClass=idle
 CPUQuota=600%

@@ -74,21 +74,24 @@ as the source.
 
 ## Refresh
 
-`python -m bulk.refresh run <source>` keeps a source current. It runs the source's fetch and build commands, keeps
-only the pages that are new or changed since the last run, publishes them and hides the pages the source dropped.
+The Rust binary `refresh` (crate `refresh/`) keeps a source current. `refresh run <source>` runs the source's fetch and
+build commands, keeps only the pages that are new or changed since the last run, publishes them and hides the pages
+the source dropped. The sources and their commands are in `refresh/src/sources.rs`.
 
-- **State:** `~/refresh/state/<source>.sqlite` holds each page's URL, a hash of its row, the run that last
-  published it and whether it is gone. `python -m bulk.refresh seed <source> <build> <run folders>` records runs
-  published before the source's first refresh.
+- **State:** `~/refresh/state/<source>.sqlite` holds each page's URL, a hash of its row (every column but the fetch's
+  own), the run that last published it and whether it is gone. `refresh seed <source> <build> <run folders>` records
+  runs published before the source's first refresh; `refresh diff` checks a build folder against the state.
 - **Guards:** a full-list build with under 95% of the pages it had publishes and hides nothing. More than 30% of a
   build changed is flagged in the report.
+- **Incremental sources** such as arXiv fetch from `{since}`, the day of their last run that published, to `{until}`,
+  today. A first run takes `--since`.
 - **Publish:** the runner leaves each diff in `~/refresh/outbox`. `refresh-pull` on the planner box takes it every 10
   minutes, publishes it with `publish-one.sh` and sends the output back as a receipt in `~/refresh/receipts`.
 - **Hide:** pages a source dropped go to index-1 as exact-path rules in the source's own section of
-  `hidden-urls.txt` (`refresh_hidden.py`), rewritten whole each run, so a page that comes back is shown again.
-- **Incremental sources** such as arXiv fetch from `{since}`, the day of their last run that published, to `{until}`,
-  today. A first run takes `--since`.
-- **Report:** one JSON line a run in `~/refresh/status.jsonl`.
+  `hidden-urls.txt` (`refresh hide-section`, the forced command of the crawler box's key), rewritten whole each run,
+  so a page that comes back is shown again.
+- **Report:** one JSON line a run in `~/refresh/status.jsonl`, and one line to the ops channel when
+  `REFRESH_DISCORD_WEBHOOK` is set.
 
 `deploy/` holds the crawler box's `refresh@.service` and timers, the planner box's `refresh-pull` and the crawler
 box's forced command for it, `refresh-send.sh`.
