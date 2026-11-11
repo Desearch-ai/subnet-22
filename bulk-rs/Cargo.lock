@@ -325,10 +325,12 @@ name = "bulk-arxiv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
  "bulk-core",
  "clap",
  "desearch",
  "flate2",
+ "parquet",
  "rayon",
  "regex",
  "reqwest",
@@ -343,11 +345,13 @@ name = "bulk-arxiv-text"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
  "bulk-arxiv",
  "bulk-core",
  "clap",
  "desearch",
  "flate2",
+ "parquet",
  "rayon",
  "regex",
  "serde",
@@ -379,10 +383,14 @@ name = "bulk-pmc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
  "bulk-core",
+ "bytes",
  "clap",
  "desearch",
  "flate2",
+ "indexmap",
+ "parquet",
  "rayon",
  "regex",
  "reqwest",
@@ -390,6 +398,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-properties",
 ]
 
 [[package]]
@@ -401,6 +410,7 @@ dependencies = [
  "clap",
  "desearch",
  "flate2",
+ "quick-xml",
  "rayon",
  "regex",
  "reqwest",
@@ -1405,6 +1415,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "seq-macro",
+ "snap",
  "twox-hash",
  "zstd",
 ]
@@ -1473,6 +1484,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -1962,6 +1982,12 @@ name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
+
+[[package]]
+name = "snap"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
 name = "socket2"

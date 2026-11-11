@@ -1,0 +1,62 @@
+[
+ {
+  "json": "{\"a\": \"x\ud83d\ude00y\"}",
+  "value": {
+   "a": "x\ud83d\ude00y"
+  }
+ },
+ {
+  "json": "{\"a\": \"x\\ud83dy\\ude00\"}",
+  "value": {
+   "a": "xy"
+  }
+ },
+ {
+  "json": "[\"\\\\ud800\", \"\\ud800\ud800\udc00\", \"\\udc00\\ud800\"]",
+  "value": [
+   "\\ud800",
+   "\ud800\udc00",
+   ""
+  ]
+ },
+ {
+  "json": "{\"k\\ud800ey\": [\"\udbff\udfff\", \"\\uD800\", \"tail\\uDFFF\"]}",
+  "value": {
+   "key": [
+    "\udbff\udfff",
+    "",
+    "tail"
+   ]
+  }
+ },
+ {
+  "json": "\"\\\\\\ud800\"",
+  "value": "\\"
+ },
+ {
+  "json": "\"plain \u00e9 \u00e9 \\n \\\" \\\\\"",
+  "value": "plain \u00e9 \u00e9 \n \" \\"
+ },
+ {
+  "json": "{\"nested\": {\"deep\": [\"\ud834\udd1e\", \"\\ud834\", 1, null, true]}}",
+  "value": {
+   "nested": {
+    "deep": [
+     "\ud834\udd1e",
+     "",
+     1,
+     null,
+     true
+    ]
+   }
+  }
+ },
+ {
+  "json": "\"\\ud83d\ud83d\ude00\"",
+  "value": "\ud83d\ude00"
+ },
+ {
+  "json": "\"\\ud83dA\"",
+  "value": "A"
+ }
+]

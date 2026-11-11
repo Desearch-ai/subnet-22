@@ -1,0 +1,18 @@
+{
+ "source": "pubmed",
+ "run": "test-run",
+ "as_of": "2026-11-01T03:06:07Z",
+ "files": [
+  "pubmed-000001.parquet",
+  "pubmed-000002.parquet",
+  "pubmed-000003.parquet"
+ ],
+ "removed": "removed.txt",
+ "rows": 7,
+ "counts": {
+  "taken": 7,
+  "skipped": 2,
+  "cl\u00e9": 1,
+  "zero": 0
+ }
+}

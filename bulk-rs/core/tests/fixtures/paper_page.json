@@ -1,0 +1,6031 @@
+[
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Slide 2 of 8\n",
+    true,
+    false,
+    false
+   ],
+   [
+    "Jane Doe is a reporter at the Daily Planet.",
+    true,
+    false,
+    false
+   ],
+   [
+    "Skip to product informationx",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add us to Google News",
+    true,
+    false,
+    false
+   ],
+   [
+    "Download the app",
+    false,
+    false,
+    false
+   ],
+   [
+    "####### Too deep",
+    false,
+    false,
+    false
+   ],
+   [
+    "Learn More \u2192",
+    false,
+    false,
+    false
+   ],
+   [
+    "Getting your Trinity Audio player ready...",
+    false,
+    false,
+    false
+   ],
+   [
+    "Don\u2019t miss this",
+    true,
+    false,
+    false
+   ],
+   [
+    "Sk\u0131p to content",
+    false,
+    false,
+    false
+   ],
+   [
+    "Getting your Trinity Audio player ready...",
+    false,
+    false,
+    false
+   ],
+   [
+    "Related Stories #",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/0",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/0",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\n# Paper title\nJane Doe is a reporter at the Daily Planet.\n\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002\nAdd us to Google News\nDownload the app\n####### Too deep\nLearn More \u2192\nDon\u2019t miss this\nRelated Stories #"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "Follow me on Mastodon",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002",
+    true,
+    false,
+    false
+   ],
+   [
+    "Most read",
+    false,
+    false,
+    false
+   ],
+   [
+    "ALL R\u0130GHTS RESERVED",
+    false,
+    false,
+    false
+   ],
+   [
+    "copyright\u00e9",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app",
+    false,
+    false,
+    false
+   ],
+   [
+    "Story continues below advertisement",
+    false,
+    false,
+    false
+   ],
+   [
+    "{ \"a\" : 1}",
+    true,
+    false,
+    false
+   ],
+   [
+    "1",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "Skip to the main navigation",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    false,
+    true,
+    false
+   ],
+   [
+    "Advertisement",
+    false,
+    true,
+    false
+   ],
+   [
+    "STORY CONTINUES BELOW",
+    false,
+    false,
+    false
+   ],
+   [
+    "Log in to continue",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Don\u2019t miss this",
+    true,
+    false,
+    false
+   ],
+   [
+    "PHOTO 1 / 5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Become a member",
+    false,
+    false,
+    false
+   ],
+   [
+    "Donate today and help us keep reporting on the issues that matter",
+    false,
+    false,
+    false
+   ],
+   [
+    "News",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to the main navigation",
+    false,
+    false,
+    false
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/1",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/1",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nFollow me on Mastodon\n\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002\nMost read\ncopyright\u00e9\nGet the app\n| 1 | 3 |\n|---|---|\nAdvertisement\nAdvertisement\nLog in to continue\n```\ncode\n```\nDon\u2019t miss this\nBecome a member\nDonate today and help us keep reporting on the issues that matter\nNews\n| b | 3 |\n|---|---|\n| $2 | 3 |"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "It seems that you're using an outdated browser",
+    true,
+    false,
+    false
+   ],
+   [
+    "It seems that you're using an outdated browser",
+    true,
+    false,
+    false
+   ],
+   [
+    "View all",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u2026",
+    true,
+    false,
+    false
+   ],
+   [
+    "Download the app",
+    true,
+    false,
+    false
+   ],
+   [
+    "Click here",
+    true,
+    false,
+    false
+   ],
+   [
+    "(C) 2020",
+    false,
+    false,
+    false
+   ],
+   [
+    "--",
+    true,
+    false,
+    false
+   ],
+   [
+    "Subscribers only content here",
+    false,
+    false,
+    false
+   ],
+   [
+    "See all",
+    false,
+    false,
+    false
+   ],
+   [
+    "Site by",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00b2",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a5",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u00b2",
+    false,
+    false,
+    false
+   ],
+   [
+    "- list item",
+    false,
+    false,
+    false
+   ],
+   [
+    "It seems that you're using an outdated browser",
+    true,
+    false,
+    false
+   ],
+   [
+    "a_",
+    false,
+    false,
+    false
+   ],
+   [
+    "12",
+    true,
+    false,
+    false
+   ],
+   [
+    "News",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/2",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/2",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nView all\nDownload the app\nClick here\nSubscribers only content here\nSee all\n- list item\nNews"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "copyright\u0301 x",
+    true,
+    false,
+    false
+   ],
+   [
+    "Powered by WordPress",
+    false,
+    false,
+    false
+   ],
+   [
+    "The study measured protein folding rates in 42 samples.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sponsored content",
+    true,
+    false,
+    false
+   ],
+   [
+    "Powered by WordPress",
+    false,
+    false,
+    false
+   ],
+   [
+    "ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT",
+    false,
+    false,
+    false
+   ],
+   [
+    "The story is read by an automated voice.",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u2026",
+    false,
+    false,
+    false
+   ],
+   [
+    "View all",
+    false,
+    false,
+    false
+   ],
+   [
+    "The study measured protein folding rates in 42 samples.",
+    false,
+    false,
+    false
+   ],
+   [
+    "-- Donate",
+    false,
+    false,
+    false
+   ],
+   [
+    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy |",
+    true,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Item 4 of 4 more",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/3",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/3",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nThe study measured protein folding rates in 42 samples.\nONE TWO THREE FOUR FIVE SIX SEVEN EIGHT\nView all\n-- Donate\nItem 4 of 4 more\n| $2 | x |\n|---|---|\n| a | y |"
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Learn More \u2192",
+    false,
+    false,
+    false
+   ],
+   [
+    "Read more",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sk\u0131p to content",
+    true,
+    false,
+    false
+   ],
+   [
+    "Skip to productx",
+    false,
+    false,
+    false
+   ],
+   [
+    "Download our app now",
+    false,
+    false,
+    false
+   ],
+   [
+    "#> Story continues below",
+    false,
+    false,
+    false
+   ],
+   [
+    "Subscribe to our newsletter",
+    false,
+    false,
+    false
+   ],
+   [
+    "A .gov website belongs to an official government organization",
+    true,
+    false,
+    false
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Double tap to zoom",
+    false,
+    false,
+    false
+   ],
+   [
+    "####### Too deep",
+    false,
+    false,
+    false
+   ],
+   [
+    "Read more",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow topics",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sk\u0131p to content",
+    false,
+    false,
+    false
+   ],
+   [
+    "##",
+    true,
+    false,
+    false
+   ],
+   [
+    "copyright_",
+    false,
+    false,
+    false
+   ],
+   [
+    "Contact",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "Sports #",
+    false,
+    false,
+    false
+   ],
+   [
+    "> #### DEEP HEADING",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/4",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/4",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "# Paper title\nLearn More \u2192\nRead more\nSkip to productx\nDownload our app now\nSubscribe to our newsletter\n| a | y |\n| $2 | x |\n####### Too deep\nFollow topics\ncopyright_\nContact\n| $2 | 3 |\n|---|---|\nSports #\n> #### DEEP HEADING"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "Contact Jane Doe at jane@example.com",
+    false,
+    false,
+    false
+   ],
+   [
+    "Explore",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to product informationx",
+    false,
+    false,
+    false
+   ],
+   [
+    "#> Affiliate disclosure",
+    false,
+    false,
+    false
+   ],
+   [
+    "copyright\u00e9",
+    true,
+    false,
+    false
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Get the app",
+    true,
+    false,
+    false
+   ],
+   [
+    "#> copyright\u0301 x",
+    true,
+    false,
+    false
+   ],
+   [
+    "Advertisement 3",
+    false,
+    false,
+    false
+   ],
+   [
+    "You are using an out-of-date browser",
+    false,
+    false,
+    false
+   ],
+   [
+    "Photo 1 / 5  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "Related articles:",
+    true,
+    false,
+    false
+   ],
+   [
+    "Skip to productx",
+    false,
+    false,
+    false
+   ],
+   [
+    "Explore",
+    false,
+    false,
+    false
+   ],
+   [
+    "# John Smith writes about technology.",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/5",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/5",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "John Smith writes about technology."
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nContact Jane Doe at jane@example.com\nExplore\ncopyright\u00e9\n| a | y |\n| Name | x |\n| a | x |\n|---|---|\n| a | x |\n| b | x |\n|---|---|\n| 1 | x |\nGet the app\nRelated articles:\nSkip to productx\n# John Smith writes about technology."
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "See all",
+    false,
+    false,
+    false
+   ],
+   [
+    "More from Jane Doe",
+    true,
+    false,
+    false
+   ],
+   [
+    "This audio is auto-generated.",
+    false,
+    false,
+    false
+   ],
+   [
+    "ideographic\u3000space line here",
+    true,
+    false,
+    false
+   ],
+   [
+    "ideographic\u3000space line here",
+    true,
+    false,
+    false
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Follow me on Mastodon",
+    false,
+    false,
+    false
+   ],
+   [
+    "-- Download our app now",
+    true,
+    false,
+    false
+   ],
+   [
+    "--  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "Continue",
+    false,
+    false,
+    false
+   ],
+   [
+    "ADVERTISEMENT",
+    true,
+    false,
+    false
+   ],
+   [
+    "See all",
+    false,
+    false,
+    false
+   ],
+   [
+    "Most read",
+    false,
+    false,
+    false
+   ],
+   [
+    "SKIP TO NAVIGATION.",
+    true,
+    false,
+    false
+   ],
+   [
+    "follow @_x",
+    true,
+    false,
+    false
+   ],
+   [
+    "Explore",
+    false,
+    false,
+    false
+   ],
+   [
+    "An official website of the United States government",
+    false,
+    false,
+    false
+   ],
+   [
+    "$5",
+    true,
+    false,
+    false
+   ],
+   [
+    "## \u00b2",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a5",
+    false,
+    false,
+    false
+   ],
+   [
+    "MORE",
+    false,
+    false,
+    false
+   ],
+   [
+    "| Name | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/6",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/6",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\n| Name | 3 |\nSee all\nMore from Jane Doe\nideographic\u3000space line here\n| a | y |\nFollow me on Mastodon\n-- Download our app now\nContinue\nMost read\nfollow @_x\nExplore\nMORE\n| Name | x |\n|---|---|\n| Name | 3 |\n| b | 3 |\n|---|---|\n| a | 3 |\n|---|---|"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "Support our work",
+    false,
+    false,
+    false
+   ],
+   [
+    "-- Most read",
+    false,
+    false,
+    false
+   ],
+   [
+    "See all",
+    false,
+    false,
+    false
+   ],
+   [
+    "> copyright\u0301 x",
+    false,
+    false,
+    false
+   ],
+   [
+    "- View details",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/7",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/7",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nSupport our work\n-- Most read\nSee all\n- View details"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Support our work",
+    false,
+    false,
+    false
+   ],
+   [
+    "Explore more",
+    true,
+    false,
+    false
+   ],
+   [
+    "Jane Doe is a reporter at the Daily Planet.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Listen to this article  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "#> Follow me on Mastodon",
+    false,
+    false,
+    false
+   ],
+   [
+    "HOME",
+    false,
+    false,
+    false
+   ],
+   [
+    "A .gov website belongs to an official government organization",
+    true,
+    false,
+    false
+   ],
+   [
+    "Listen to this article  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "Continue reading...",
+    false,
+    false,
+    false
+   ],
+   [
+    "more\u0301",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Read more ",
+    false,
+    false,
+    false
+   ],
+   [
+    "trailing newline\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow me on Mastodon",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\u001c\"k\": 1",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u00b2",
+    false,
+    false,
+    false
+   ],
+   [
+    "Buy now",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00b2",
+    false,
+    false,
+    false
+   ],
+   [
+    "word\u00a0word",
+    false,
+    false,
+    false
+   ],
+   [
+    "SEE ALL",
+    false,
+    false,
+    false
+   ],
+   [
+    "SKIP TO MA\u0130N CONTENT",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/8",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/8",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\n# Paper title\nSupport our work\nExplore more\nJane Doe is a reporter at the Daily Planet.\n| $2 | 3 |\n| b | y |\n| $2 | x |\n#> Follow me on Mastodon\nHOME\nContinue reading...\nmore\u0301\n| $2 | x |\nRead more \ntrailing newline\n\nFollow me on Mastodon\nBuy now\nword\u00a0word\nSEE ALL"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "Explore all",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow us",
+    false,
+    false,
+    false
+   ],
+   [
+    "Topics",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/9",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/9",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nExplore all\nFollow us\nTopics\n| $2 | x |\n| a | y |"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "We report a new method for estimating the Hubble constant from lensed quasars and supernovae.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    false,
+    false,
+    false
+   ],
+   [
+    "Photo 1 / 5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Click here",
+    false,
+    false,
+    false
+   ],
+   [
+    "Support local journalism",
+    true,
+    false,
+    false
+   ],
+   [
+    "x",
+    false,
+    true,
+    false
+   ],
+   [
+    "See all",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a0\u00a0",
+    false,
+    false,
+    false
+   ],
+   [
+    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    false,
+    false,
+    false
+   ],
+   [
+    "# long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u0131iI\u0130 dotted and dotless  ",
+    true,
+    false,
+    false
+   ],
+   [
+    "Photo 1 / 5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    false,
+    true,
+    false
+   ],
+   [
+    "Most read",
+    false,
+    false,
+    false
+   ],
+   [
+    "--",
+    true,
+    false,
+    false
+   ],
+   [
+    "5%  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "$5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add Desearch as a preferred source on Google",
+    true,
+    false,
+    false
+   ],
+   [
+    "Government websites by CivicPlus",
+    false,
+    false,
+    false
+   ],
+   [
+    "Subscribe",
+    false,
+    false,
+    false
+   ],
+   [
+    "You are using an outdated browser word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+    false,
+    false,
+    false
+   ],
+   [
+    "word\u00a0word",
+    false,
+    false,
+    false
+   ],
+   [
+    "Read more about it",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/10",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/10",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long "
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nWe report a new method for estimating the Hubble constant from lensed quasars and supernovae.\nClick here\nSupport local journalism\nx\nSee all\n# long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long\n\u0131iI\u0130 dotted and dotless  \nAdvertisement\nMost read\nAdd Desearch as a preferred source on Google\nSubscribe\nYou are using an outdated browser word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\nword\u00a0word\nRead more about it"
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "Subscribers only content here",
+    true,
+    false,
+    false
+   ],
+   [
+    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Read more: The next big thing",
+    true,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "__",
+    true,
+    false,
+    false
+   ],
+   [
+    "trailing newline\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "## Follow @ nytimes",
+    true,
+    false,
+    false
+   ],
+   [
+    "beta beta alpha \u03b5 delta beta \u03b6 alpha \u03b6 \u03b6 gamma alpha beta gamma alpha gamma \u03b5 beta \u03b5 \u03b6 \u03b6 delta \u03b6 alpha \u03b5 alpha \u03b5 gamma gamma delta beta beta alpha \u03b5 \u03b5 \u03b6 \u03b5 alpha \u03b6 gamma \u03b5 gamma gamma beta delta gamma \u03b6 \u03b5 beta gamma gamma \u03b6 \u03b6 beta delta alpha gamma \u03b5 alpha delta gamma \u03b5 gamma \u03b5 delta delta \u03b6 beta gamma \u03b5 gamma delta \u03b5 alpha gamma \u03b5 \u03b5 \u03b5 \u03b5 \u03b5 delta \u03b6 \u03b5 delta alpha alpha delta gamma alpha delta delta alpha beta \u03b5 beta delta alpha alpha delta beta beta alpha \u03b5 delta gamma beta gamma gamma \u03b6 beta delta alpha alpha \u03b5 beta \u03b6 \u03b6 beta \u03b6 \u03b6",
+    false,
+    false,
+    false
+   ],
+   [
+    "12",
+    false,
+    false,
+    false
+   ],
+   [
+    "Picture \u0663 of \u0665",
+    false,
+    false,
+    false
+   ],
+   [
+    "About us",
+    false,
+    false,
+    false
+   ],
+   [
+    "Affiliate disclosure",
+    true,
+    false,
+    false
+   ],
+   [
+    "Skip to navigation.",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Advertisement 3",
+    false,
+    false,
+    false
+   ],
+   [
+    "Web design by Foo",
+    false,
+    false,
+    false
+   ],
+   [
+    "Become a member",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow @ nytimes",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "12",
+    true,
+    false,
+    false
+   ],
+   [
+    "You are using an outdated browser word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+    false,
+    false,
+    false
+   ],
+   [
+    "More from Jane Doe",
+    false,
+    false,
+    false
+   ],
+   [
+    "http://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/11",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/11",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Follow @ nytimes"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Subscribers only content here\n```\nx = 1\n```\nRead more: The next big thing\n```\ncode\n```\ntrailing newline\n\n## Follow @ nytimes\nbeta beta alpha \u03b5 delta beta \u03b6 alpha \u03b6 \u03b6 gamma alpha beta gamma alpha gamma \u03b5 beta \u03b5 \u03b6 \u03b6 delta \u03b6 alpha \u03b5 alpha \u03b5 gamma gamma delta beta beta alpha \u03b5 \u03b5 \u03b6 \u03b5 alpha \u03b6 gamma \u03b5 gamma gamma beta delta gamma \u03b6 \u03b5 beta gamma gamma \u03b6 \u03b6 beta delta alpha gamma \u03b5 alpha delta gamma \u03b5 gamma \u03b5 delta delta \u03b6 beta gamma \u03b5 gamma delta \u03b5 alpha gamma \u03b5 \u03b5 \u03b5 \u03b5 \u03b5 delta \u03b6 \u03b5 delta alpha alpha delta gamma alpha delta delta alpha beta \u03b5 beta delta alpha alpha delta beta beta alpha \u03b5 delta gamma beta gamma gamma \u03b6 beta delta alpha alpha \u03b5 beta \u03b6 \u03b6 beta \u03b6 \u03b6\nAbout us\n```\nx = 1\n```\nBecome a member\nFollow @ nytimes\n| $2 | 3 |\n| 1 | y |\nYou are using an outdated browser word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word\nMore from Jane Doe"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Copyright 2024 by the authors",
+    true,
+    false,
+    false
+   ],
+   [
+    "Become a subscriber today",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to content",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisements",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a0\u00a0",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisements",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "x",
+    false,
+    true,
+    false
+   ],
+   [
+    "abc",
+    true,
+    false,
+    false
+   ],
+   [
+    "Support local journalism",
+    false,
+    false,
+    false
+   ],
+   [
+    "Web design by Foo #",
+    false,
+    false,
+    false
+   ],
+   [
+    "####### Too deep",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "VIEW ALL",
+    false,
+    false,
+    false
+   ],
+   [
+    "Getting your Trinity Audio player ready...",
+    false,
+    false,
+    false
+   ],
+   [
+    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    false,
+    false,
+    false
+   ],
+   [
+    "#### Deep heading",
+    false,
+    false,
+    false
+   ],
+   [
+    "Paid content 2",
+    false,
+    false,
+    false
+   ],
+   [
+    "Getting your Trinity Audio player ready...",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/12",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/12",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "# Paper title\nBecome a subscriber today\n| $2 | y |\n|---|---|\n| b | x |\nx\nabc\nSupport local journalism\n####### Too deep\n```\ncode\n```\nVIEW ALL\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n#### Deep heading"
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "Listen to this story.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Read more \u00bb",
+    true,
+    false,
+    false
+   ],
+   [
+    "Subscribers only content here",
+    false,
+    false,
+    false
+   ],
+   [
+    "***",
+    true,
+    false,
+    false
+   ],
+   [
+    "| a | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "-- {\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get our newsletter",
+    false,
+    false,
+    false
+   ],
+   [
+    "***",
+    false,
+    false,
+    false
+   ],
+   [
+    "View details",
+    true,
+    false,
+    false
+   ],
+   [
+    "Contact",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app",
+    true,
+    false,
+    false
+   ],
+   [
+    "- Log in to continue",
+    true,
+    false,
+    false
+   ],
+   [
+    "#> Continue",
+    false,
+    false,
+    false
+   ],
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Weather",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to the main navigation",
+    false,
+    false,
+    false
+   ],
+   [
+    "See also",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/13",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/13",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Read more \u00bb\nSubscribers only content here\n***\n| a | 3 |\n|---|---|\n| Name | 3 |\nGet our newsletter\nView details\nContact\nGet the app\n- Log in to continue\n#> Continue\n| Name | 3 |\nWeather\nSee also\n{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "copyright\u0301 x",
+    false,
+    false,
+    false
+   ],
+   [
+    "copyright\u0301 x",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u2026",
+    true,
+    false,
+    false
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "#> $5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow @ nytimes",
+    true,
+    false,
+    false
+   ],
+   [
+    "{ \"a\" : 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Become a member",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow us",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u042d\u0442\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435.",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "#### Deep heading",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/14",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/14",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\n| b | x |\n|---|---|\n| b | 3 |\n| $2 | 3 |\n|---|---|\n| a | y |\n| a | x |\nFollow @ nytimes\nBecome a member\nFollow us\n\u042d\u0442\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435.\n```\ncode\n```\n#### Deep heading"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "x",
+    false,
+    true,
+    false
+   ],
+   [
+    "Support our work",
+    false,
+    false,
+    false
+   ],
+   [
+    "Government websites by CivicPlus",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Register now",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add us to Google News",
+    false,
+    false,
+    false
+   ],
+   [
+    "This audio is auto-generated.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add Desearch as a preferred source on Google",
+    false,
+    false,
+    false
+   ],
+   [
+    "| { \"a\" : 1} ",
+    false,
+    false,
+    false
+   ],
+   [
+    "trailing newline\n",
+    true,
+    false,
+    false
+   ],
+   [
+    "Affiliate disclosure",
+    false,
+    false,
+    false
+   ],
+   [
+    "It seems that you're using an outdated browser",
+    false,
+    false,
+    false
+   ],
+   [
+    "Slide 2 of 8\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "- Details",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/15",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/15",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nx\nSupport our work\n```\nx = 1\n```\nRegister now\nAdd us to Google News\nAdd Desearch as a preferred source on Google\ntrailing newline\n\n- Details"
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Government websites by CivicPlus",
+    false,
+    false,
+    false
+   ],
+   [
+    "This article contains affiliate links",
+    false,
+    false,
+    false
+   ],
+   [
+    "Want more stories like this",
+    false,
+    false,
+    false
+   ],
+   [
+    "Contact Jane Doe at jane@example.com",
+    false,
+    false,
+    false
+   ],
+   [
+    "x  ",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "| a | b |",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add us to Google News",
+    false,
+    false,
+    false
+   ],
+   [
+    "one two three four five six seven eight",
+    true,
+    false,
+    false
+   ],
+   [
+    "Results",
+    false,
+    false,
+    false
+   ],
+   [
+    "copyright\u00e9",
+    false,
+    false,
+    false
+   ],
+   [
+    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    false,
+    false,
+    false
+   ],
+   [
+    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    false,
+    false,
+    false
+   ],
+   [
+    "Paid post",
+    true,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Related articles:",
+    false,
+    false,
+    false
+   ],
+   [
+    "-- VIEW ALL",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/16",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/16",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "# Paper title\nWant more stories like this\nContact Jane Doe at jane@example.com\n```\nx = 1\n```\n| a | b |\nAdd us to Google News\none two three four five six seven eight\nResults\ncopyright\u00e9\n{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}\nRelated articles:\n-- VIEW ALL\n| 1 | 3 |\n|---|---|"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "more\u0301",
+    true,
+    false,
+    false
+   ],
+   [
+    "Most read",
+    true,
+    false,
+    false
+   ],
+   [
+    "When you buy through links on our site, we may earn a commission.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Most read",
+    false,
+    false,
+    false
+   ],
+   [
+    "Contact Jane Doe at jane@example.com",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/17",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/17",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nmore\u0301\nMost read\nContact Jane Doe at jane@example.com"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "__",
+    false,
+    false,
+    false
+   ],
+   [
+    "more\u0301",
+    false,
+    false,
+    false
+   ],
+   [
+    "Don't miss",
+    false,
+    false,
+    false
+   ],
+   [
+    "Become a member",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\"key\": \"value\"}",
+    false,
+    false,
+    false
+   ],
+   [
+    "#### Deep heading",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow along",
+    true,
+    false,
+    false
+   ],
+   [
+    "Donate",
+    true,
+    false,
+    false
+   ],
+   [
+    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    false,
+    false,
+    false
+   ],
+   [
+    "Photo 1 / 5",
+    false,
+    false,
+    false
+   ],
+   [
+    "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long",
+    true,
+    false,
+    false
+   ],
+   [
+    "#> Methods and materials used in this work",
+    true,
+    false,
+    false
+   ],
+   [
+    "News",
+    false,
+    false,
+    false
+   ],
+   [
+    "Details",
+    false,
+    false,
+    false
+   ],
+   [
+    "#> Advertisement\n",
+    true,
+    false,
+    false
+   ],
+   [
+    "See also",
+    false,
+    false,
+    false
+   ],
+   [
+    "Support our work",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/18",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/18",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nmore\u0301\nDon't miss\nBecome a member\n#### Deep heading\nFollow along\nDonate\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nlong long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long\n#> Methods and materials used in this work\nNews\nDetails\nSee also\nSupport our work"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "Dont miss out",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a5",
+    false,
+    false,
+    false
+   ],
+   [
+    "Continue",
+    false,
+    false,
+    false
+   ],
+   [
+    "A .gov website belongs to an official government organization",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u0130stanbul ve Ankara aras\u0131ndaki mesafe \u00f6l\u00e7\u00fcld\u00fc.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Contact Jane Doe at jane@example.com",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a5",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u0130stanbul ve Ankara aras\u0131ndaki mesafe \u00f6l\u00e7\u00fcld\u00fc.",
+    true,
+    false,
+    false
+   ],
+   [
+    "Paid content 2-",
+    false,
+    false,
+    false
+   ],
+   [
+    "Website by Studio X",
+    false,
+    false,
+    false
+   ],
+   [
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+    false,
+    false,
+    false
+   ],
+   [
+    "Don\u2019t miss this ",
+    true,
+    false,
+    false
+   ],
+   [
+    "| Name | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Buy now",
+    true,
+    false,
+    false
+   ],
+   [
+    "This article contains affiliate links",
+    false,
+    false,
+    false
+   ],
+   [
+    "Dont miss out",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/19",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/19",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nDont miss out\nContinue\n\u0130stanbul ve Ankara aras\u0131ndaki mesafe \u00f6l\u00e7\u00fcld\u00fc.\nContact Jane Doe at jane@example.com\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \nDon\u2019t miss this \n| Name | y |\n|---|---|\n| 1 | y |\n| a | x |\n```\ncode\n```\nBuy now"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Explore all",
+    false,
+    false,
+    false
+   ],
+   [
+    "This article is auto-generated by our system",
+    false,
+    false,
+    false
+   ],
+   [
+    "[{\"@type\": \"Article\"",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow @ nytimes",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app",
+    true,
+    false,
+    false
+   ],
+   [
+    "#NoSpace",
+    false,
+    false,
+    false
+   ],
+   [
+    "Log in to continue",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app",
+    false,
+    false,
+    false
+   ],
+   [
+    "#### Deep heading",
+    false,
+    false,
+    false
+   ],
+   [
+    "ALL R\u0130GHTS RESERVED",
+    true,
+    false,
+    false
+   ],
+   [
+    "- -",
+    false,
+    false,
+    false
+   ],
+   [
+    "> Listen to this article",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u0131iI\u0130 dotted and dotless #",
+    false,
+    false,
+    false
+   ],
+   [
+    "Methods and materials used in this work",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to product information",
+    false,
+    false,
+    false
+   ],
+   [
+    "> Item 4 of 4 more",
+    false,
+    false,
+    false
+   ],
+   [
+    "- REGISTER NOW",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow us",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/20",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/20",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\n# Paper title\nExplore all\nFollow @ nytimes\nGet the app\n#NoSpace\nLog in to continue\n#### Deep heading\n\u0131iI\u0130 dotted and dotless #\nMethods and materials used in this work\n> Item 4 of 4 more\n- REGISTER NOW\nFollow us"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "##",
+    false,
+    false,
+    false
+   ],
+   [
+    "| a | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Download our app now",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u0130mage 1 of 2",
+    true,
+    false,
+    false
+   ],
+   [
+    "Subscribe",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/21",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/21",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\n| a | 3 |\n|---|---|\n| Name | 3 |\n| $2 | y |\nDownload our app now\nSubscribe"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "View all",
+    false,
+    false,
+    false
+   ],
+   [
+    "WEATHER",
+    true,
+    false,
+    false
+   ],
+   [
+    "John Smith writes about technology.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sign in",
+    false,
+    false,
+    false
+   ],
+   [
+    "12  ",
+    true,
+    false,
+    false
+   ],
+   [
+    "Story continues below",
+    false,
+    false,
+    false
+   ],
+   [
+    "> Quoted text from a source",
+    true,
+    false,
+    false
+   ],
+   [
+    "more_",
+    true,
+    false,
+    false
+   ],
+   [
+    "> Quoted text from a source",
+    true,
+    false,
+    false
+   ],
+   [
+    "##",
+    false,
+    false,
+    false
+   ],
+   [
+    "# Advertisement\n",
+    true,
+    false,
+    false
+   ],
+   [
+    "## Introduction",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement 3",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "## Introduction",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Become a subscriber today",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002",
+    false,
+    false,
+    false
+   ],
+   [
+    "a_ #",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Watch now",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| a | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "You should upgrade or use an alternative browser.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Website by Studio X",
+    false,
+    false,
+    false
+   ],
+   [
+    "SKIP TO MA\u0130N CONTENT",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/22",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/22",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Introduction"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nView all\nWEATHER\nJohn Smith writes about technology.\nSign in\n> Quoted text from a source\nmore_\n## Introduction\n| 1 | y |\n|---|---|\n| b | 3 |\n| $2 | 3 |\n| 1 | x |\n| $2 | 3 |\n| 1 | x |\n| $2 | 3 |\n| Name | x |\nBecome a subscriber today\n\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u53e5\u5b50\uff0c\u6ca1\u6709\u7a7a\u683c\u4f46\u5f88\u77ed\u3002\n{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}\nWatch now\n| 1 | y |\n| a | x |\n| 1 | x |"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "word\u00a0word",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/23",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/23",
+   "published": "2024-01-02",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nword\u00a0word"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "```\nx = 1\n```",
+    false,
+    true,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/24",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/24",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\n# Paper title\n```\nx = 1\n```\n```\nx = 1\n```"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "Slide 2 of 8\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u2192 \u2190",
+    false,
+    false,
+    false
+   ],
+   [
+    "x",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00c9sta es una frase en espa\u00f1ol con acentos y e\u00f1es.",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/25",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/25",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\n\u2192 \u2190\n\u00c9sta es una frase en espa\u00f1ol con acentos y e\u00f1es."
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "Sponsored-",
+    true,
+    false,
+    false
+   ],
+   [
+    "| Name | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "FOLLOW US",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sign up for our daily briefing",
+    false,
+    false,
+    false
+   ],
+   [
+    "Copyright 2024 by the authors",
+    true,
+    false,
+    false
+   ],
+   [
+    "MORE",
+    false,
+    false,
+    false
+   ],
+   [
+    "An official website of the United States government",
+    true,
+    false,
+    false
+   ],
+   [
+    "Sign up for our daily briefing",
+    false,
+    false,
+    false
+   ],
+   [
+    "# Title",
+    false,
+    false,
+    false
+   ],
+   [
+    "# Title",
+    false,
+    false,
+    false
+   ],
+   [
+    "ADVERT\u0130SEMENT",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to productx",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Read more about it",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u0130mage 1 of 2",
+    false,
+    false,
+    false
+   ],
+   [
+    "Please use a modern browser for the best experience",
+    false,
+    false,
+    false
+   ],
+   [
+    "one two three four five six seven eight",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow topics",
+    true,
+    false,
+    false
+   ],
+   [
+    "Topics",
+    false,
+    false,
+    false
+   ],
+   [
+    "You are using an outdated browser. ",
+    true,
+    false,
+    false
+   ],
+   [
+    "Skip to the main navigation",
+    false,
+    false,
+    false
+   ],
+   [
+    "abc",
+    false,
+    false,
+    false
+   ],
+   [
+    "Donate",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/26",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/26",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\n| Name | y |\n| 1 | y |\n| 1 | 3 |\nFOLLOW US\nSign up for our daily briefing\nMORE\n# Title\nSkip to productx\n| 1 | 3 |\nRead more about it\none two three four five six seven eight\nFollow topics\nTopics\nabc\nDonate"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "more\u0301",
+    false,
+    false,
+    false
+   ],
+   [
+    "ADVERT\u0130SEMENT #",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "-- yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    false,
+    false,
+    false
+   ],
+   [
+    "The story is read by an automated voice.",
+    true,
+    false,
+    false
+   ],
+   [
+    "| b | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "You are using an outdated browser.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sign up for our daily briefing",
+    false,
+    false,
+    false
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "Weather",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+    true,
+    false,
+    false
+   ],
+   [
+    "All rights reserved.",
+    false,
+    false,
+    false
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| $2 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Getting your audio player ready",
+    false,
+    false,
+    false
+   ],
+   [
+    "Details",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/27",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/27",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nmore\u0301\n```\ncode\n```\n| b | y |\n|---|---|\n| 1 | y |\n| b | x |\nSign up for our daily briefing\n| 1 | 3 |\n|---|---|\nWeather\n| b | 3 |\n|---|---|\n| b | y |\n| $2 | 3 |\n| b | x |\nDetails"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "***",
+    false,
+    false,
+    false
+   ],
+   [
+    "Watch now",
+    true,
+    false,
+    false
+   ],
+   [
+    "- -",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u00a9 2024 Example Media",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "| \u00a9 2024 Example Media",
+    false,
+    false,
+    false
+   ],
+   [
+    "a_",
+    false,
+    false,
+    false
+   ],
+   [
+    "copyright_",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to productx",
+    true,
+    false,
+    false
+   ],
+   [
+    "Donate today and help us keep reporting on the issues that matter",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/28",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/28",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\n# Paper title\n***\nWatch now\n```\ncode\n```\n```\ncode\n```\ncopyright_\nSkip to productx\nDonate today and help us keep reporting on the issues that matter"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "Paid post",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/29",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/29",
+   "published": "2024-01-02",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "Add Desearch as a preferred source on Google",
+    true,
+    false,
+    false
+   ],
+   [
+    "Explore more",
+    false,
+    false,
+    false
+   ],
+   [
+    "This audio is auto-generated.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Add Desearch as a preferred source on Google",
+    true,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    false,
+    true,
+    false
+   ],
+   [
+    "-- {\u001c\"k\": 1 #",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app #",
+    false,
+    false,
+    false
+   ],
+   [
+    "a_",
+    true,
+    false,
+    false
+   ],
+   [
+    "Item 4 of 4 more",
+    false,
+    false,
+    false
+   ],
+   [
+    "Related",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/30",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/30",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\nAdd Desearch as a preferred source on Google\nExplore more\nAdvertisement\nGet the app #\nItem 4 of 4 more\nRelated"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "When you buy through links on our site, we may earn a commission.",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u0130mage 1 of 2",
+    false,
+    false,
+    false
+   ],
+   [
+    "John Smith writes about technology.",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u20ac1",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to navigation.",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u00a0\u00a0",
+    true,
+    false,
+    false
+   ],
+   [
+    "x",
+    false,
+    false,
+    false
+   ],
+   [
+    "[{\"@type\": \"Article\"",
+    true,
+    false,
+    false
+   ],
+   [
+    "{\"key\": \"value\"}",
+    true,
+    false,
+    false
+   ],
+   [
+    "# Related",
+    false,
+    false,
+    false
+   ],
+   [
+    "Use the left/right arrows to navigate",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/31",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/31",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Related"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nJohn Smith writes about technology.\n# Related"
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "Getting your audio player ready",
+    false,
+    false,
+    false
+   ],
+   [
+    "The story is read by an automated voice.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Use the left/right arrows to navigate",
+    false,
+    false,
+    false
+   ],
+   [
+    "The story is read by an automated voice.",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/32",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/32",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "# Paper title"
+  }
+ },
+ {
+  "title": "",
+  "lines": [],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/33",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/33",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": ""
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow @nytimes",
+    false,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "All rights reserved.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Sponsored",
+    false,
+    false,
+    false
+   ],
+   [
+    "Photo 1 / 5",
+    true,
+    false,
+    false
+   ],
+   [
+    "```\ncode\n```",
+    false,
+    true,
+    false
+   ],
+   [
+    "Use the left/right arrows to navigate",
+    false,
+    false,
+    false
+   ],
+   [
+    "- list item",
+    false,
+    false,
+    false
+   ],
+   [
+    "# Advertisement\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "Learn More \u2192",
+    true,
+    false,
+    false
+   ],
+   [
+    "_",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u2192 \u2190 |",
+    false,
+    false,
+    false
+   ],
+   [
+    "We report a new method for estimating the Hubble constant from lensed quasars and supernovae.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    true,
+    false,
+    false
+   ],
+   [
+    "SIGN IN",
+    false,
+    false,
+    false
+   ],
+   [
+    "x",
+    false,
+    true,
+    false
+   ],
+   [
+    "Contact Jane Doe at jane@example.com",
+    true,
+    false,
+    false
+   ],
+   [
+    "Most read ",
+    false,
+    false,
+    false
+   ],
+   [
+    "SIGN IN",
+    false,
+    false,
+    false
+   ],
+   [
+    "Click here to listen to this article",
+    false,
+    false,
+    false
+   ],
+   [
+    "##",
+    false,
+    false,
+    false
+   ],
+   [
+    "- -",
+    false,
+    false,
+    false
+   ],
+   [
+    "SUPPORT OUR WORK",
+    false,
+    false,
+    false
+   ],
+   [
+    "Skip to the main navigation",
+    true,
+    false,
+    false
+   ],
+   [
+    "Image 3 of 10",
+    false,
+    false,
+    false
+   ],
+   [
+    "Contact",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://example.org/paper/34",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://example.org/paper/34",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long\nFollow @nytimes\n```\ncode\n```\n```\ncode\n```\n- list item\nLearn More \u2192\n\u2192 \u2190 |\nWe report a new method for estimating the Hubble constant from lensed quasars and supernovae.\nSIGN IN\nx\nContact Jane Doe at jane@example.com\nMost read \nSUPPORT OUR WORK\nContact"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\u001fwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww #",
+    false,
+    false,
+    false
+   ],
+   [
+    "Copyright 2024 by the authors",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u042d\u0442\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435.",
+    false,
+    false,
+    false
+   ],
+   [
+    "x",
+    false,
+    true,
+    false
+   ],
+   [
+    "\u042d\u0442\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Copyr\u0131ght 2024",
+    true,
+    false,
+    false
+   ],
+   [
+    "Shop now!",
+    true,
+    false,
+    false
+   ],
+   [
+    "ADVERT\u0130SEMENT",
+    false,
+    false,
+    false
+   ],
+   [
+    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    false,
+    false,
+    false
+   ],
+   [
+    "> Example Media. All rights reserved. ",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement",
+    true,
+    false,
+    false
+   ],
+   [
+    "Sites by",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00a3",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/35",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/35",
+   "published": "",
+   "modified": "",
+   "author": "A. Author, B. Author",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\nwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\u001fwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww #\n\u042d\u0442\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435.\nx\nShop now!\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\u00a0zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n> Example Media. All rights reserved. \nSites by"
+  }
+ },
+ {
+  "title": "\ud83d\ude00 Emoji title",
+  "lines": [
+   [
+    "# Paper title",
+    false,
+    false,
+    false
+   ],
+   [
+    "More from Jane Doe",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "",
+   "url": "https://example.org/paper/36",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "\ud83d\ude00 Emoji title",
+   "description": "",
+   "lang": "",
+   "canonical": "https://example.org/paper/36",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Paper title"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "\ud83d\ude00 Emoji title\n# Paper title\nMore from Jane Doe"
+  }
+ },
+ {
+  "title": "Stra\u00dfe",
+  "lines": [
+   [
+    "Share sensitive information only on official, secure websites.",
+    false,
+    false,
+    false
+   ],
+   [
+    "12",
+    true,
+    false,
+    false
+   ],
+   [
+    "> QUOTED TEXT FROM A SOURCE",
+    false,
+    false,
+    false
+   ],
+   [
+    "- {\"key\": \"value\"}",
+    true,
+    false,
+    false
+   ],
+   [
+    "Sponsored",
+    false,
+    false,
+    false
+   ],
+   [
+    "## - -",
+    false,
+    false,
+    false
+   ],
+   [
+    "- {\"key\": \"value\"}",
+    true,
+    false,
+    false
+   ],
+   [
+    "- {\"key\": \"value\"}",
+    true,
+    false,
+    false
+   ],
+   [
+    "MORE",
+    false,
+    false,
+    false
+   ],
+   [
+    "More information",
+    false,
+    false,
+    false
+   ],
+   [
+    "Paid post",
+    false,
+    false,
+    false
+   ],
+   [
+    "View details",
+    false,
+    false,
+    false
+   ],
+   [
+    "Get the app",
+    false,
+    false,
+    false
+   ],
+   [
+    "\u00c9STA ES UNA FRASE EN ESPA\u00d1OL CON ACENTOS Y E\u00d1ES.",
+    false,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/37",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19",
+    "tag20",
+    "tag21",
+    "tag22",
+    "tag23",
+    "tag24"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Stra\u00dfe",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/37",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Stra\u00dfe\n> QUOTED TEXT FROM A SOURCE\nMORE\nMore information\nView details\nGet the app\n\u00c9STA ES UNA FRASE EN ESPA\u00d1OL CON ACENTOS Y E\u00d1ES."
+  }
+ },
+ {
+  "title": "",
+  "lines": [
+   [
+    "Add Desearch as a preferred source on Google",
+    true,
+    false,
+    false
+   ],
+   [
+    "Copyr\u0131ght 2024",
+    false,
+    false,
+    false
+   ],
+   [
+    "abc",
+    false,
+    false,
+    false
+   ],
+   [
+    "The story is read by an automated voice.",
+    false,
+    false,
+    false
+   ],
+   [
+    "SKIP TO MA\u0130N CONTENT",
+    true,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    true,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    false,
+    false,
+    false
+   ],
+   [
+    "Follow me on Mastodon",
+    false,
+    false,
+    false
+   ],
+   [
+    "| $2 | y |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| Name | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "\u00a3",
+    false,
+    false,
+    false
+   ],
+   [
+    "View details",
+    true,
+    false,
+    false
+   ],
+   [
+    "F\u0130llow us |",
+    false,
+    false,
+    false
+   ],
+   [
+    "Donate today and help us keep reporting on the issues that matter",
+    false,
+    false,
+    false
+   ],
+   [
+    "{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}",
+    true,
+    false,
+    false
+   ],
+   [
+    "\u00a0\u00a0 |",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/38",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/38",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Add Desearch as a preferred source on Google\nabc\n{\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\": 1}\nFollow me on Mastodon\n| $2 | y |\n| Name | 3 |\n| b | 3 |\nView details\nF\u0130llow us |\nDonate today and help us keep reporting on the issues that matter"
+  }
+ },
+ {
+  "title": "Paper title",
+  "lines": [
+   [
+    "#> Advertisement\n",
+    false,
+    false,
+    false
+   ],
+   [
+    "Related articles:",
+    false,
+    false,
+    false
+   ],
+   [
+    "Advertisement\n",
+    true,
+    false,
+    false
+   ],
+   [
+    "We report a new method for estimating the Hubble constant from lensed quasars and supernovae.",
+    false,
+    false,
+    false
+   ],
+   [
+    "Read more: The next big thing",
+    false,
+    false,
+    false
+   ],
+   [
+    "| b | x |",
+    false,
+    false,
+    true
+   ],
+   [
+    "|---|---|",
+    false,
+    false,
+    true
+   ],
+   [
+    "| b | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "| 1 | 3 |",
+    false,
+    false,
+    true
+   ],
+   [
+    "Watch now",
+    false,
+    false,
+    false
+   ],
+   [
+    "Item 4 of 4 more ",
+    true,
+    false,
+    false
+   ]
+  ],
+  "meta": {
+   "lang": "de",
+   "url": "https://example.org/paper/39",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ]
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Paper title",
+   "description": "",
+   "lang": "de",
+   "canonical": "https://example.org/paper/39",
+   "published": "",
+   "modified": "2024-02-03T00:00:00Z",
+   "author": "A. Author, B. Author",
+   "site_name": "PubMed",
+   "image": "",
+   "section": "",
+   "tags": [
+    "tag0",
+    "tag1",
+    "tag2",
+    "tag3",
+    "tag4",
+    "tag5",
+    "tag6",
+    "tag7",
+    "tag8",
+    "tag9",
+    "tag10",
+    "tag11",
+    "tag12",
+    "tag13",
+    "tag14",
+    "tag15",
+    "tag16",
+    "tag17",
+    "tag18",
+    "tag19"
+   ],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": [],
+   "text": "Paper title\nRelated articles:\nWe report a new method for estimating the Hubble constant from lensed quasars and supernovae.\nRead more: The next big thing\n| b | x |\n|---|---|\n| b | 3 |\n| 1 | 3 |\nWatch now\nItem 4 of 4 more "
+  }
+ },
+ {
+  "title": "Long",
+  "repeat": [
+   "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+   1000,
+   "## Late heading"
+  ],
+  "meta": {
+   "lang": "en",
+   "url": "https://x/long",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "tags": []
+  },
+  "page": {
+   "page_type": "paper",
+   "text_mode": "main",
+   "title": "Long",
+   "description": "",
+   "lang": "en",
+   "canonical": "https://x/long",
+   "published": "",
+   "modified": "",
+   "author": "",
+   "site_name": "",
+   "image": "",
+   "section": "",
+   "tags": [],
+   "breadcrumbs": [],
+   "json_ld_types": [],
+   "headings": [
+    "Late heading"
+   ],
+   "entity": "",
+   "ld": "",
+   "paywalled": null,
+   "robots": []
+  },
+  "text_chars": 270,
+  "text_sha256": "5ccfcaed6a702746d802a4e2655f845439aef440f21121d488647b0fb62544a7"
+ }
+]
