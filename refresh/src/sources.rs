@@ -25,6 +25,8 @@ pub struct Source {
 
 pub const REPO: &str = "~/refresh/subnet-22";
 pub const PYTHON: &str = "~/refresh/venv/bin/python";
+/// The Rust bulk builders (subnet-22 `bulk-rs`), for the sources they cover.
+const BULK: &str = "~/refresh/bin/bulk";
 const CRAWLER: &str = "~/desearch-engine.v8";
 const CRAWLER_PYTHON: &str = "~/venv/bin/python";
 const CRAWLER_MEMORY: u64 = 4 << 30;
@@ -61,10 +63,10 @@ pub const SOURCES: &[Source] = &[
     },
     Source {
         name: "arxiv",
-        fetch: &[&["{python}", "-m", "bulk", "arxiv-harvest", "--out", "{work}/oai", "--from", "{since}", "--until", "{until}"]],
+        fetch: &[&[BULK, "arxiv-harvest", "--out", "{work}/oai", "--from", "{since}", "--until", "{until}"]],
         builds: &[Build {
             name: "arxiv",
-            argv: &["{python}", "-m", "bulk", "arxiv", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/oai/*.xml"],
+            argv: &[BULK, "arxiv", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/oai/*.xml"],
             full_list: false,
             volatile: false,
         }],

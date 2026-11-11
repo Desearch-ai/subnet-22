@@ -56,6 +56,9 @@ pub fn expand(part: &str, values: &HashMap<&str, String>) -> Vec<String> {
     for (key, value) in values {
         filled = filled.replace(&format!("{{{key}}}"), value);
     }
+    if filled.starts_with("~/") {
+        filled = expand_home(&filled).display().to_string();
+    }
     if filled.starts_with('/') && filled.contains(['*', '?', '[']) {
         let mut found: Vec<String> =
             glob::glob(&filled).map(|paths| paths.filter_map(|p| p.ok()).map(|p| p.display().to_string()).collect()).unwrap_or_default();

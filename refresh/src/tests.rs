@@ -277,3 +277,10 @@ fn a_finished_build_can_be_published_without_fetching_again() {
     let again = run::refresh(&source, &home, false, DAY2_SECS + 60, "", Some(&work), &Hooks { publish: &publish, hide: &hide }).unwrap();
     assert_eq!((again["builds"]["subnets"]["new"].as_u64(), *sent.lock().unwrap()), (Some(3), 1));
 }
+
+
+#[test]
+fn a_home_path_is_expanded() {
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(run::expand("~/refresh/bin/bulk", &Default::default()), [format!("{home}/refresh/bin/bulk")]);
+}
