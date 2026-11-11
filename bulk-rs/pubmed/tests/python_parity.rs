@@ -162,7 +162,7 @@ fn a_missing_file_fails_only_when_the_run_reaches_it() {
     assert_eq!(counts.get("pages"), 15);
 }
 
-/// The parity-samples agent's real slice: `bulk-rs/fixtures/pubmed/{input,python}`, made by the command in its README.
+/// A real slice: `bulk-rs/fixtures/pubmed/{input,python}`, made by the command in its README.
 #[test]
 fn a_real_pubmed_slice_matches_the_python_run() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/pubmed");

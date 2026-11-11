@@ -106,15 +106,16 @@ pub fn run_text(files: &[PathBuf], papers: &HashMap<String, Paper>, batches: &mu
     Ok(counts)
 }
 
-/// `sorted(folder.glob("*.xml"))`: hidden names and folders included, in code point order, none when the folder is missing.
-pub fn oai_pages(folder: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Vec::new();
-    };
+/// `sorted(folder.glob("*.xml"))`: hidden names and folders included, in code point order; an error when the folder is missing or holds none.
+pub fn oai_pages(folder: &Path) -> Result<Vec<PathBuf>> {
+    let entries = std::fs::read_dir(folder).with_context(|| format!("reading --oai {}", folder.display()))?;
     let mut names: Vec<_> =
         entries.filter_map(|entry| entry.ok()).map(|entry| entry.file_name()).filter(|name| name.as_encoded_bytes().ends_with(b".xml")).collect();
+    if names.is_empty() {
+        return Err(anyhow!("--oai {} holds no .xml pages", folder.display()));
+    }
     names.sort_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
-    names.into_iter().map(|name| folder.join(name)).collect()
+    Ok(names.into_iter().map(|name| folder.join(name)).collect())
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -132,7 +133,7 @@ pub struct Args {
 /// `python -m bulk arxiv-text`.
 pub fn main(args: Args) -> Result<()> {
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, "arxiv-text")?;
-    let papers = bulk_arxiv::open_papers(&oai_pages(&args.oai))?;
+    let papers = bulk_arxiv::open_papers(&oai_pages(&args.oai)?)?;
     let counts = run_text(&args.files, &papers, &mut batches, as_of_us, args.run.limit)?;
     bulk_core::run::finish(&args.run, batches, &counts)
 }

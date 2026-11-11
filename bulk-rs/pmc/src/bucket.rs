@@ -173,13 +173,15 @@ where
 /// `bulk.pmc.from_folder`: the `PMC*.json` files in name order, each with its `.xml` when taken.
 pub fn from_folder(folder: &Path) -> Result<impl Iterator<Item = Result<Article>>> {
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
-    // Path.glob finds nothing in a folder it cannot list.
-    for entry in fs::read_dir(folder).into_iter().flatten() {
+    for entry in fs::read_dir(folder).with_context(|| format!("reading --folder {}", folder.display()))? {
         let entry = entry?;
         let Ok(name) = entry.file_name().into_string() else { continue };
         if name.starts_with("PMC") && name.ends_with(".json") && name.len() >= "PMC.json".len() {
             paths.push((name, entry.path()));
         }
+    }
+    if paths.is_empty() {
+        bail!("--folder {} holds no PMC*.json metadata", folder.display());
     }
     paths.sort();
     Ok(paths.into_iter().map(|(_, path)| -> Result<Article> {
@@ -211,7 +213,9 @@ pub fn latest_inventory(dest: &Path, client: &Client, base: &str) -> Result<Vec<
         let key = file["key"].as_str().ok_or_else(|| anyhow!("an inventory file without a key"))?;
         let path = dest.join(key.rsplit('/').next().unwrap_or(key));
         if !path.exists() {
-            fs::write(&path, fetch_found(client, base, key)?)?;
+            let partial = path.with_extension("partial");
+            fs::write(&partial, fetch_found(client, base, key)?)?;
+            fs::rename(&partial, &path)?;
         }
         paths.push(path);
     }

@@ -144,7 +144,7 @@ fn full_text_is_taken_for_openly_licensed_papers_onto_their_html_view() {
     )
     .unwrap();
     let pile = the_test_pile(dir.path());
-    let papers = bulk_arxiv::open_papers(&oai_pages(&oai)).unwrap();
+    let papers = bulk_arxiv::open_papers(&oai_pages(&oai).unwrap()).unwrap();
     let mut ids: Vec<_> = papers.keys().cloned().collect();
     ids.sort();
     assert_eq!(ids, ["2208.05351", "2401.00001", "2404.00004"]);
@@ -219,7 +219,14 @@ fn oai_pages_are_sorted_like_python_paths_and_include_hidden_names() {
         std::fs::write(dir.path().join(name), "").unwrap();
     }
     std::fs::create_dir(dir.path().join("sub.xml")).unwrap();
-    let names: Vec<String> = oai_pages(dir.path()).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    let names: Vec<String> = oai_pages(dir.path()).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
     assert_eq!(names, [".h.xml", ".xml", "Z.xml", "b.xml", "sub.xml"]);
-    assert!(oai_pages(&dir.path().join("missing")).is_empty());
+}
+
+#[test]
+fn an_oai_folder_that_is_missing_or_holds_no_pages_fails_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(oai_pages(&dir.path().join("missing")).is_err());
+    std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+    assert!(oai_pages(dir.path()).is_err());
 }

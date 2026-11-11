@@ -13,6 +13,8 @@ use bulk_core::Line;
 use serde::Deserialize;
 
 pub const MODULE: &str = "bulk.pmc_render";
+/// The largest answer a worker may send; a longer length means the framing broke.
+const MAX_ANSWER: usize = 1 << 30;
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct RenderArgs {
@@ -110,7 +112,11 @@ impl Worker {
         stdin.flush()?;
         let mut header = [0u8; 4];
         self.stdout.read_exact(&mut header)?;
-        let mut data = vec![0u8; u32::from_be_bytes(header) as usize];
+        let size = u32::from_be_bytes(header) as usize;
+        if size > MAX_ANSWER {
+            bail!("a {size}-byte answer from {MODULE}");
+        }
+        let mut data = vec![0u8; size];
         self.stdout.read_exact(&mut data)?;
         Ok(serde_json::from_slice(&data)?)
     }
@@ -169,6 +175,7 @@ impl Renderer {
             Ok(answer) => answer,
             Err(error) => {
                 self.broken.store(true, Ordering::Relaxed);
+                let _ = worker.child.kill();
                 return Err(error.context(format!("{MODULE} worker stopped; check --python and --python-path")));
             }
         };

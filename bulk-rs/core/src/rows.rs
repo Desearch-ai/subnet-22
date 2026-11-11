@@ -158,6 +158,15 @@ pub fn sha256_hex(data: &str) -> String {
 }
 
 /// pyarrow writes Parquet-compliant lists, so its files read back with the child named `element`.
+/// Writes `bytes` to `path` and syncs it to disk.
+pub fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn string_item() -> Field {
     Field::new("element", DataType::Utf8, true)
 }
@@ -399,11 +408,18 @@ impl Batches {
     /// Closes the last file and writes the manifest, which marks the run complete.
     pub fn close(mut self, counts: &Counts) -> Result<Summary> {
         self.close_file()?;
+        for name in &self.files {
+            std::fs::File::open(self.out.join(name))?.sync_all()?;
+        }
         if !self.removed.is_empty() {
             let text: String = self.removed.iter().map(|url| format!("{url}\n")).collect();
-            std::fs::write(self.out.join(REMOVED), text)?;
+            write_synced(&self.out.join(REMOVED), text.as_bytes())?;
         }
-        std::fs::write(self.out.join(MANIFEST), self.manifest(counts))?;
+        // The manifest marks the run complete, so it lands whole and only after every file is on disk.
+        let partial = self.out.join(format!("{MANIFEST}.tmp"));
+        write_synced(&partial, self.manifest(counts).as_bytes())?;
+        std::fs::rename(&partial, self.out.join(MANIFEST))?;
+        std::fs::File::open(&self.out)?.sync_all()?;
         Ok(Summary { out: self.out.clone(), files: self.files.len(), rows: self.rows, removed: self.removed.len() })
     }
 }

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import os
-import struct
-import sys
-import traceback
 
-from lxml import etree
+# Answers go out on a private copy of stdout, so a stray print cannot break the framing.
+CHANNEL = os.fdopen(os.dup(1), "wb")
+os.dup2(2, 1)
 
-from bulk.pmc import as_html, render
+import json  # noqa: E402
+import struct  # noqa: E402
+import sys  # noqa: E402
+import traceback  # noqa: E402
+
+from lxml import etree  # noqa: E402
+
+from bulk.pmc import as_html, render  # noqa: E402
 
 ABSTRACT_TYPES = (None, "summary", "structured")
 
@@ -46,7 +51,7 @@ def answer(xml: bytes) -> bytes:
 
 
 def main() -> None:
-    source, sink = sys.stdin.buffer, sys.stdout.buffer
+    source, sink = sys.stdin.buffer, CHANNEL
     try:
         while header := source.read(4):
             (size,) = struct.unpack(">I", header)

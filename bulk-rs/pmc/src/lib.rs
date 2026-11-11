@@ -188,11 +188,15 @@ pub fn order_main(args: OrderArgs) -> Result<()> {
 /// `python -m bulk pmc-pmids`.
 pub fn pmids_main(args: PmidsArgs) -> Result<()> {
     let names = bucket::sorted_names(&args.inventory)?;
-    let mut out = BufWriter::new(fs::File::create(&args.out)?);
+    // A list cut short by a failed read must not pass for whole as a PubMed run's --skip-pmids.
+    let partial = PathBuf::from(format!("{}.partial", args.out.display()));
+    let mut out = BufWriter::new(fs::File::create(&partial)?);
     let client = Arc::new(Client::new(USER_AGENT)?);
     for pmid in taken_pmids(names.into_iter(), client, BUCKET.to_string(), args.workers) {
         writeln!(out, "{}", pmid?)?;
     }
     out.flush()?;
+    drop(out);
+    fs::rename(&partial, &args.out)?;
     Ok(())
 }
