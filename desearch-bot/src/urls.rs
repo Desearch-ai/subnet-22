@@ -20,11 +20,11 @@ const SAFE_QUERY: &[u8] = b"/:@!$&'()*+,;=-._~%?";
 const TRACKING: [&str; 3] = ["gclid", "fbclid", "msclkid"];
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 const DOTS: [char; 4] = ['.', '\u{3002}', '\u{ff0e}', '\u{ff61}'];
-const USES_RELATIVE: [&str; 20] = [
+pub const USES_RELATIVE: [&str; 20] = [
     "", "ftp", "http", "gopher", "nntp", "imap", "wais", "file", "https", "shttp", "mms", "prospero", "rtsp",
     "rtsps", "rtspu", "sftp", "svn", "svn+ssh", "ws", "wss",
 ];
-const USES_NETLOC: [&str; 27] = [
+pub const USES_NETLOC: [&str; 27] = [
     "", "ftp", "http", "gopher", "nntp", "telnet", "imap", "wais", "file", "mms", "https", "shttp", "snews",
     "prospero", "rtsp", "rtsps", "rtspu", "rsync", "svn", "svn+ssh", "sftp", "nfs", "git", "git+ssh", "ws", "wss",
     "itms-services",

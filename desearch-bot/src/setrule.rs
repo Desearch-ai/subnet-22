@@ -285,6 +285,32 @@ impl SetRule {
         None
     }
 
+    /// Whether the set can admit the URL's page before it is fetched, as the crawler's `scope.may_admit`; date rules wait for the page.
+    pub fn may_admit(&self, url: &str) -> bool {
+        let Ok(u) = urls::split(url) else { return false };
+        let hostname = u.hostname().unwrap_or_default();
+        let Some((h, e)) = self.entry(&hostname) else { return false };
+        if e.rule == "out" || e.own_host_only() && normal_host(&hostname) != h {
+            return false;
+        }
+        match e.rule.as_str() {
+            "whole" => {
+                let path = if u.path.is_empty() { "/" } else { &u.path };
+                e.paths.is_empty() || e.paths.iter().any(|p| path.starts_with(p.as_str()))
+            }
+            "landing" => normal_host(&hostname) == h && landing_page(&u.path, u.query.as_deref().unwrap_or(""), e.depth.unwrap_or(LANDING_DEPTH)),
+            rule => rule == "news" || rule == "bulk",
+        }
+    }
+
+    /// The paths a `whole` entry limits the host to, as start points for a site crawl.
+    pub fn seed_paths(&self, host: &str) -> Vec<String> {
+        match self.entry(host) {
+            Some((_, e)) if e.rule == "whole" => e.paths.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether the set takes this page; `cap` bounds the crawl, not the set.
     pub fn admits(&self, url: &str, published: Option<&str>, page_type: Option<&str>) -> bool {
         let Ok(u) = urls::split(url) else { return false };

@@ -54,6 +54,79 @@ enum Command {
     Replay(ReplayArgs),
     /// Fetch records into a bulk run folder for `publisher bulk`, extraction in Python worker processes.
     Build(BuildArgs),
+    /// Crawl hosts from their home pages by links and sitemaps into a record folder, as `python -m crawler site` does.
+    CrawlSites(CrawlSitesArgs),
+}
+
+#[derive(clap::Args)]
+struct CrawlSitesArgs {
+    /// Hosts, one per line; then, tab-separated if wanted, its own --max-pages, its requests in flight, and space-separated paths to fetch first.
+    hosts_file: PathBuf,
+    /// More hosts, crawled before the file's, e.g. www.house.gov.
+    #[arg(long = "host")]
+    hosts: Vec<String>,
+    /// A new folder for this run's records.
+    #[arg(long)]
+    out: PathBuf,
+    /// Extra start URLs.
+    #[arg(long)]
+    seed: Vec<String>,
+    /// Only paths starting so.
+    #[arg(long)]
+    prefix: Vec<String>,
+    /// Pages kept per host.
+    #[arg(long, default_value_t = 1_000)]
+    max_pages: i64,
+    #[arg(long, default_value_t = 6)]
+    max_depth: i64,
+    #[arg(long)]
+    no_sitemaps: bool,
+    #[arg(long, default_value_t = 8)]
+    hosts_at_once: usize,
+    /// URLs to leave out, one per line (from `held`).
+    #[arg(long)]
+    skip: Option<PathBuf>,
+    /// v1-set.json(.gz): follow only URLs it can admit.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// Write URLs found but not fetched here.
+    #[arg(long)]
+    found: Option<PathBuf>,
+    /// More start URLs, each for the host it names.
+    #[arg(long)]
+    seeds_file: Option<PathBuf>,
+    /// Tests only: every name resolves to this address, never the public resolver.
+    #[arg(long, hide = true)]
+    test_resolve_all: Option<std::net::SocketAddr>,
+    /// Tests only: a PEM certificate to trust beside the public roots.
+    #[arg(long, hide = true)]
+    test_ca_cert: Option<PathBuf>,
+}
+
+fn crawl_sites(args: CrawlSitesArgs) -> Result<()> {
+    use desearch_bot::sitecrawl::{fetch::Connect, run};
+    let mut connect = Connect { resolve_all: args.test_resolve_all, root_certificate: None };
+    if let Some(path) = &args.test_ca_cert {
+        connect = connect.with_certificate_file(path)?;
+    }
+    let mut options = run::Options::new(args.out);
+    options.hosts = args.hosts;
+    options.hosts_file = Some(args.hosts_file);
+    options.seed = args.seed;
+    options.prefix = args.prefix;
+    options.max_pages = args.max_pages;
+    options.max_depth = args.max_depth;
+    options.no_sitemaps = args.no_sitemaps;
+    options.hosts_at_once = args.hosts_at_once;
+    options.skip = args.skip;
+    options.set = args.set;
+    options.found = args.found;
+    options.seeds_file = args.seeds_file;
+    options.connect = connect;
+    let progress = std::sync::Arc::new(|line: &str| eprintln!("{line}"));
+    let total = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run::run_sites(&options, progress))?;
+    println!("{}", run::total_line(&total));
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -354,6 +427,7 @@ fn main() -> Result<()> {
         Command::CopyBuckets(args) => return copy_buckets(args),
         Command::Unresend(args) => return unresend(args),
         Command::Build(args) => return build_run(args),
+        Command::CrawlSites(args) => return crawl_sites(args),
         Command::Replay(args) => {
             let args = desearch_bot::replay::ReplayArgs {
                 buckets_dir: args.buckets_dir,
