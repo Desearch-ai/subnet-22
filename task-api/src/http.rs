@@ -197,17 +197,78 @@ async fn not_found() -> Response {
     detail(StatusCode::NOT_FOUND, "Not Found".into())
 }
 
+/// Times a route's requests took inside the API in a minute; past this many only the count and the worst are kept.
+const TIMES_KEPT: usize = 20_000;
+/// Routes named in the minute's timing line, the busiest first.
+const ROUTES_TIMED: usize = 8;
+
 #[derive(Default)]
 struct Minute {
     at: i64,
     answered: u64,
     slow: HashMap<String, (u64, f64)>,
     late: (u64, f64),
+    inside: HashMap<String, Inside>,
+}
+
+/// How long one route's requests spent inside the API.
+#[derive(Default)]
+struct Inside {
+    count: u64,
+    took: Vec<f64>,
+    worst: f64,
+}
+
+impl Inside {
+    fn add(&mut self, took: f64) {
+        self.count += 1;
+        self.worst = self.worst.max(took);
+        if self.took.len() < TIMES_KEPT {
+            self.took.push(took);
+        } else {
+            // A sample drawn evenly from the whole minute, so a flood late in it shows.
+            let at = rand::Rng::gen_range(&mut rand::thread_rng(), 0..self.count);
+            if let Some(kept) = self.took.get_mut(at as usize) {
+                *kept = took;
+            }
+        }
+    }
+
+    fn line(&mut self, route: &str) -> String {
+        self.took.sort_by(f64::total_cmp);
+        let at = |share: f64| self.took.get((self.took.len().saturating_sub(1) as f64 * share).round() as usize).copied().unwrap_or_default() * 1000.0;
+        format!("{route} {}: p50 {:.0} ms, p90 {:.0} ms, p99 {:.0} ms, worst {:.0} ms", self.count, at(0.5), at(0.9), at(0.99), self.worst * 1000.0)
+    }
+}
+
+impl Minute {
+    /// The minute's log lines: how long requests took inside the API, and any slow inside or on their way here.
+    fn report(mut self) {
+        let mut inside: Vec<_> = self.inside.iter_mut().collect();
+        inside.sort_by_key(|(_, inside)| std::cmp::Reverse(inside.count));
+        let timed: Vec<String> = inside.into_iter().take(ROUTES_TIMED).map(|(route, inside)| inside.line(route)).collect();
+        if !timed.is_empty() {
+            eprintln!("time inside the API in the last minute: {}", timed.join("; "));
+        }
+        if self.slow.is_empty() && self.late.0 == 0 {
+            return;
+        }
+        let mut slow: Vec<_> = self.slow.iter().collect();
+        slow.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+        let slow: Vec<String> = slow.iter().map(|(route, (n, worst))| format!("{route} {n} (worst {worst:.1}s)")).collect();
+        eprintln!(
+            "requests in the last minute: {} answered; over {SLOW_INSIDE_S}s inside: {}; signed over {LATE_ARRIVAL_S}s before arriving: {} (worst {:.1}s)",
+            self.answered,
+            if slow.is_empty() { "none".into() } else { slow.join(", ") },
+            self.late.0,
+            self.late.1
+        );
+    }
 }
 
 static MINUTE: LazyLock<Mutex<Minute>> = LazyLock::new(Mutex::default);
 
-/// One log line a minute when requests were slow inside the API or on their way to it.
+/// Log lines once a minute on how long requests spent inside the API, and on any slow inside it or on their way to it.
 async fn time_requests(request: Request, next: Next) -> Response {
     let started = Instant::now();
     let arrived = desearch::time::now();
@@ -216,34 +277,27 @@ async fn time_requests(request: Request, next: Next) -> Response {
     let signed = request.headers().get("X-Timestamp").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok());
     let response = next.run(request).await;
     let took = started.elapsed().as_secs_f64();
-    let mut minute = MINUTE.lock().expect("request minute");
-    let now = (desearch::time::now() / 60.0) as i64;
-    if minute.at != now {
-        if minute.at != 0 && (!minute.slow.is_empty() || minute.late.0 > 0) {
-            let mut slow: Vec<_> = minute.slow.iter().collect();
-            slow.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
-            let slow: Vec<String> = slow.iter().map(|(route, (n, worst))| format!("{route} {n} (worst {worst:.1}s)")).collect();
-            eprintln!(
-                "requests in the last minute: {} answered; over {SLOW_INSIDE_S}s inside: {}; signed over {LATE_ARRIVAL_S}s before arriving: {} (worst {:.1}s)",
-                minute.answered,
-                if slow.is_empty() { "none".into() } else { slow.join(", ") },
-                minute.late.0,
-                minute.late.1
-            );
+    let finished = {
+        let mut minute = MINUTE.lock().expect("request minute");
+        let now = (desearch::time::now() / 60.0) as i64;
+        let finished = (minute.at != now).then(|| std::mem::replace(&mut *minute, Minute { at: now, ..Minute::default() }));
+        minute.answered += 1;
+        if took >= SLOW_INSIDE_S {
+            let (count, worst) = minute.slow.entry(route.clone()).or_default();
+            *count += 1;
+            *worst = worst.max(took);
         }
-        *minute = Minute { at: now, ..Minute::default() };
+        if let Some(lag) = signed.map(|at| arrived - at).filter(|lag| *lag >= LATE_ARRIVAL_S) {
+            minute.late.0 += 1;
+            minute.late.1 = minute.late.1.max(lag);
+        }
+        minute.inside.entry(route).or_default().add(took);
+        finished
+    };
+    // Written outside the lock, so no request waits on the sorting.
+    if let Some(finished) = finished.filter(|finished| finished.at != 0) {
+        finished.report();
     }
-    minute.answered += 1;
-    if took >= SLOW_INSIDE_S {
-        let (count, worst) = minute.slow.entry(route).or_default();
-        *count += 1;
-        *worst = worst.max(took);
-    }
-    if let Some(lag) = signed.map(|at| arrived - at).filter(|lag| *lag >= LATE_ARRIVAL_S) {
-        minute.late.0 += 1;
-        minute.late.1 = minute.late.1.max(lag);
-    }
-    drop(minute);
     response
 }
 
@@ -306,6 +360,31 @@ mod tests {
         assert!(redis_down(&read_only));
         let wrong = redis::parse_redis_value(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n").unwrap().extract_error().unwrap_err();
         assert!(!redis_down(&wrong));
+    }
+
+    #[test]
+    fn a_minute_of_times_inside_reads_as_its_quantiles_and_worst() {
+        let mut inside = Inside::default();
+        for ms in (1..=100).rev() {
+            inside.add(ms as f64 / 1000.0);
+        }
+        assert_eq!(inside.line("POST /v1/tasks/claim"), "POST /v1/tasks/claim 100: p50 51 ms, p90 90 ms, p99 99 ms, worst 100 ms");
+        let mut flood = Inside::default();
+        for _ in 0..TIMES_KEPT + 5 {
+            flood.add(0.002);
+        }
+        flood.add(9.0);
+        assert_eq!((flood.count, flood.took.len()), (TIMES_KEPT as u64 + 6, TIMES_KEPT), "a flood keeps its count and worst, not every time");
+        assert!(flood.line("GET /v1/ping").ends_with("worst 9000 ms"));
+        let mut late = Inside::default();
+        for _ in 0..TIMES_KEPT {
+            late.add(0.001);
+        }
+        for _ in 0..TIMES_KEPT {
+            late.add(0.5);
+        }
+        let line = late.line("POST /v1/tasks/claim");
+        assert!(line.contains("p90 500 ms") && line.contains("p99 500 ms"), "the slow second half shows: {line}");
     }
 
     #[test]

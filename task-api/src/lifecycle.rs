@@ -33,6 +33,11 @@ pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "in
 pub const EMBED_ROUND_INPUTS: isize = 200;
 /// Kept past any input's day in storage.
 const OPENED_TTL_S: u64 = 2 * 86_400;
+/// How far before its reveal a round of the fresh lane counts as due: further than any held task can have waited, an input being dropped within a day, so it goes ahead of all of them.
+const FRESH_AHEAD_S: f64 = 86_400.0;
+/// Rounds opened in one step at most while a fixed rate keeps the lanes apart.
+const EMBED_RUNS_A_STEP: usize = 64;
+const FRESH: &str = "fresh";
 pub const FINALIZE_LOCK_S: i64 = 300;
 /// Rounds revealed per pass, so a backlog cannot hold the janitor for minutes.
 const REVEAL_AT_ONCE: i64 = 64;
@@ -90,9 +95,7 @@ pub fn whole(x: f64) -> Value {
     }
 }
 
-pub fn open_round_key(round_id: &str) -> String {
-    format!("round:{round_id}:open")
-}
+pub use crate::queues::open_round_key;
 
 pub fn lock_key(task_id: &str) -> String {
     format!("scoring:{task_id}")
@@ -197,11 +200,20 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         return Ok(None);
     }
     let mut redis = state.redis.clone();
-    let waiting: Vec<String> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
+    // Read as bytes, so an entry that is not text is passed over with those that are not JSON, not left to stop every round.
+    let mut waiting: Vec<Vec<u8>> = redis.lrange(queues::EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1).await?;
     if waiting.is_empty() {
         return Ok(None);
     }
-    let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()).collect();
+    // A round is served in its published order, so while a fixed rate lets the fresh lane go ahead, a round holds inputs of one lane.
+    let ahead = state.settings.embed_release_per_hour > 0.0;
+    if ahead {
+        let lane = |raw: &Vec<u8>| serde_json::from_slice::<Value>(raw).is_ok_and(|entry| text(&entry, "lane") == FRESH);
+        let first = lane(&waiting[0]);
+        let run = waiting.iter().take_while(|raw| lane(raw) == first).count();
+        waiting.truncate(run);
+    }
+    let entries: Vec<Value> = waiting.iter().filter_map(|raw| serde_json::from_slice::<Value>(raw).ok()).collect();
     let opened = opened_rounds(state, &entries).await?;
     let model = state.settings.embed_model.clone();
     let mut batches = Vec::new();
@@ -212,6 +224,9 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let mut extra: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| entry.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
         extra.insert("model".into(), model.clone().into());
         extra.insert("pages".into(), keep.into());
+        if ahead && text(entry, "lane") == FRESH {
+            extra.insert("lane".into(), FRESH.into());
+        }
         let urls = pages.iter().map(|p| Url { host: text(p, "host").into(), url: text(p, "url").into() }).collect();
         batches.push(Batch::new(rounds::new_id(), urls, extra));
     }
@@ -235,6 +250,19 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     // Trimmed only once the round is saved, so a crash re-reads the inputs.
     let _: () = redis.ltrim(queues::EMBED_INPUTS, waiting.len() as isize, -1).await?;
     Ok(opened)
+}
+
+/// Opens rounds for the waiting inputs: one a step, or while a fixed rate keeps the lanes apart, one for each run of a lane, so inputs of the two lanes in turns never hold miners to a round a step.
+pub async fn open_waiting_embed_rounds(state: &State) -> Result<()> {
+    let runs = if state.settings.embed_release_per_hour > 0.0 { EMBED_RUNS_A_STEP } else { 1 };
+    for _ in 0..runs {
+        open_embed_rounds(state).await?;
+        let left: i64 = state.redis.clone().llen(queues::EMBED_INPUTS).await?;
+        if left == 0 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn opened_key(input_key: &str) -> String {
@@ -313,8 +341,12 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
                 (batch.batch_id.clone(), Value::Object(payload))
             })
             .collect();
-        let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
-        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads, now(), state.settings.release_spread).await?;
+        // Every embed task waits its turn while a fixed rate holds them back, however release spreads a round.
+        let paced = round.kind == EMBED && state.settings.embed_release_per_hour > 0.0;
+        let spread = if paced { state.settings.release_spread.max(1.0) } else { state.settings.release_spread };
+        let fresh = paced && round.batches.iter().any(|batch| batch.extra.get("lane").and_then(Value::as_str) == Some(FRESH));
+        let at = if fresh { now() - FRESH_AHEAD_S } else { now() };
+        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads, at, spread).await?;
     }
     if !round.order.is_empty() {
         let (pages, key, lists) = (state.pages.clone(), round_urls_key(&round.round_id), round.url_lists());
@@ -337,7 +369,10 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     let mut filled = Vec::new();
     for round in state.lookups.read(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
-        if open > 0 {
+        // Its tasks were queued only if any exists, queued or being checked, whatever a copy from before they were queued together left in its open set.
+        let keys: Vec<String> = round.order.iter().flat_map(|task_id| [format!("task:{task_id}"), format!("vjob:{task_id}")]).collect();
+        let queued: i64 = if keys.is_empty() { 0 } else { redis::cmd("EXISTS").arg(&keys).query_async(&mut state.redis.clone()).await? };
+        if open > 0 && queued > 0 {
             let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
             state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
             queues::unstage(&state.redis, &round.round_id).await?;
@@ -351,8 +386,17 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
 
 pub async fn close_finished(state: &State) -> Result<Vec<String>> {
     let mut closed = Vec::new();
-    for round_id in state.lookups.read(roundstore::open_revealed).await? {
-        let open: i64 = state.redis.clone().scard(open_round_key(&round_id)).await?;
+    // Tasks a fixed rate holds back keep their rounds open, so the rounds are counted in one trip.
+    let rounds = state.lookups.read(roundstore::open_revealed).await?;
+    if rounds.is_empty() {
+        return Ok(closed);
+    }
+    let mut counting = redis::pipe();
+    for round_id in &rounds {
+        counting.scard(open_round_key(round_id));
+    }
+    let open: Vec<i64> = counting.query_async(&mut state.redis.clone()).await?;
+    for (round_id, open) in rounds.into_iter().zip(open) {
         if open > 0 {
             continue;
         }
@@ -371,6 +415,17 @@ pub async fn close_finished(state: &State) -> Result<Vec<String>> {
             }
         }
         closed.push(round_id);
+    }
+    // A round closing ahead of older ones leaves them to log refusals in.
+    if !closed.is_empty() && state.current.lock().expect("current rounds").values().any(String::is_empty) {
+        let latest = state.lookups.read(roundstore::latest_revealed).await?;
+        let mut current = state.current.lock().expect("current rounds");
+        for (kind, round_id) in latest {
+            let kept = current.entry(kind).or_default();
+            if kept.is_empty() {
+                *kept = round_id;
+            }
+        }
     }
     Ok(closed)
 }

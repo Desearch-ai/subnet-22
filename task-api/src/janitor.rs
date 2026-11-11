@@ -11,9 +11,9 @@ use redis::{AsyncCommands, Script};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::budgets::{self, hour_of, KEEP_H};
+use crate::budgets::{self, hour_of, EMBED, KEEP_H};
 use crate::http::ApiError;
-use crate::queues::KINDS;
+use crate::queues::{EMBED_PACE, KINDS};
 use crate::state::State;
 use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
 
@@ -41,6 +41,8 @@ const WARM_EVERY: Duration = Duration::from_secs(15);
 const SEAL_EVERY: Duration = Duration::from_secs(5);
 /// Held tasks moved to the ready queue in one step at most; a backlog drains over a few steps.
 const RELEASE_AT_ONCE: usize = 2_000;
+/// The same for embed tasks, whose page lists make each one slow to read in a script: a buffer let go all at once must not hold Redis up.
+const EMBED_RELEASE_AT_ONCE: usize = 200;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
@@ -78,6 +80,8 @@ struct Due {
     kept_block_at: Option<Instant>,
     listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
+    /// A rate from when release was last held to one is forgotten, so going back to one starts at its target.
+    pace_forgotten: bool,
 }
 
 fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
@@ -111,7 +115,7 @@ impl Duty {
             Duty::Rounds => {
                 // Each step runs whatever another one hit, so a chain error opening embed rounds holds up no reveal.
                 let steps = [
-                    ("opening embed rounds", lifecycle::open_embed_rounds(state).await.map(drop)),
+                    ("opening embed rounds", lifecycle::open_waiting_embed_rounds(state).await),
                     ("filling revealed rounds", lifecycle::fill_missing(state).await.map(drop)),
                     ("revealing rounds", lifecycle::reveal_pending(state).await.map(drop)),
                     ("closing rounds", lifecycle::close_finished(state).await.map(drop)),
@@ -124,8 +128,18 @@ impl Duty {
                 Ok(())
             }
             Duty::Release => {
+                let target = state.settings.embed_release_target(now());
                 for kind in KINDS {
-                    state.tasks(kind).release_due(&state.redis, now(), RELEASE_AT_ONCE).await?;
+                    let tasks = state.tasks(kind);
+                    match target.filter(|_| kind == EMBED) {
+                        Some(target) => drop(tasks.release_paced(&state.redis, now(), target, EMBED_RELEASE_AT_ONCE).await?),
+                        None if kind == EMBED => drop(tasks.release_due(&state.redis, now(), EMBED_RELEASE_AT_ONCE).await?),
+                        None => drop(tasks.release_due(&state.redis, now(), RELEASE_AT_ONCE).await?),
+                    }
+                }
+                if target.is_none() && !due.pace_forgotten {
+                    let _: i64 = state.redis.clone().del(EMBED_PACE).await?;
+                    due.pace_forgotten = true;
                 }
                 Ok(())
             }

@@ -170,6 +170,9 @@ shorter input limit give different vectors, and those fail the check.
 The miner embeds its tasks one after another and claims another only when its measured pace still
 finishes every held one within 5 minutes.
 
+To size your GPUs, see [how much work to expect](./embedding-tasks.md#how-much-work-to-expect): the
+network's embed tasks an hour, and any change coming, are published at `/v1/overview?kind=embed`.
+
 **Run** from the repository root:
 
 ```bash

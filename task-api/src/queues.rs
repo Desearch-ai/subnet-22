@@ -36,6 +36,12 @@ pub const PWITHDRAWN: &str = "publish:withdrawn";
 pub const ROUNDS: &str = "rounds:seq";
 /// Published pages waiting to become embed batches, pushed by the publisher.
 pub const EMBED_INPUTS: &str = "embed:inputs";
+/// The rate embed tasks are released at and what it has banked, kept apart from any copy of the API.
+pub const EMBED_PACE: &str = "embed:pace";
+/// A rate moves toward its target by at most about this share of itself an hour.
+pub const RATE_STEP_PER_HOUR: f64 = 0.1;
+/// Seconds of a rate that can be released at once, so a pause never comes back as a burst.
+const RELEASE_BURST_S: f64 = 10.0;
 /// Inputs whose task was dropped after its last attempt, for the planner to plan their pages again.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 /// Embed uploads the publisher found malformed vectors in, pushed by the publisher, so their miner's next uploads are checked.
@@ -64,11 +70,17 @@ static COMPLETE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include
 static START: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/start.lua")));
 static RESTORE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/restore.lua")));
 static RELEASE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/release.lua")));
+static RELEASE_PACED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/release_paced.lua")));
 static VOPEN_PICKED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_picked.lua")));
 static VOPEN_COUNT: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_count.lua")));
 static VVOTE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vvote.lua")));
 static VSETTLE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/vsettle.lua"))));
 static PRETURN: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/preturn.lua")));
+
+/// The tasks of a round not finished yet; it closes once none are left.
+pub fn open_round_key(round_id: &str) -> String {
+    format!("round:{round_id}:open")
+}
 
 pub fn ready_key(kind: &str) -> String {
     if kind == "crawl" {
@@ -206,6 +218,10 @@ impl TaskQueue {
         let base = base * ROUND_SPAN;
         let mut pipe = redis::pipe();
         pipe.atomic();
+        // With the tasks, so a round counted as open always has them queued.
+        if !order.is_empty() {
+            pipe.sadd(open_round_key(round_id), order).ignore();
+        }
         for (position, task_id) in order.iter().enumerate() {
             let rank = base + position as i64;
             let mut payload = payloads.get(task_id).and_then(Value::as_object).cloned().unwrap_or_default();
@@ -233,6 +249,27 @@ impl TaskQueue {
     /// Moves held tasks whose time has come into the ready queue at their rank; how many.
     pub async fn release_due(&self, redis: &Redis, now: f64, limit: usize) -> Result<usize> {
         Ok(RELEASE.key(&self.held).key(&self.ready).arg(number(now)).arg(limit).invoke_async(&mut redis.clone()).await?)
+    }
+
+    /// Moves held tasks whose time has come into the ready queue, oldest first, at no more than `per_hour` as the rate moves there; how many, and the rate now.
+    pub async fn release_paced(&self, redis: &Redis, now: f64, per_hour: f64, limit: usize) -> Result<(usize, f64)> {
+        let (moved, rate): (usize, String) = RELEASE_PACED
+            .key(&self.held)
+            .key(&self.ready)
+            .key(EMBED_PACE)
+            .arg(number(now))
+            .arg(number(per_hour))
+            .arg(number(RATE_STEP_PER_HOUR))
+            .arg(number(RELEASE_BURST_S))
+            .arg(limit)
+            .invoke_async(&mut redis.clone())
+            .await?;
+        Ok((moved, rate.parse().unwrap_or(per_hour)))
+    }
+
+    /// Tasks not released yet, and those miners can claim now.
+    pub async fn held_and_ready(&self, redis: &Redis) -> Result<(i64, i64)> {
+        Ok(redis::pipe().zcard(&self.held).zcard(&self.ready).query_async(&mut redis.clone()).await?)
     }
 
     pub async fn in_flight(&self, redis: &Redis, hotkey: &str) -> Result<i64> {

@@ -66,6 +66,15 @@ export interface Overview {
   checks: { checked: number; verdict_s: VerdictWaits; reasons: ReasonCount[] }
   taken_back: TakenBack
   total: VerdictCounts
+  supply?: Supply | null
+}
+
+export interface Supply {
+  mode: 'fixed' | 'as_planned'
+  target_tasks_per_hour?: number
+  tasks_per_hour?: number
+  released_tasks_per_hour?: number
+  buffer_minutes?: number
 }
 
 export interface HourPoint extends VerdictCounts, ClaimCounts {

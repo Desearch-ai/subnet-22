@@ -45,6 +45,15 @@ reaches the API inside the claim, however long the API then takes over it; a fil
 completion reached the API is refused. Sending the same completion again returns the first one's
 answer. A miner is never given a batch it held before.
 
+A refused claim says in `retry_after` how many seconds to wait before asking again, 10 when there is
+no task for the miner (`QUEUE_EMPTY`, `ALREADY_HELD`). A hotkey may still ask 5 times in 10 seconds
+(`TASK_API_POLL_RATE`), so a miner that asks again at once catches a released task sooner than one
+that waits as told. With `TASK_API_HOLD_TO_WAIT=1` the API holds miners to the wait, less half a
+second so a miner waiting exactly as told is never held: a claim of that kind sooner is answered
+`RATE_LIMITED`, with `told` naming the refusal, and is not logged. The hold is the hotkey's, for that
+kind, and ends when any of its claims of that kind is given tasks. A claim whose draws found only tasks
+being dropped is not held, as tasks it may take can be queued behind them.
+
 **Which uploads are checked.** On completion the API writes a signed note beside the upload (the
 task's URLs, its entity tag and the completion block). Once the block ten blocks after that exists,
 its hash decides whether validators check the upload, so no miner can know while uploading. Checked
@@ -166,7 +175,10 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
    fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
    while `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
-2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
+2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). With
+   `TASK_API_EMBED_RELEASE_PER_HOUR` set, a revealed round's tasks wait in `queue:held:embed` and are
+   released oldest first at that rate, so what the planner does reaches miners only once the buffer
+   is gone ([fixed rate](#fixed-rate-of-embed-tasks)). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
    completion whose file is not exactly texts × dimensions × 2 bytes is refused.
@@ -199,6 +211,52 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    planner.
 
 The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
+
+### Fixed rate of embed tasks
+
+`TASK_API_EMBED_RELEASE_PER_HOUR` holds embed tasks to one rate, whatever the planner hands over. A
+planner stall or a new lane reaches miners only once the tasks waiting behind the rate are gone, and output
+then falls to what the planner hands over; the rate promises no task it was never given. A chain stall is not
+covered: uploads then wait for their verdicts, and miners stop at `WAITING_FOR_VERDICTS` whatever the buffer holds.
+
+- **The buffer** is the revealed tasks not released yet, in `queue:held:embed`. They count in `queue`
+  of `GET /v1/room?kind=embed`, so `TASK_API_EMBED_QUEUE_TARGET` is what bounds it: the planner hands
+  inputs over until queue, unrevealed rounds, waiting inputs and uploads awaiting a verdict reach the
+  target, and holds the rest as it always does when the API has no room. The buffer fills only while the
+  planner hands over more than the rate, so the rate belongs under what it hands over in a lasting way: read it
+  from a week of `/v1/stats/hours`, not from its best hours, as a rate over that empties the buffer and output
+  falls to what comes in. Two thousand tasks at a rate of 2,400 an hour is about 50 minutes behind the rate.
+- **A full buffer** leaves the planner short of room all the time, which it never was before a rate. Nothing is
+  lost, but what is planned last in a pass waits first ([planner](../publisher/README.md#planner)). The rate must
+  stay at least a third above what the log and fresh lane alone make, or the log, and the fresh pages in it, fall
+  behind: watch `behind` and `waiting_now` in the planner's report.
+- **Tasks nobody takes stay held:** release stops while ten seconds' worth that no one has taken yet are ready, so
+  miners coming back from an outage find no pile. Hand-backs, expired claims and tasks retried go straight back to the ready queue, and each
+  costs the rate one task, up to ten minutes' worth at once, so what miners are given stays at the rate.
+- **The rate counts tasks, not work:** texts and characters a task follow what is being embedded, so the load on
+  miners moves by about a tenth even at a fixed rate, and more when the mix changes.
+- **The rate** moves toward a new target by about a tenth of itself an hour, as `embed:pace` in Redis
+  keeps it across restarts and between copies of the API. It starts at the target when first set. A
+  pause in release, the API down say, comes back as ten seconds' worth at most, not as a burst.
+- **The fresh lane** goes ahead of the buffer and within the rate: its inputs get rounds of their own,
+  due at once, so a fresh page does not wait for it and miners see no more tasks for it. Other pages reach
+  miners about as much later as the buffer is long.
+- **Verifying a round** works as before: a round's tasks are released in its published order, and a
+  round stays open, its log unanchored, until its last task is done, so about as much longer as the
+  buffer is long. `embed_input_max_age` (20 hours) and the day inputs are kept are far beyond the buffer.
+- **Rollback** is removing the setting: the tasks held are all due, and go to the ready queue at no more than
+  200 a second, where miners take them as they have room, at no risk to anyone but a short rush. Before going back
+  to a build without the rate, remove the setting and wait for `queue:held:embed` to empty: an older build moves
+  2,000 tasks in one script, holding Redis for seconds.
+- **Redis** holds each waiting task's page list, so each buffered task costs what its input's pages take:
+  about 350 bytes a page, at about 600 pages an input some 210 KB a task, or some 430 MB for a buffer of
+  2,000. Check Redis has the room first.
+
+`GET /v1/overview?kind=embed` publishes it as `supply`: `mode` (`fixed`, or `as_planned` with no rate),
+`target_tasks_per_hour`, `tasks_per_hour` (the rate now), `released_tasks_per_hour` (what actually went out, over
+about the last ten minutes), `max_change_per_hour`, `buffer_tasks`,
+`buffer_minutes`, `ready_tasks`, and `scheduled` (`tasks_per_hour`, `from`, `reached_by`) when a change is
+set or under way.
 
 The planner keeps its place in the log and the version of every page it planned in RocksDB under
 `PLANNER_DIR`, reads the same bucket settings as the publisher, and is configured with:
@@ -292,6 +350,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
 | `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
+| `TASK_API_HOLD_TO_WAIT` | 0 | 1 holds a miner told there is no task for it to the `retry_after` it was told, for that kind of task |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
@@ -306,7 +365,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
-| `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
+| `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal; with a fixed rate, this is what makes room for the buffer |
+| `TASK_API_EMBED_RELEASE_PER_HOUR` | 0 | embed tasks released an hour however fast the planner hands inputs over, the rest waiting as a buffer; 0 leaves release to `TASK_API_RELEASE_SPREAD_S` alone |
+| `TASK_API_EMBED_RELEASE_NEXT_PER_HOUR`, `TASK_API_EMBED_RELEASE_NEXT_AT` | none | the rate to go to and the Unix time to start going to it, published in `GET /v1/overview?kind=embed` ahead of that |
 | `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
@@ -366,7 +427,14 @@ Lists return a page at a time (`limit`, at most 100) with a `next` value to pass
 - Log reads have their own database connection and thread, so they never delay claims or verdicts;
   when too many wait, the API answers `503` with `Retry-After`.
 - The caller's address is taken from Cloudflare's `CF-Connecting-IP` header, so serve the API only
-  through Cloudflare.
+  through Cloudflare. The API cannot tell who set that header: let the host accept connections only
+  from [Cloudflare's addresses](https://www.cloudflare.com/ips/), or use a Cloudflare Tunnel.
+  Otherwise a client that finds the host's address can set any address it likes and skip Cloudflare's
+  route, which is shorter only for it.
+- Once a minute the API logs how long requests spent inside it for its 8 busiest routes (`time inside
+  the API`, with p50, p90, p99 and worst; the quantiles from a sample of at most 20,000 a route, drawn
+  evenly over the minute), and any over 5 seconds inside it or signed over 10 seconds before they
+  arrived. Time spent before a request reaches the API, in Cloudflare or the proxy, is not in it.
 
 ## Storage
 

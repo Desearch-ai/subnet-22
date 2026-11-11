@@ -42,6 +42,15 @@ export function LiveStats({ overviews, kind, hours }: LiveStatsProps) {
         value={<ByKind value={(each) => formatInt(crawl.queue[each])} />}
         detail={queueDetail(kind, crawl.queue[kind], hours)}
       />
+      {kind === 'embed' && chosen.supply?.mode === 'fixed' ? (
+        <Stat
+          label="Embed tasks an hour"
+          value={formatInt(
+            chosen.supply.released_tasks_per_hour ?? chosen.supply.tasks_per_hour ?? 0,
+          )}
+          detail={`fixed rate ${formatInt(chosen.supply.tasks_per_hour ?? 0)}; about ${formatDuration((chosen.supply.buffer_minutes ?? 0) * 60)} of work behind it`}
+        />
+      ) : null}
       <Stat
         label="Claimed now"
         value={formatInt(crawl.claimed)}

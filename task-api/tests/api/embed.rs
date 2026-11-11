@@ -16,12 +16,12 @@ fn pages() -> Value {
     json!((0..2).map(|i| json!({"url": format!("https://site{i}.example/story/{i}"), "host": format!("site{i}.example"), "page_key": format!("pages/{i:040x}.zst"), "content_sha1": format!("{i:040x}")})).collect::<Vec<_>>())
 }
 
-fn input() -> Value {
+pub(crate) fn input() -> Value {
     json!({"input_key": "embed-inputs/dt=2026-09-24/task=crawl-1.parquet", "input_sha256": "ab".repeat(32), "texts": 6, "chars": 5400, "pages": pages()})
 }
 
 /// A check of every one of the input's six texts, each with the same outcome.
-fn embed_score(verdict: &str, outcome: &str, reason: &str) -> Value {
+pub(crate) fn embed_score(verdict: &str, outcome: &str, reason: &str) -> Value {
     let texts = input()["texts"].as_i64().unwrap();
     let counted = |name: &str| if outcome == name { texts } else { 0 };
     json!({
@@ -53,7 +53,7 @@ async fn embed_round(h: &Harness, entry: Value) -> String {
     embed_rounds(h, vec![entry]).await
 }
 
-async fn embed_rounds(h: &Harness, entries: Vec<Value>) -> String {
+pub(crate) async fn embed_rounds(h: &Harness, entries: Vec<Value>) -> String {
     for entry in entries {
         let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
     }
@@ -63,7 +63,7 @@ async fn embed_rounds(h: &Harness, entries: Vec<Value>) -> String {
 }
 
 /// Inputs of the same pages under keys of their own, one task each.
-fn inputs(count: usize) -> Vec<Value> {
+pub(crate) fn inputs(count: usize) -> Vec<Value> {
     (0..count)
         .map(|i| {
             let mut entry = input();
@@ -73,18 +73,18 @@ fn inputs(count: usize) -> Vec<Value> {
         .collect()
 }
 
-fn embed_claim() -> Value {
+pub(crate) fn embed_claim() -> Value {
     json!({"kind": "embed", "models": ["desearch-4b-v1"]})
 }
 
-async fn embed_task(h: &Harness, miner: &Client) -> Value {
+pub(crate) async fn embed_task(h: &Harness, miner: &Client) -> Value {
     let task = miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
     h.put(task["upload"]["url"].as_str().unwrap(), vectors(6)).await;
     miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
     task
 }
 
-async fn score(h: &Harness, task: &str, body: Value) -> Value {
+pub(crate) async fn score(h: &Harness, task: &str, body: Value) -> Value {
     h.validator.post(&format!("/v1/validation/{task}/score"), body).await.unwrap()
 }
 
