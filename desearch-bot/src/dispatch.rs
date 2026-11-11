@@ -176,6 +176,13 @@ pub fn split(credit: &mut [f64; LANES], shares: &[f64; LANES], want: usize) -> [
     quotas
 }
 
+/// A news site's take: its new pages first, what they leave going to its refreshes and retries.
+pub fn fresh_first(want: usize) -> [usize; LANES] {
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = want;
+    quotas
+}
+
 /// A lane that came up short is owed nothing for it, and one that filled another's gap owes nothing back: no credit or debt beyond one page carries over.
 pub fn settle(credit: &mut [f64; LANES], quotas: [usize; LANES], taken: [usize; LANES]) {
     for lane in 0..LANES {
@@ -965,7 +972,10 @@ impl Dispatcher {
             .iter()
             .zip(&given)
             .filter(|(_, &n)| n > 0)
-            .map(|((_, name), &n)| (name.clone(), split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize)))
+            .map(|((_, name), &n)| {
+                let quotas = if self.buckets.terms(name).news { fresh_first(n as usize) } else { split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize) };
+                (name.clone(), quotas)
+            })
             .collect();
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
