@@ -1,0 +1,15 @@
+[Unit]
+Description=Refreshes the bulk source %i: fetch, build, publish what changed, hide what is gone
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/refresh/subnet-22
+EnvironmentFile=-/home/ubuntu/refresh/env
+ExecStart=/home/ubuntu/venv/bin/python -m bulk.refresh run %i
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=600%
+MemoryMax=12G
+TimeoutStartSec=12h

@@ -1,0 +1,7 @@
+[Unit]
+Description=Publishes the crawler box's refresh runs to the bulk feed and sends back receipts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/refresh-pull
+TimeoutStartSec=6h

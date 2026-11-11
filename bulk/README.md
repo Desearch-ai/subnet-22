@@ -71,3 +71,22 @@ matches a crawl of the live page. Hidden categories come from the category-names
 
 Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), and PMC asks users to credit NLM
 as the source.
+
+## Refresh
+
+`python -m bulk.refresh run <source>` keeps a source current. It runs the source's fetch and build commands, keeps
+only the pages that are new or changed since the last run, publishes them and hides the pages the source dropped.
+
+- **State:** `~/refresh/state/<source>.sqlite` holds each page's URL, a hash of its row, the run that last
+  published it and whether it is gone. `python -m bulk.refresh seed <source> <build> <run folders>` records runs
+  published before the source's first refresh.
+- **Guards:** a full-list build with under 95% of the pages it had publishes and hides nothing. More than 30% of a
+  build changed is flagged in the report.
+- **Publish:** the runner leaves each diff in `~/refresh/outbox`. `refresh-pull` on the planner box takes it every 10
+  minutes, publishes it with `publish-one.sh` and sends the output back as a receipt in `~/refresh/receipts`.
+- **Hide:** pages a source dropped go to index-1 as exact-path rules in the source's own section of
+  `hidden-urls.txt` (`refresh_hidden.py`), rewritten whole each run, so a page that comes back is shown again.
+- **Report:** one JSON line a run in `~/refresh/status.jsonl`.
+
+`deploy/` holds the crawler box's `refresh@.service` and timers, the planner box's `refresh-pull` and the crawler
+box's forced command for it, `refresh-send.sh`.
