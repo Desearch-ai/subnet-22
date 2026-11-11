@@ -1,0 +1,20 @@
+{
+ "source": "pmc",
+ "run": "fixture",
+ "as_of": "2026-11-10T19:24:00Z",
+ "files": [
+  "pmc-000001.parquet"
+ ],
+ "removed": null,
+ "rows": 31,
+ "counts": {
+  "pages": 31,
+  "retracted": 2,
+  "license": 2,
+  "not_open_access": 1,
+  "no_xml": 1,
+  "gone": 1,
+  "bad_xml": 1,
+  "no_body": 1
+ }
+}

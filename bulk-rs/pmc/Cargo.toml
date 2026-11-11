@@ -8,16 +8,21 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+arrow-array.workspace = true
 bulk-core.workspace = true
+bytes = "1"
 clap.workspace = true
 desearch.workspace = true
 flate2.workspace = true
+indexmap.workspace = true
+parquet = { workspace = true, features = ["snap"] }
 rayon.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 
 [dev-dependencies]
 tempfile.workspace = true
