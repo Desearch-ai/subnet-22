@@ -135,12 +135,12 @@ fn refresh_runs_the_commands_publishes_and_hides() {
     let hooks = Hooks { publish: &publish, hide: &hide };
     let home = tmp.path().join("home");
 
-    let report = run::refresh(&source, &home, false, DAY2_SECS, "", &hooks).unwrap();
+    let report = run::refresh(&source, &home, false, DAY2_SECS, "", None, &hooks).unwrap();
     assert_eq!(report["builds"]["subnets"]["new"], 3);
     assert_eq!(sent.borrow().len(), 1);
     assert_eq!(*hidden.borrow(), [("test".to_string(), Vec::<String>::new())]);
 
-    let again = run::refresh(&source, &home, false, DAY2_SECS + 7 * 86_400, "", &hooks).unwrap();
+    let again = run::refresh(&source, &home, false, DAY2_SECS + 7 * 86_400, "", None, &hooks).unwrap();
     assert_eq!(again["builds"]["subnets"]["unchanged"], 3);
     assert_eq!(sent.borrow().len(), 1);
 }
@@ -152,7 +152,7 @@ fn a_dry_run_publishes_and_records_nothing() {
     let source = copy_source("test", &prepared, &[]);
     let publish = |_: &Path, _: &Path| -> anyhow::Result<String> { panic!("published on a dry run") };
     let hide = |_: &str, _: &[String]| -> anyhow::Result<()> { panic!("hid on a dry run") };
-    let report = run::refresh(&source, &tmp.path().join("home"), true, DAY2_SECS, "", &Hooks { publish: &publish, hide: &hide }).unwrap();
+    let report = run::refresh(&source, &tmp.path().join("home"), true, DAY2_SECS, "", None, &Hooks { publish: &publish, hide: &hide }).unwrap();
     assert_eq!(report["builds"]["subnets"]["new"], 3);
     let con = diff::open_state(&tmp.path().join("home/state/test.sqlite")).unwrap();
     assert_eq!(con.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
@@ -174,11 +174,11 @@ fn an_incremental_source_fetches_from_the_last_published_run() {
     let hooks = Hooks { publish: &publish, hide: &hide };
     let home = tmp.path().join("home");
 
-    assert!(run::refresh(&source, &home, false, DAY2_SECS, "", &hooks).unwrap_err().downcast_ref::<Refused>().is_some());
-    let mut report = run::refresh(&source, &home, false, DAY2_SECS, "2026-11-10", &hooks).unwrap();
+    assert!(run::refresh(&source, &home, false, DAY2_SECS, "", None, &hooks).unwrap_err().downcast_ref::<Refused>().is_some());
+    let mut report = run::refresh(&source, &home, false, DAY2_SECS, "2026-11-10", None, &hooks).unwrap();
     report["ok"] = json!(true);
     std::fs::write(home.join(run::STATUS), format!("{report}\n")).unwrap();
-    run::refresh(&source, &home, false, DAY2_SECS + 86_400, "", &hooks).unwrap();
+    run::refresh(&source, &home, false, DAY2_SECS + 86_400, "", None, &hooks).unwrap();
     assert_eq!(std::fs::read_to_string(calls).unwrap(), "2026-11-10 2026-11-16\n2026-11-16 2026-11-17\n");
 }
 
@@ -238,4 +238,42 @@ fn the_discord_line_says_what_was_published_or_why_not() {
 fn iso_times_are_utc() {
     assert_eq!(run::iso(DAY2_SECS), DAY2);
     assert_eq!(run::iso(0), "1970-01-01T00:00:00Z");
+}
+
+
+#[test]
+fn a_site_missing_whole_is_held_until_named_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut con = diff::open_state(&tmp.path().join("s.sqlite")).unwrap();
+    let mut pages = urls(40);
+    pages.push(("https://down.example/a".into(), "a".into()));
+    pages.push(("https://down.example/b".into(), "b".into()));
+    diff::seed(&mut con, &FULL, &[run_folder(&tmp.path().join("r1"), &pages, 1, &[])]).unwrap();
+    let counts = diff::diff(&con, &FULL, &run_folder(&tmp.path().join("r2"), &urls(40), 2, &[]), &tmp.path().join("o2"), "r2", DAY2).unwrap();
+    assert_eq!((counts.removed, counts.held), (0, 2));
+    let named = run_folder(&tmp.path().join("r3"), &urls(40), 3, &["https://down.example/a"]);
+    let counts = diff::diff(&con, &FULL, &named, &tmp.path().join("o3"), "r3", DAY2).unwrap();
+    assert_eq!((counts.gone.clone(), counts.held), (vec!["https://down.example/a".to_string()], 1));
+}
+
+
+#[test]
+fn a_finished_build_can_be_published_without_fetching_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prepared = run_folder(&tmp.path().join("prepared"), &urls(3), 1, &[]);
+    let source = copy_source("test", &prepared, &[]);
+    let publish = |_: &Path, _: &Path| -> anyhow::Result<String> { panic!("published on a dry run") };
+    let hide = |_: &str, _: &[String]| -> anyhow::Result<()> { panic!("hid on a dry run") };
+    let home = tmp.path().join("home");
+    let report = run::refresh(&source, &home, true, DAY2_SECS, "", None, &Hooks { publish: &publish, hide: &hide }).unwrap();
+    let work = home.join("work/test").join(report["run"].as_str().unwrap());
+    std::fs::remove_dir_all(&prepared).unwrap();
+    let sent = RefCell::new(0);
+    let publish = |_: &Path, _: &Path| {
+        *sent.borrow_mut() += 1;
+        Ok("rc=0".to_string())
+    };
+    let hide = |_: &str, _: &[String]| Ok(());
+    let again = run::refresh(&source, &home, false, DAY2_SECS + 60, "", Some(&work), &Hooks { publish: &publish, hide: &hide }).unwrap();
+    assert_eq!((again["builds"]["subnets"]["new"].as_u64(), *sent.borrow()), (Some(3), 1));
 }

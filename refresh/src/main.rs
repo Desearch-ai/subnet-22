@@ -36,6 +36,9 @@ enum Cmd {
         /// First day to fetch, YYYY-MM-DD; the last published run's day by default.
         #[arg(long, default_value = "")]
         since: String,
+        /// Diff and publish the finished builds of this earlier work folder instead of fetching and building again.
+        #[arg(long)]
+        reuse: Option<PathBuf>,
     },
     /// Record runs already published, before a source's first refresh.
     Seed { source: String, build: String, folders: Vec<PathBuf> },
@@ -102,13 +105,13 @@ fn main() -> Result<()> {
             let counts = diff::diff(&con, build, &folder, &out, "check", &run::iso(run::now_secs()))?;
             println!("{}", serde_json::to_string(&counts)?);
         }
-        Cmd::Run { source: name, dry_run, since } => {
+        Cmd::Run { source: name, dry_run, since, reuse } => {
             let source = source(&name)?;
             std::fs::create_dir_all(&root)?;
             let started = Instant::now();
             let _lock = lock(&root, source.name)?;
             let hooks = run::Hooks { publish: &|folder, root| run::publish(folder, root, RECEIPT_POLL), hide: &run::hide };
-            let mut report = match run::refresh(source, &root, dry_run, run::now_secs(), &since, &hooks) {
+            let mut report = match run::refresh(source, &root, dry_run, run::now_secs(), &since, reuse.as_deref(), &hooks) {
                 Ok(mut report) => {
                     report["ok"] = json!(true);
                     report

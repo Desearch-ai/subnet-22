@@ -47,6 +47,8 @@ pub struct Counts {
     pub changed: usize,
     pub unchanged: usize,
     pub removed: usize,
+    /// Pages missing only because their whole site is missing this run, kept until the source names them removed.
+    pub held: usize,
     pub known: usize,
     pub published: String,
     pub large: bool,
@@ -196,6 +198,12 @@ fn each_batch(folder: &Path, manifest: &Value, mut f: impl FnMut(RecordBatch) ->
     Ok(())
 }
 
+/// The host of a URL, lowercase as written; a site whose every page is missing may be down, not gone.
+pub fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]
+}
+
 fn removed_of(folder: &Path) -> Result<Vec<String>> {
     let path = folder.join(REMOVED);
     if !path.exists() {
@@ -255,11 +263,18 @@ pub fn diff(con: &Connection, build: &Build, folder: &Path, out: &Path, run: &st
         ))
         .into());
     }
-    let mut gone: HashSet<String> = HashSet::new();
+    let named: HashSet<String> = removed_of(folder)?.into_iter().filter(|u| !counts.hashes.contains_key(u)).collect();
+    let mut gone: HashSet<String> = named.clone();
     if build.full_list {
-        gone.extend(known.keys().filter(|u| !counts.hashes.contains_key(*u)).cloned());
+        let live_hosts: HashSet<&str> = counts.hashes.keys().map(|u| host_of(u)).collect();
+        for url in known.keys().filter(|u| !counts.hashes.contains_key(*u) && !named.contains(*u)) {
+            if live_hosts.contains(host_of(url)) {
+                gone.insert(url.clone());
+            } else {
+                counts.held += 1;
+            }
+        }
     }
-    gone.extend(removed_of(folder)?.into_iter().filter(|u| !counts.hashes.contains_key(u)));
     counts.gone = gone.into_iter().collect();
     counts.gone.sort();
     counts.removed = counts.gone.len();

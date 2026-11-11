@@ -166,7 +166,7 @@ pub struct Hooks<'a> {
     pub hide: &'a dyn Fn(&str, &[String]) -> Result<()>,
 }
 
-pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &str, hooks: &Hooks) -> Result<Value> {
+pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &str, reuse: Option<&Path>, hooks: &Hooks) -> Result<Value> {
     let as_of = iso(now);
     let run = format!("{}{}{}-{}{}", &as_of[0..4], &as_of[5..7], &as_of[8..10], &as_of[11..13], &as_of[14..16]);
     let since = if since.is_empty() { last_ok(root, source.name).chars().take(10).collect() } else { since.to_string() };
@@ -174,11 +174,16 @@ pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &st
     if since.is_empty() && needs_since {
         return Err(Refused(format!("{} has no run that published yet; give its first run --since", source.name)).into());
     }
-    let work = root.join("work").join(source.name).join(&run);
-    if work.exists() {
-        bail!("{} already exists", work.display());
+    let work = match reuse {
+        Some(dir) => dir.to_path_buf(),
+        None => root.join("work").join(source.name).join(&run),
+    };
+    if reuse.is_none() {
+        if work.exists() {
+            bail!("{} already exists", work.display());
+        }
+        std::fs::create_dir_all(&work)?;
     }
-    std::fs::create_dir_all(&work)?;
     let log = work.join("log.txt");
     let mut values: HashMap<&str, String> = HashMap::new();
     values.insert("work", work.display().to_string());
@@ -186,8 +191,10 @@ pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &st
     values.insert("run", run.clone());
     values.insert("since", since.clone());
     values.insert("until", as_of[..10].to_string());
-    for argv in source.fetch {
-        run_command(argv, &values, &log, source)?;
+    if reuse.is_none() {
+        for argv in source.fetch {
+            run_command(argv, &values, &log, source)?;
+        }
     }
     let mut con = diff::open_state(&root.join("state").join(format!("{}.sqlite", source.name)))?;
     let mut diffs: Vec<(usize, Counts, PathBuf)> = Vec::new();
@@ -196,7 +203,11 @@ pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &st
         let folder = work.join("build").join(build.name);
         let mut with_out = values.clone();
         with_out.insert("out", folder.display().to_string());
-        run_command(build.argv, &with_out, &log, source)?;
+        if reuse.is_none() {
+            run_command(build.argv, &with_out, &log, source)?;
+        } else if !folder.join(diff::MANIFEST).exists() {
+            bail!("{} holds no finished {} build to reuse", work.display(), build.name);
+        }
         let out = work.join("publish").join(format!("refresh-{}-{run}", build.name));
         let counts = diff::diff(&con, build, &folder, &out, &format!("{}-{run}", build.name), &as_of)?;
         diffs.push((i, counts, out));
