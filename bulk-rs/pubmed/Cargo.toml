@@ -12,6 +12,7 @@ bulk-core.workspace = true
 clap.workspace = true
 desearch.workspace = true
 flate2.workspace = true
+quick-xml = "0.41"
 rayon.workspace = true
 regex.workspace = true
 reqwest.workspace = true

@@ -1,0 +1,3504 @@
+{
+ "cases": [
+  {
+   "name": "source_test",
+   "xml": "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID Version=\"1\">41605288</PMID>\n<Article><Journal><JournalIssue><PubDate><Year>2026</Year><Month>Jan</Month></PubDate></JournalIssue>\n<Title>Journal of advanced research</Title></Journal>\n<ArticleTitle>High-protein diet promotes <i>aging</i>.</ArticleTitle>\n<Abstract><AbstractText Label=\"INTRODUCTION\">Dietary protein has functions.</AbstractText>\n<AbstractText Label=\"RESULTS\">Lifespan fell.</AbstractText><CopyrightInformation>Copyright 2026.</CopyrightInformation></Abstract>\n<AuthorList><Author><LastName>Xu</LastName><ForeName>Xiaoqing</ForeName></Author><Author><CollectiveName>The Study Group</CollectiveName></Author></AuthorList>\n<Language>eng</Language><ArticleDate DateType=\"Electronic\"><Year>2026</Year><Month>01</Month><Day>26</Day></ArticleDate></Article>\n<MeshHeadingList><MeshHeading><DescriptorName>Aging</DescriptorName></MeshHeading></MeshHeadingList></MedlineCitation>\n<PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1016/j.jare.2026.01.063</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation><PMID>2</PMID><Article><Journal><Title>J</Title><JournalIssue><PubDate><Year>2020</Year></PubDate></JournalIssue></Journal>\n<ArticleTitle>No abstract</ArticleTitle></Article></MedlineCitation></PubmedArticle>\n<DeleteCitation><PMID Version=\"1\">22213645</PMID></DeleteCitation></PubmedArticleSet>",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "41605288",
+     "title_text": "High-protein diet promotes aging.",
+     "dates": [
+      "2026-01-26",
+      ""
+     ],
+     "authors": [
+      "Xiaoqing Xu",
+      "The Study Group"
+     ],
+     "abstract": [
+      [
+       "## Introduction",
+       false,
+       false,
+       false
+      ],
+      [
+       "Dietary protein has functions.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Results",
+       false,
+       false,
+       false
+      ],
+      [
+       "Lifespan fell.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/41605288/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "High-protein diet promotes aging.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/41605288/",
+       "published": "2026-01-26",
+       "modified": "",
+       "author": "Xiaoqing Xu, The Study Group",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [
+        "Aging"
+       ],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [
+        "Introduction",
+        "Results"
+       ],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "High-protein diet promotes aging.\nXiaoqing Xu, The Study Group\nJournal of advanced research. 2026-01-26. doi: 10.1016/j.jare.2026.01.063\n## Introduction\nDietary protein has functions.\n## Results\nLifespan fell."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "2",
+     "title_text": "No abstract",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": null,
+     "result": {
+      "skipped": "no_abstract"
+     }
+    },
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/22213645/"
+    }
+   ]
+  },
+  {
+   "name": "dates",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">201</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Sept</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">202</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>September</Month><Day>30</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">203</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>09</Month><Day>7</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">204</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>9</Month><Day>07</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">205</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>jAN</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">206</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Jan </Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">207</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month> Jan</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">208</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year> 2020</Year><Month>Jan</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">209</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>0099</Year><Month>13</Month><Day>00</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">210</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>12345</Year><Month>Dec</Month><Day>123</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">211</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>0</Year><Month>0</Month><Day>0</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">212</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2019</Year><Month>Nov</Month></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">213</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><MedlineDate>2019 Nov-Dec</MedlineDate></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">214</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2019</Year><Season>Winter</Season></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">215</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Month>Feb</Month></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">216</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">217</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>20<b/>20</Year><Month>Feb</Month><Day>2</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">218</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Feb</Month><Day>2</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><ArticleDate DateType=\"Electronic\"><Year>2021</Year><Month>05</Month><Day>06</Day></ArticleDate></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">219</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Feb</Month><Day>2</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><ArticleDate DateType=\"Electronic\"><Year>2021</Year><Month>05</Month></ArticleDate></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">220</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Feb</Month></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><ArticleDate DateType=\"Electronic\"><Year>2021</Year><Month>May</Month><Day>x</Day></ArticleDate></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">221</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><ArticleDate DateType=\"Electronic\"><Year>2021</Year><Month>05</Month><Day>06</Day></ArticleDate></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">222</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year></Year><Month>Feb</Month><MedlineDate>1999 Spring</MedlineDate></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">223</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">224</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>\n2020\n</Year><Month>\tMar</Month></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">225</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Mar</Month><Day>4</Day><Day>5</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">226</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>MAY</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">227</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Ja</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">228</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2020</Year><Month>Okt</Month><Day>1</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "201",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-09-01"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/201/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/201/",
+       "published": "2020-09-01",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-09-01\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "202",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-09-30"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/202/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/202/",
+       "published": "2020-09-30",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-09-30\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "203",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-09-07"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/203/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/203/",
+       "published": "2020-09-07",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-09-07\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "204",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-09-07"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/204/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/204/",
+       "published": "2020-09-07",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-09-07\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "205",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-01-01"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/205/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/205/",
+       "published": "2020-01-01",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-01-01\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "206",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-01-01"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/206/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/206/",
+       "published": "2020-01-01",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-01-01\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "207",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/207/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/207/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020  Jan\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "208",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/208/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/208/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things.  2020 Jan\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "209",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "0099-13-00"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/209/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/209/",
+       "published": "0099-13-00",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 0099-13-00\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "210",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "12345-12-123"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/210/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/210/",
+       "published": "12345-12-123",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 12345-12-123\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "211",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "0000-00-00"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/211/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/211/",
+       "published": "0000-00-00",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 0000-00-00\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "212",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/212/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/212/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2019 Nov\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "213",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/213/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/213/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2019 Nov-Dec\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "214",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/214/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/214/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2019\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "215",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/215/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/215/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. Feb\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "216",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/216/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/216/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "217",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "0020-02-02"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/217/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/217/",
+       "published": "0020-02-02",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 0020-02-02\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "218",
+     "title_text": "A title.",
+     "dates": [
+      "2021-05-06",
+      "2020-02-02"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/218/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/218/",
+       "published": "2021-05-06",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-05-06\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "219",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-02-02"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/219/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/219/",
+       "published": "2020-02-02",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-02-02\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "220",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/220/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/220/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020 Feb\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "221",
+     "title_text": "A title.",
+     "dates": [
+      "2021-05-06",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/221/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/221/",
+       "published": "2021-05-06",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-05-06\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "222",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/222/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/222/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. Feb\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "223",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/223/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/223/",
+       "published": "2020-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\n2020-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "224",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/224/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/224/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. \n2020\n \tMar\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "225",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/225/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/225/",
+       "published": "2020-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "226",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2020-05-01"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/226/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/226/",
+       "published": "2020-05-01",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020-05-01\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "227",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/227/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/227/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020 Ja\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "228",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/228/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/228/",
+       "published": "",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2020 Okt\nSome text."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "authors",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">301</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Smith</LastName><ForeName>John</ForeName></Author><Author ValidYN=\"Y\"><CollectiveName>  The\n  COVID-19\tGroup </CollectiveName></Author><Author ValidYN=\"Y\"><LastName>Doe</LastName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">302</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><CollectiveName>The <i>Italic</i> Group</CollectiveName></Author><Author ValidYN=\"Y\"><CollectiveName></CollectiveName><LastName>Roe</LastName><ForeName>Rita</ForeName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">303</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>  Spaced </LastName><ForeName>  Jean  Paul </ForeName></Author><Author ValidYN=\"Y\"><LastName></LastName><ForeName></ForeName></Author><Author ValidYN=\"Y\"><Initials>AB</Initials></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">304</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Last0</LastName><ForeName>First0</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last1</LastName><ForeName>First1</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last2</LastName><ForeName>First2</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last3</LastName><ForeName>First3</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last4</LastName><ForeName>First4</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last5</LastName><ForeName>First5</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last6</LastName><ForeName>First6</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last7</LastName><ForeName>First7</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last8</LastName><ForeName>First8</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last9</LastName><ForeName>First9</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last10</LastName><ForeName>First10</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last11</LastName><ForeName>First11</ForeName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">305</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Last0</LastName><ForeName>First0</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last1</LastName><ForeName>First1</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last2</LastName><ForeName>First2</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last3</LastName><ForeName>First3</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last4</LastName><ForeName>First4</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last5</LastName><ForeName>First5</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last6</LastName><ForeName>First6</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last7</LastName><ForeName>First7</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last8</LastName><ForeName>First8</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last9</LastName><ForeName>First9</ForeName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">306</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Mc<i>Name</i></LastName><ForeName><!-- c -->Ann</ForeName></Author><Author ValidYN=\"Y\"><LastName>Ångström</LastName><ForeName>Åsa</ForeName></Author><Author ValidYN=\"Y\"><LastName>O&apos;Brien</LastName><ForeName>Conan &amp; Co</ForeName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">307</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><CollectiveName><!-- c -->Group</CollectiveName></Author><Author ValidYN=\"Y\"><CollectiveName>Group <b>B</b></CollectiveName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">308</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Last</LastName><ForeName>First</ForeName></Author><Author ValidYN=\"Y\"><LastName>Last</LastName><ForeName>First</ForeName></Author></AuthorList><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "301",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "John Smith",
+      "The COVID-19 Group",
+      "Doe"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/301/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/301/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "John Smith, The COVID-19 Group, Doe",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJohn Smith, The COVID-19 Group, Doe\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "302",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "The",
+      "Rita Roe"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/302/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/302/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "The, Rita Roe",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nThe, Rita Roe\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "303",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "  Jean  Paul    Spaced ",
+      "",
+      ""
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/303/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/303/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "  Jean  Paul    Spaced ",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\n  Jean  Paul    Spaced \nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "304",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "First0 Last0",
+      "First1 Last1",
+      "First2 Last2",
+      "First3 Last3",
+      "First4 Last4",
+      "First5 Last5",
+      "First6 Last6",
+      "First7 Last7",
+      "First8 Last8",
+      "First9 Last9",
+      "First10 Last10",
+      "First11 Last11"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/304/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/304/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "First0 Last0, First1 Last1, First2 Last2, First3 Last3, First4 Last4, First5 Last5, First6 Last6, First7 Last7, First8 Last8, First9 Last9, et al.",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nFirst0 Last0, First1 Last1, First2 Last2, First3 Last3, First4 Last4, First5 Last5, First6 Last6, First7 Last7, First8 Last8, First9 Last9, et al.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "305",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "First0 Last0",
+      "First1 Last1",
+      "First2 Last2",
+      "First3 Last3",
+      "First4 Last4",
+      "First5 Last5",
+      "First6 Last6",
+      "First7 Last7",
+      "First8 Last8",
+      "First9 Last9"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/305/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/305/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "First0 Last0, First1 Last1, First2 Last2, First3 Last3, First4 Last4, First5 Last5, First6 Last6, First7 Last7, First8 Last8, First9 Last9",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nFirst0 Last0, First1 Last1, First2 Last2, First3 Last3, First4 Last4, First5 Last5, First6 Last6, First7 Last7, First8 Last8, First9 Last9\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "306",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "Mc",
+      "Åsa Ångström",
+      "Conan & Co O'Brien"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/306/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/306/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "Mc, Åsa Ångström, Conan & Co O'Brien",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nMc, Åsa Ångström, Conan & Co O'Brien\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "307",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "",
+      "Group"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/307/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/307/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "Group",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nGroup\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "308",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [
+      "First Last",
+      "First Last"
+     ],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/308/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/308/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "First Last, First Last",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nFirst Last, First Last\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "abstracts",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">401</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText Label=\"BACKGROUND\" NlmCategory=\"BACKGROUND\">Why.</AbstractText><AbstractText Label=\"Methods\">How <i>so</i>\n  and   then.</AbstractText><AbstractText Label=\"  RESULTS AND DISCUSSION  \">Found.</AbstractText><AbstractText Label=\"COVID-19 OUTCOMES\">Outcomes.</AbstractText><AbstractText Label=\"mRNA\">Lower.</AbstractText><AbstractText Label=\"\">No label.</AbstractText><AbstractText Label=\"A&#10;B\tC\nD\">Attr.</AbstractText><AbstractText Label=\"EMPTY\"></AbstractText><AbstractText Label=\"123\">Digits.</AbstractText><AbstractText Label=\"ΟΔΟΣ ΣΤΟ\">Greek.</AbstractText><AbstractText Label=\"ǄUNGLA\">Digraph.</AbstractText><AbstractText Label=\"İSTANBUL\">Dotted.</AbstractText><AbstractText Label=\"ǅungla\">Title case.</AbstractText><AbstractText Label=\"ⓐⓑ\">Circled.</AbstractText><CopyrightInformation>© 2020.</CopyrightInformation></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">402</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>x &lt; y &amp;&amp; z &gt; 1 &#x3B1;&#946; &quot;q&quot; <![CDATA[<raw> & ]]>end</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">403</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>E = mc<sup>2</sup> and <mml:math xmlns:mml=\"http://www.w3.org/1998/Math/MathML\"><mml:mi>x</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:math> holds.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">404</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><CopyrightInformation>Only copyright.</CopyrightInformation></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">405</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">406</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText Label=\"ONLY LABEL\"/></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">407</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>  </AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">408</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>A<!-- comment -->B<?pi data?>C</AbstractText><AbstractText>Second<b xmlns=\"urn:x\">ns</b>.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">409</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "401",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "## Background",
+       false,
+       false,
+       false
+      ],
+      [
+       "Why.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Methods",
+       false,
+       false,
+       false
+      ],
+      [
+       "How so and then.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Results and discussion",
+       false,
+       false,
+       false
+      ],
+      [
+       "Found.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Covid-19 outcomes",
+       false,
+       false,
+       false
+      ],
+      [
+       "Outcomes.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## mRNA",
+       false,
+       false,
+       false
+      ],
+      [
+       "Lower.",
+       false,
+       false,
+       false
+      ],
+      [
+       "No label.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## A\nb c d",
+       false,
+       false,
+       false
+      ],
+      [
+       "Attr.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Empty",
+       false,
+       false,
+       false
+      ],
+      [
+       "## 123",
+       false,
+       false,
+       false
+      ],
+      [
+       "Digits.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## Οδος στο",
+       false,
+       false,
+       false
+      ],
+      [
+       "Greek.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## ǅungla",
+       false,
+       false,
+       false
+      ],
+      [
+       "Digraph.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## İstanbul",
+       false,
+       false,
+       false
+      ],
+      [
+       "Dotted.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## ǅungla",
+       false,
+       false,
+       false
+      ],
+      [
+       "Title case.",
+       false,
+       false,
+       false
+      ],
+      [
+       "## ⓐⓑ",
+       false,
+       false,
+       false
+      ],
+      [
+       "Circled.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/401/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/401/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [
+        "Background",
+        "Methods",
+        "Results and discussion",
+        "Covid-19 outcomes",
+        "mRNA",
+        "A",
+        "Empty",
+        "123",
+        "Οδος στο",
+        "ǅungla",
+        "İstanbul"
+       ],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\n## Background\nWhy.\n## Methods\nHow so and then.\n## Results and discussion\nFound.\n## Covid-19 outcomes\nOutcomes.\n## mRNA\nLower.\nNo label.\n## A\nb c d\nAttr.\n## Empty\n## 123\nDigits.\n## Οδος στο\nGreek.\n## ǅungla\nDigraph.\n## İstanbul\nDotted.\nTitle case.\nCircled."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "402",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "x < y && z > 1 αβ \"q\" <raw> & end",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/402/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/402/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nx < y && z > 1 αβ \"q\" <raw> & end"
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "403",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "E = mc2 and x+1 holds.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/403/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/403/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nE = mc2 and x+1 holds."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "404",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [],
+     "result": {
+      "skipped": "no_abstract"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "405",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [],
+     "result": {
+      "skipped": "no_abstract"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "406",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "## Only label",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/406/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/406/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [
+        "Only label"
+       ],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\n## Only label"
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "407",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/407/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/407/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04"
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "408",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "ABC",
+       false,
+       false,
+       false
+      ],
+      [
+       "Secondns.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/408/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/408/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nABC\nSecondns."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "409",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": null,
+     "result": {
+      "skipped": "no_abstract"
+     }
+    }
+   ]
+  },
+  {
+   "name": "titles",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">501</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle></ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">502</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle></ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><VernacularTitle>Titre <i>français</i>.</VernacularTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">503</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>  </ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><VernacularTitle>  </VernacularTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">504</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">505</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle><i></i></ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language><VernacularTitle>Vern.</VernacularTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">506</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>[Not Available].</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">507</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A <sup>13</sup>C\n  study &amp; more<!-- x --> here.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">508</PMID><Article PubModel=\"Print\"><ArticleTitle></ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">509</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>Mixed <b>bold <i>italic</i></b> tail</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "501",
+     "title_text": "",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_title"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "502",
+     "title_text": "",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/502/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "Titre français.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/502/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "Titre français.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "503",
+     "title_text": "",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_title"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "504",
+     "title_text": "",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_title"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "505",
+     "title_text": "",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/505/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "Vern.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/505/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "Vern.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "506",
+     "title_text": "[Not Available].",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/506/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "[Not Available].",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/506/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "[Not Available].\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "507",
+     "title_text": "A 13C study & more here.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/507/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A 13C study & more here.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/507/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A 13C study & more here.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "508",
+     "title_text": "",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_title"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "509",
+     "title_text": "Mixed bold italic tail",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/509/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "Mixed bold italic tail",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/509/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "Mixed bold italic tail\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "misc",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">601</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>fre</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">602</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>fre</Language><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">603</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">604</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language></Language><Language>ger</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">605</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language> eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">606</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article><MeshHeadingList><MeshHeading><DescriptorName UI=\"D1\">Zeta</DescriptorName><QualifierName>q</QualifierName></MeshHeading><MeshHeading><DescriptorName UI=\"D2\">Eta</DescriptorName></MeshHeading></MeshHeadingList><KeywordList Owner=\"NOTNLM\"><Keyword MajorTopicYN=\"N\">Alpha</Keyword><Keyword>  beta\n gamma </Keyword><Keyword></Keyword></KeywordList><KeywordList Owner=\"NLM\"><Keyword><i>Delta</i> epsilon</Keyword></KeywordList></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">607</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article><MeshHeadingList><MeshHeading><DescriptorName>m0</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m1</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m2</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m3</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m4</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m5</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m6</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m7</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m8</DescriptorName></MeshHeading><MeshHeading><DescriptorName>m9</DescriptorName></MeshHeading></MeshHeadingList><KeywordList><Keyword>k0</Keyword><Keyword>k1</Keyword><Keyword>k2</Keyword><Keyword>k3</Keyword><Keyword>k4</Keyword><Keyword>k5</Keyword><Keyword>k6</Keyword><Keyword>k7</Keyword><Keyword>k8</Keyword><Keyword>k9</Keyword><Keyword>k10</Keyword><Keyword>k11</Keyword><Keyword>k12</Keyword><Keyword>k13</Keyword><Keyword>k14</Keyword></KeywordList></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">608</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">608</ArticleId><ArticleId IdType=\"pii\">S1</ArticleId><ArticleId IdType=\"doi\"></ArticleId><ArticleId IdType=\"doi\"> 10.1/b </ArticleId><ArticleId IdType=\"doi\">10.1/c</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">609</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">609</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\"> 610 \n</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\"></PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">613</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>J\r\nCRLF\rCR</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">614</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title></Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">615</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><ISOAbbreviation>J</ISOAbbreviation></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">616</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1/<i>x</i>y</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<DeleteCitation><PMID Version=\"1\">700</PMID><PMID Version=\"1\"> 701 \n</PMID><PMID Version=\"1\">702</PMID></DeleteCitation>\n<DeleteCitation></DeleteCitation>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">617</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>Second &#x1F600; emoji</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "601",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/601/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "fre",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/601/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "602",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/602/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/602/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "603",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/603/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/603/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "604",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/604/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "ger",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/604/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "605",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/605/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": " eng",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/605/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "606",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/606/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/606/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [
+        "Alpha",
+        "beta gamma",
+        "Delta epsilon",
+        "Zeta",
+        "Eta"
+       ],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "607",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/607/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/607/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [
+        "k0",
+        "k1",
+        "k2",
+        "k3",
+        "k4",
+        "k5",
+        "k6",
+        "k7",
+        "k8",
+        "k9",
+        "k10",
+        "k11",
+        "k12",
+        "k13",
+        "k14",
+        "m0",
+        "m1",
+        "m2",
+        "m3",
+        "m4"
+       ],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "608",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/608/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/608/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04. doi:  10.1/b \nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "609",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/609/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/609/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": " 610 \n",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/ 610 \n/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/ 610 \n/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_abstract"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": null,
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "skipped": "no_abstract"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "613",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/613/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/613/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJ\nCRLF\nCR. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "614",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/614/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/614/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\n2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "615",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/615/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/615/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\n2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "616",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/616/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/616/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04. doi: 10.1/\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/700/"
+    },
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/701/"
+    },
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/702/"
+    },
+    {
+     "kind": "article",
+     "pmid": "617",
+     "title_text": "Second 😀 emoji",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/617/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "Second 😀 emoji",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/617/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "Second 😀 emoji\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "errors": [
+  {
+   "name": "no_citation",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><PubmedData/></PubmedArticle></PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": null,
+     "result": {
+      "error": "AttributeError"
+     }
+    }
+   ],
+   "parse_error": null
+  },
+  {
+   "name": "no_article",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation><PMID>1</PMID></MedlineCitation></PubmedArticle></PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "1",
+     "result": {
+      "error": "AttributeError"
+     }
+    }
+   ],
+   "parse_error": null
+  },
+  {
+   "name": "no_journal",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">3</PMID><Article PubModel=\"Print\"><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "3",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "error": "AttributeError"
+     }
+    }
+   ],
+   "parse_error": null
+  },
+  {
+   "name": "no_pubdate",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">4</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "4",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "error": "AttributeError"
+     }
+    }
+   ],
+   "parse_error": null
+  },
+  {
+   "name": "deleted_without_text",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<DeleteCitation><PMID Version=\"1\">5</PMID><PMID Version=\"1\"></PMID></DeleteCitation>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/5/"
+    },
+    {
+     "kind": "deleted",
+     "error": "AttributeError"
+    }
+   ],
+   "parse_error": null
+  },
+  {
+   "name": "undefined_entity",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">6</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A &nbsp; B</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": null,
+   "parse_error": "XMLSyntaxError"
+  },
+  {
+   "name": "undefined_prefix",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">7</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A <mml:math>x</mml:math></ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": null,
+   "parse_error": "XMLSyntaxError"
+  },
+  {
+   "name": "no_journal_after_pages",
+   "xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE PubmedArticleSet PUBLIC \"-//NLM//DTD PubMedArticle, 1st January 2025//EN\" \"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd\">\n<PubmedArticleSet>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">8</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<DeleteCitation><PMID Version=\"1\">9</PMID></DeleteCitation>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">10</PMID><Article PubModel=\"Print\"><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">11</PMID><Article PubModel=\"Print\"><Journal><ISSN>1</ISSN><JournalIssue CitedMedium=\"Internet\"><Volume>1</Volume><PubDate><Year>2021</Year><Month>Mar</Month><Day>4</Day></PubDate></JournalIssue><Title>Journal of Things</Title></Journal><ArticleTitle>A title.</ArticleTitle><Abstract><AbstractText>Some text.</AbstractText></Abstract><Language>eng</Language></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType=\"pubmed\">100</ArticleId></ArticleIdList></PubmedData></PubmedArticle>\n</PubmedArticleSet>\n",
+   "records": [
+    {
+     "kind": "article",
+     "pmid": "8",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/8/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/8/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    },
+    {
+     "kind": "deleted",
+     "url": "https://pubmed.ncbi.nlm.nih.gov/9/"
+    },
+    {
+     "kind": "article",
+     "pmid": "10",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      ""
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "error": "AttributeError"
+     }
+    },
+    {
+     "kind": "article",
+     "pmid": "11",
+     "title_text": "A title.",
+     "dates": [
+      "",
+      "2021-03-04"
+     ],
+     "authors": [],
+     "abstract": [
+      [
+       "Some text.",
+       false,
+       false,
+       false
+      ]
+     ],
+     "result": {
+      "url": "https://pubmed.ncbi.nlm.nih.gov/11/",
+      "page": {
+       "page_type": "paper",
+       "text_mode": "main",
+       "title": "A title.",
+       "description": "",
+       "lang": "en",
+       "canonical": "https://pubmed.ncbi.nlm.nih.gov/11/",
+       "published": "2021-03-04",
+       "modified": "",
+       "author": "",
+       "site_name": "PubMed",
+       "image": "",
+       "section": "",
+       "tags": [],
+       "breadcrumbs": [],
+       "json_ld_types": [],
+       "headings": [],
+       "entity": "",
+       "ld": "",
+       "paywalled": null,
+       "robots": [],
+       "text": "A title.\nJournal of Things. 2021-03-04\nSome text."
+      }
+     }
+    }
+   ],
+   "parse_error": null
+  }
+ ]
+}
