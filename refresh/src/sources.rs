@@ -80,7 +80,7 @@ pub const SOURCES: &[Source] = &[
         fetch: &[],
         builds: &[Build {
             name: "edgar",
-            argv: &["{python}", "-m", "crawler", "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "1"],
+            argv: &["{python}", "-m", "crawler", "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "8"],
             full_list: false,
             volatile: false,
         }],
