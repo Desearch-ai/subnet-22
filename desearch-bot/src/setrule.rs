@@ -192,6 +192,7 @@ pub struct SetRule {
     since: HashMap<String, NaiveDate>,
     undated: String,
     hub: Option<HubPages>,
+    pages: HashSet<String>,
 }
 
 fn strings(v: Option<&Value>) -> Option<Vec<String>> {
@@ -270,7 +271,11 @@ impl SetRule {
             }
             sites.insert(key, Site { rule: rule.to_string(), paths, hubs, own_host, depth });
         }
-        Ok(Self { sites, since, undated, hub })
+        let pages = match d.get("pages") {
+            None | Some(Value::Null) => HashSet::new(),
+            Some(p) => p.as_array().and(strings(Some(p))).ok_or_else(|| anyhow::anyhow!("pages not understood"))?.into_iter().collect(),
+        };
+        Ok(Self { sites, since, undated, hub, pages })
     }
 
     fn entry(&self, host: &str) -> Option<(&str, &Site)> {
@@ -287,6 +292,9 @@ impl SetRule {
 
     /// Whether the set can admit the URL's page before it is fetched, as the crawler's `scope.may_admit`; date rules wait for the page.
     pub fn may_admit(&self, url: &str) -> bool {
+        if self.pages.contains(url) {
+            return true;
+        }
         let Ok(u) = urls::split(url) else { return false };
         let hostname = u.hostname().unwrap_or_default();
         let Some((h, e)) = self.entry(&hostname) else { return false };
@@ -313,6 +321,9 @@ impl SetRule {
 
     /// Whether the set takes this page; `cap` bounds the crawl, not the set.
     pub fn admits(&self, url: &str, published: Option<&str>, page_type: Option<&str>) -> bool {
+        if self.pages.contains(url) {
+            return true;
+        }
         let Ok(u) = urls::split(url) else { return false };
         let hostname = u.hostname().unwrap_or_default();
         let Some((h, e)) = self.entry(&hostname) else { return false };
@@ -445,6 +456,15 @@ mod tests {
         assert!(rule.admits("https://a.bulk.example/anything?x", None, None));
         assert!(!rule.admits("https://out.example/", None, None));
         assert!(!rule.admits("https://other.example/", None, None));
+    }
+
+    #[test]
+    fn a_listed_page_is_in_whatever_its_host_rule_says() {
+        let rule = SetRule::parse(br#"{"sites": [{"host": "forbes.com", "rule": "news"}], "pages": ["https://www.forbes.com/billionaires/"]}"#).unwrap();
+        assert!(rule.admits("https://www.forbes.com/billionaires/", None, Some("listing")));
+        assert!(rule.may_admit("https://www.forbes.com/billionaires/"));
+        assert!(!rule.admits("https://www.forbes.com/lists/", None, Some("listing")));
+        assert!(SetRule::parse(br#"{"sites": [], "pages": "x"}"#).is_err());
     }
 
     #[test]
