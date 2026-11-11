@@ -32,6 +32,8 @@ use crate::{homepage, isodate, net, records};
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
 /// The longest a visit waits in place for its next request; a longer Crawl-delay ends the visit, and the domain is due again once the delay has passed.
 pub const MAX_WAIT_IN_VISIT: f64 = 60.0;
+/// A news lane poll waits this long at most for the site's turn; past it the poll gives its runner back and comes again at that turn.
+pub const MAX_WAIT_IN_POLL: f64 = 2.0;
 /// What a request made while the visit's next turn was further off than `MAX_WAIT_IN_VISIT` answers instead of going.
 pub const PACED: &str = "paced";
 const MAX_REDIRECTS: usize = 5;
@@ -514,10 +516,10 @@ impl Pacer {
         self.next = Some(self.next.map_or(until, |next| next.max(until)));
     }
 
-    /// Wait for the next request's turn and book the one after; false, without waiting, when the turn is further off than a visit waits.
-    async fn wait(&mut self) -> bool {
+    /// Wait for the next request's turn and book the one after; false, without waiting, when the turn is further off than `most` seconds.
+    async fn wait(&mut self, most: f64) -> bool {
         if let Some(next) = self.next {
-            if next.saturating_duration_since(Instant::now()).as_secs_f64() > MAX_WAIT_IN_VISIT {
+            if next.saturating_duration_since(Instant::now()).as_secs_f64() > most {
                 return false;
             }
             tokio::time::sleep_until(next).await;
@@ -1844,7 +1846,7 @@ impl Run<'_> {
                 return Err("OSError".into());
             }
             let booked = self.pacer.next;
-            if hop == 0 && !self.pacer.wait().await {
+            if hop == 0 && !self.pacer.wait(if self.polling { MAX_WAIT_IN_POLL } else { MAX_WAIT_IN_VISIT }).await {
                 return Err(PACED.into());
             }
             if let (None, Some(budget)) = (&permit, &budget) {

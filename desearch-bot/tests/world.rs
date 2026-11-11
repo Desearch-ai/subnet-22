@@ -1293,6 +1293,34 @@ async fn a_lane_file_that_did_not_change_waits_half_as_long_again_before_its_nex
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_of_a_site_whose_turn_is_far_off_gives_its_runner_back_at_once() {
+    let web: Shared = Arc::default();
+    let host = "delayed.test";
+    lane_site(&web, host, &["/story/1"]);
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600), ("quiet", now + 20)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("delay".into(), 30.0.into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 1, "next": now - 60, "lane": true, "interval": 720, "newest": now - 600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (_buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-delayed", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    let started = std::time::Instant::now();
+    crawl.step().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10), "the poll does not sit out the site's 20 s: {:?}", started.elapsed());
+    assert!(web.lock().unwrap().hits.is_empty(), "and asks nothing before the site's turn");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lane_file_that_refuses_a_poll_waits_twice_as_long_each_time() {
     let web: Shared = Arc::default();
     let host = "refusing.test";
