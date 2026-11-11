@@ -155,6 +155,7 @@ def test_pmc_bucket_reads_keep_only_a_few_articles_ahead_of_the_reader():
 
 
 def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_inventory(monkeypatch):
+    import http.client
     import io
     import urllib.error
 
@@ -167,6 +168,8 @@ def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_i
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
         if url.endswith("PMC1.1.json") and calls[url] < 3:
             raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, None)
+        if url.endswith("PMC1.1.xml") and calls[url] < 2:
+            raise http.client.IncompleteRead(b"<art")
         body = b'{"pmcid": "PMC1", "is_pmc_openaccess": true, "license_code": "CC BY"}' if url.endswith(".json") else b"<article/>"
         return io.BytesIO(body)
 
@@ -175,6 +178,7 @@ def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_i
     found = list(pmc.from_bucket(["PMC1.1", "PMC2.1"], "test", workers=1))
     assert found[0] == ({"pmcid": "PMC1", "is_pmc_openaccess": True, "license_code": "CC BY"}, b"<article/>")
     assert calls[f"{pmc.BUCKET}/metadata/PMC1.1.json"] == 3, "two server errors, then the read"
+    assert calls[f"{pmc.BUCKET}/PMC1.1/PMC1.1.xml"] == 2, "a body cut short, then the read"
     assert pmc.left_out(found[1][0]) == "gone" and found[1][1] is None
 
 

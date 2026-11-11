@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import http.client
 import json
 import re
 import time
@@ -282,7 +283,7 @@ def fetch_url(url: str, user_agent: str) -> bytes:
         except urllib.error.HTTPError as error:
             if error.code not in RETRIED or attempt == TRIES - 1:
                 raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError):
             if attempt == TRIES - 1:
                 raise
         time.sleep(2**attempt)
