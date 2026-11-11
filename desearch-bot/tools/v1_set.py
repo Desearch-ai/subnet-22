@@ -522,6 +522,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--whole-rank", type=int, help="media, organization and reference landing sites ranked this high or higher that the site check keeps go whole")
     parser.add_argument("--deep-rank", type=int, help=f"company landing sites ranked this high or higher give pages {DEEP_DEPTH} levels down")
     parser.add_argument("--subdomains", action="store_true", help="listed docs, help, support, newsroom, investor and news subdomains of a site taken for its rank are taken as their parent is")
+    parser.add_argument("--pages", help="URLs, one a line, that the set admits whatever their host's rule says")
     parser.add_argument("--public-suffixes", help="the public suffix list (public_suffix_list.dat): a public suffix is never taken deeper or whole, nor a parent of subdomains; needed with --whole-rank, --deep-rank and --subdomains")
     args = parser.parse_args(argv)
     if (args.whole_rank or args.deep_rank or args.subdomains) and not args.public_suffixes:
@@ -549,6 +550,8 @@ def main(argv: list[str] | None = None) -> None:
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     temporary = Path(f"{args.out}.new")
     head = {"built": built, "news": args.news, "undated": args.undated}
+    if args.pages:
+        head["pages"] = sorted({line.strip() for line in open_text(args.pages) if line.strip()})
     if any(site.get("hubs") for site in sites):
         head["hub_pages"] = HUB_PAGES
     temporary.write_text(json.dumps({**head, "sites": sites}, separators=(",", ":")))
