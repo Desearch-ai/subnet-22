@@ -52,6 +52,8 @@ enum Command {
     Unresend(UnresendArgs),
     /// Run simulated hours of passes on copied stores against a fake task API, outcomes drawn from a real day's and sitemap reads simulated.
     Replay(ReplayArgs),
+    /// Fetch records into a bulk run folder for `publisher bulk`, extraction in Python worker processes.
+    Build(BuildArgs),
 }
 
 #[derive(clap::Args)]
@@ -63,6 +65,75 @@ struct CopyBucketsArgs {
     /// Buckets to copy, as ranges such as `0-13,20`.
     #[arg(long)]
     buckets: String,
+}
+
+#[derive(clap::Args)]
+struct BuildArgs {
+    /// Record folders or files.
+    #[arg(required = true)]
+    records: Vec<PathBuf>,
+    /// A new run folder.
+    #[arg(long)]
+    out: PathBuf,
+    /// The run's name in its row ids, unique per run.
+    #[arg(long)]
+    run: String,
+    /// The run's time, ISO with a zone; now by default.
+    #[arg(long)]
+    as_of: Option<String>,
+    /// A subnet-22 checkout whose `desearch` package the workers extract with.
+    #[arg(long)]
+    subnet22: PathBuf,
+    /// v1-set.json(.gz): keep only pages it admits.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// URLs to leave out, one per line.
+    #[arg(long)]
+    skip: Option<PathBuf>,
+    /// Leave out pages the evals harness reads as benchmark copies.
+    #[arg(long)]
+    drop_mirrors: bool,
+    #[arg(long, default_value = "python3")]
+    python: String,
+    /// The extraction worker script; `<subnet22>/desearch-bot/worker/extract_worker.py` by default.
+    #[arg(long)]
+    worker: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
+    /// Address-space cap for each worker, in MB; 0 sets none.
+    #[arg(long, default_value_t = 0)]
+    worker_memory_mb: u64,
+    /// Seconds added to every row's fetch time, so a rebuild of a published run sorts after it.
+    #[arg(long, default_value_t = 0)]
+    fetched_later_s: i64,
+}
+
+fn build_run(args: BuildArgs) -> Result<()> {
+    use chrono::Timelike;
+    let as_of = match &args.as_of {
+        Some(t) => chrono::DateTime::parse_from_rfc3339(t).with_context(|| format!("--as-of {t:?} needs a time zone"))?,
+        None => chrono::Utc::now().with_nanosecond(0).expect("zero nanoseconds").fixed_offset(),
+    };
+    let skip = args.skip.as_deref().map(desearch_bot::pagebuild::read_urls).transpose()?.unwrap_or_default();
+    let worker = args.worker.unwrap_or_else(|| args.subnet22.join("desearch-bot/worker/extract_worker.py"));
+    let options = desearch_bot::pagebuild::Options {
+        records: args.records,
+        out: args.out,
+        run: args.run,
+        as_of,
+        set: args.set,
+        skip,
+        drop_mirrors: args.drop_mirrors,
+        python: args.python,
+        worker,
+        subnet22: args.subnet22,
+        workers: args.workers,
+        worker_memory_mb: args.worker_memory_mb,
+        fetched_later_s: args.fetched_later_s,
+    };
+    let counts = desearch_bot::pagebuild::build(&options)?;
+    println!("{}", desearch_bot::uploads::counts_json(&counts));
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -282,6 +353,7 @@ fn main() -> Result<()> {
         Command::DropDomains(args) => return drop_domains(args),
         Command::CopyBuckets(args) => return copy_buckets(args),
         Command::Unresend(args) => return unresend(args),
+        Command::Build(args) => return build_run(args),
         Command::Replay(args) => {
             let args = desearch_bot::replay::ReplayArgs {
                 buckets_dir: args.buckets_dir,
