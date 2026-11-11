@@ -1,0 +1,15 @@
+{
+ "source": "arxiv-text",
+ "run": "fixture",
+ "as_of": "2026-11-10T19:24:00Z",
+ "files": [
+  "arxiv-text-000001.parquet"
+ ],
+ "removed": null,
+ "rows": 25,
+ "counts": {
+  "pages": 25,
+  "not_open": 4,
+  "short": 4
+ }
+}

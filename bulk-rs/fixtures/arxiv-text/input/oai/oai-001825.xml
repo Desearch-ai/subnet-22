@@ -1,0 +1,1273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+    <responseDate>2026-11-11T07:13:32Z</responseDate>
+                <request verb='ListRecords' resumptionToken='verb%3DListRecords%26metadataPrefix%3DarXiv%26from%3D2024-06-26%26until%3D2026-11-10%26skip%3D30'>http://oaipmh.arxiv.org/oai</request>
+
+
+    <ListRecords>
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0809.0182</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>physics:cond-mat:str-el</setSpec>
+            <setSpec>physics:cond-mat:stat-mech</setSpec>
+            <setSpec>physics:physics:comp-ph</setSpec>
+            <setSpec>physics:quant-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0809.0182</id>
+        <created>2009-10-15</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Xie</keyname>
+                        <forenames>Z. Y.</forenames>
+                </author>
+                <author>
+                    <keyname>Jiang</keyname>
+                        <forenames>H. C.</forenames>
+                </author>
+                <author>
+                    <keyname>Chen</keyname>
+                        <forenames>Q. N.</forenames>
+                </author>
+                <author>
+                    <keyname>Weng</keyname>
+                        <forenames>Z. Y.</forenames>
+                </author>
+                <author>
+                    <keyname>Xiang</keyname>
+                        <forenames>T.</forenames>
+                </author>
+        </authors>
+        <title>Second Renormalization of Tensor-Network States</title>
+            <categories>cond-mat.str-el cond-mat.stat-mech physics.comp-ph quant-ph</categories>
+            <comments>5 figures, 4 pages</comments>
+            <journal-ref>Phys.Rev.Lett.103, 160601 (2009)</journal-ref>
+            <doi>10.1103/PhysRevLett.103.160601</doi>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>  We propose a second renormalization group method to handle the tensor-network states or models. This method reduces dramatically the truncation error of the tensor renormalization group. It allows physical quantities of classical tensor-network models or tensor-network ground states of quantum systems to be accurately and efficiently determined.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0810.0725</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>math:math:AG</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0810.0725</id>
+        <created>2008-10-03</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Shadrin</keyname>
+                        <forenames>S.</forenames>
+                </author>
+        </authors>
+        <title>BCOV theory via Givental group action on cohomological field theories</title>
+            <categories>math.AG</categories>
+            <comments>22 pages</comments>
+            <journal-ref>Mosc. Math. J. 9 (2009), no. 2, 411--429</journal-ref>
+            <doi>10.17323/1609-4514-2009-9-2-411-429</doi>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>  In a previous paper (arXiv:0704.1001), Losev, me, and Shneiberg constructed a full descendant potential associated to an arbitrary cyclic Hodge dGBV algebra. This contruction extended the construction of Barannikov and Kontsevich of solution of the WDVV equation, based on the earlier paper of Bershadsky, Cecotti, Ooguri, and Vafa. In the present paper, we give an interpretation of this full descendant potential in terms of Givental group action on cohomological field theories. In particular, the fact that it satisfies all tautological equations becomes a trivial observation.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0909.0800</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>math:math:AG</setSpec>
+            <setSpec>math:math:QA</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0909.0800</id>
+        <created>2009-09-04</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Shadrin</keyname>
+                        <forenames>Sergey</forenames>
+                </author>
+                <author>
+                    <keyname>Zvonkine</keyname>
+                        <forenames>Dimitri</forenames>
+                </author>
+        </authors>
+        <title>A group action on Losev-Manin cohomological field theories</title>
+            <categories>math.AG math.QA</categories>
+            <comments>21 pages, 9 figures</comments>
+            <journal-ref>Ann. Inst. Fourier (Grenoble) 61 (2011), no. 7, 2719-2743</journal-ref>
+            <doi>10.5802/aif.2791</doi>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>  We discuss an analog of the Givental group action for the space of solutions of the commutativity equation. There are equivalent formulations in terms of cohomology classes on the Losev-Manin compactifications of genus 0 moduli spaces; in terms of linear algebra in the space of Laurent series; in terms of differential operators acting on Gromov-Witten potentials; and in terms of multi-component KP tau-functions. The last approach is equivalent to the Losev-Polyubin classification that was obtained via dressing transformations technique.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0911.2157</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>physics:nlin:AO</setSpec>
+            <setSpec>math:math:DS</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0911.2157</id>
+        <created>2012-05-09</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Herrero</keyname>
+                        <forenames>R.</forenames>
+                </author>
+                <author>
+                    <keyname>Pi</keyname>
+                        <forenames>F.</forenames>
+                </author>
+                <author>
+                    <keyname>Rius</keyname>
+                        <forenames>J.</forenames>
+                </author>
+                <author>
+                    <keyname>Orriols</keyname>
+                        <forenames>G.</forenames>
+                </author>
+        </authors>
+        <title>About the oscillatory possibilities of the dynamical systems</title>
+            <categories>nlin.AO math.DS</categories>
+            <comments>40 pages, 12 figures, to appear in Physica D</comments>
+            <journal-ref>Physica D 241 (2012) 1358</journal-ref>
+            <doi>10.1016/j.physd.2012.05.001</doi>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>This paper attempts to make feasible the evolutionary emergence of novelty in a supposedly deterministic world which behavior is associated with those of the mathematical dynamical systems. The work was motivated by the observation of complex oscillatory behaviors in a family of physical devices, for which there is no known explanation in the mainstream of nonlinear dynamics. The paper begins by describing a nonlinear mechanism of oscillatory mode mixing explaining such behaviors and establishes a generic dynamical scenario with extraordinary oscillatory possibilities, including expansive growing scalability. The relation of the scenario to the oscillatory behaviors of turbulent fluids and living brains is discussed. Finally, by considering the scenario as a dynamic substrate underlying generic aspects of both the functioning and the genesis of complexity in a supposedly deterministic world, a theoretical framework covering the evolutionary development of structural transformations in the time evolution of that world is built up.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0912.5115</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>math:math:AG</setSpec>
+            <setSpec>math:math:CO</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0912.5115</id>
+        <created>2009-12-27</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Buryak</keyname>
+                        <forenames>A.</forenames>
+                </author>
+                <author>
+                    <keyname>Shadrin</keyname>
+                        <forenames>S.</forenames>
+                </author>
+        </authors>
+        <title>A new proof of Faber&#39;s intersection number conjecture</title>
+            <categories>math.AG math.CO</categories>
+            <journal-ref>Adv. Math. 228 (2011), no. 1, 22--42</journal-ref>
+            <doi>10.1016/j.aim.2011.05.009</doi>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>  We give a new proof of Faber&#39;s intersection number conjecture concerning the top intersections in the tautological ring of the moduli space of curves $\M_g$. The proof is based on a very straightforward geometric and combinatorial computation with double ramification cycles.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0810.3298</identifier>
+        <datestamp>2008-10-21</datestamp>
+            <setSpec>math:math:CO</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0810.3298</id>
+        <created>2008-10-20</created>
+            <updated>2009-12-01</updated>
+        <authors>
+                <author>
+                    <keyname>Akbari</keyname>
+                        <forenames>S.</forenames>
+                </author>
+                <author>
+                    <keyname>Gh</keyname>
+                        <forenames>Behrooz Bagheri</forenames>
+                </author>
+        </authors>
+        <title>A comment to: On 3-colorable planar graphs without short cycles</title>
+            <categories>math.CO</categories>
+            <comments>2 pages</comments>
+            <license>http://creativecommons.org/licenses/publicdomain/</license>
+            <abstract>  Let G be a graph. It was proved that if G is a planar graph without {4, 6, 7}-cycles and without two 5-cycles sharing exactly one edge, then G 3-colorable. We observed that the proof of this result is not correct.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0707.4476</identifier>
+        <datestamp>2009-04-17</datestamp>
+            <setSpec>physics:hep-ph</setSpec>
+            <setSpec>physics:astro-ph</setSpec>
+            <setSpec>physics:hep-th</setSpec>
+            <setSpec>physics:math-ph</setSpec>
+            <setSpec>math:math:MP</setSpec>
+            <setSpec>physics:quant-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0707.4476</id>
+        <created>2009-04-17</created>
+            <updated>2009-12-01</updated>
+        <authors>
+                <author>
+                    <keyname>Blasone</keyname>
+                        <forenames>Massimo</forenames>
+                </author>
+                <author>
+                    <keyname>Dell&#39;Anno</keyname>
+                        <forenames>Fabio</forenames>
+                </author>
+                <author>
+                    <keyname>De Siena</keyname>
+                        <forenames>Silvio</forenames>
+                </author>
+                <author>
+                    <keyname>Illuminati</keyname>
+                        <forenames>Fabrizio</forenames>
+                </author>
+        </authors>
+        <title>Entanglement in neutrino oscillations</title>
+            <categories>hep-ph astro-ph hep-th math-ph math.MP quant-ph</categories>
+            <comments>5 pages, 5 figures</comments>
+            <journal-ref>Europhys. Lett. 85, 50002 (2009)</journal-ref>
+            <doi>10.1209/0295-5075/85/50002</doi>
+            <license>http://creativecommons.org/licenses/publicdomain/</license>
+            <abstract>  Flavor oscillations in elementary particle physics are related to multi-mode entanglement of single-particle states. We show that mode entanglement can be expressed in terms of flavor transition probabilities, and therefore that single-particle entangled states acquire a precise operational characterization in the context of particle mixing. We treat in detail the physically relevant cases of two- and three-flavor neutrino oscillations, including the effective measure of CP violation. We discuss experimental schemes for the transfer of the quantum information encoded in single-neutrino states to spatially delocalized two-flavor charged lepton states, thus showing, at least in principle, that single-particle entangled states of neutrino mixing are legitimate physical resources for quantum information tasks.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0809.2306</identifier>
+        <datestamp>2009-09-29</datestamp>
+            <setSpec>math:math:QA</setSpec>
+            <setSpec>math:math:RT</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0809.2306</id>
+        <created>2008-09-17</created>
+            <updated>2009-12-01</updated>
+        <authors>
+                <author>
+                    <keyname>Wu</keyname>
+                        <forenames>Zhixiang</forenames>
+                </author>
+        </authors>
+        <title>The Model Of Paths For Generalized Kac-Moody Algebras</title>
+            <categories>math.QA math.RT</categories>
+            <comments>This submission has been withdrawn by arXiv administrators because of inappropriate authorship claims</comments>
+            <msc-class>17B67, 17B10</msc-class>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>  This submission has been withdrawn by arXiv administrators because of inappropriate authorship claims.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0708.0580</identifier>
+        <datestamp>2010-08-06</datestamp>
+            <setSpec>cs:cs:FL</setSpec>
+            <setSpec>cs:cs:DM</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0708.0580</id>
+        <created>2010-08-05</created>
+            <updated>2010-08-06</updated>
+        <authors>
+                <author>
+                    <keyname>Pritchard</keyname>
+                        <forenames>David</forenames>
+                </author>
+        </authors>
+        <title>Efficient Divide-and-Conquer Implementations Of Symmetric FSAs</title>
+            <categories>cs.FL cs.DM</categories>
+            <journal-ref>Journal of Cellular Automata 5(6) (special issue for Automata 2007, H. Fuks &amp; A. T. Lawniczak, eds), pages 481-490, 2010</journal-ref>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>A deterministic finite-state automaton (FSA) is an abstract sequential machine that reads the symbols comprising an input word one at a time. An FSA is symmetric if its output is independent of the order in which the input symbols are read, i.e., if the output is invariant under permutations of the input. We show how to convert a symmetric FSA A into an automaton-like divide-and-conquer process whose intermediate results are no larger than the size of A&#39;s memory. In comparison, a similar result for general FSA&#39;s has been long known via functional composition, but entails an exponential increase in memory size. The new result has applications to parallel processing and symmetric FSA networks.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0803.1207</identifier>
+        <datestamp>2010-09-30</datestamp>
+            <setSpec>cs:cs:AI</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0803.1207</id>
+        <created>2010-09-28</created>
+            <updated>2010-09-30</updated>
+        <authors>
+                <author>
+                    <keyname>Dinh</keyname>
+                        <forenames>Hang</forenames>
+                </author>
+        </authors>
+        <title>Serious Flaws in Korf et al.&#39;s Analysis on Time Complexity of A*</title>
+            <categories>cs.AI</categories>
+            <comments>This paper has been withdrawn</comments>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>  This paper has been withdrawn.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0710.4061</identifier>
+        <datestamp>2010-12-27</datestamp>
+            <setSpec>physics:quant-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0710.4061</id>
+        <created>2010-12-24</created>
+            <updated>2010-12-27</updated>
+        <authors>
+                <author>
+                    <keyname>Zhou</keyname>
+                        <forenames>Yong</forenames>
+                </author>
+        </authors>
+        <title>The quantum entanglement contained in density matrices</title>
+            <categories>quant-ph</categories>
+            <comments>5 pages</comments>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>We point out that density matrices can only be used to describe quantum states, so the entanglement contained in a density matrix is just quantum entanglement. This means a bipartite state described by a density matrix contains quantum entanglement, unless the density matrix has the form $ρ_{AB}=ρ_A\otimes ρ_B$.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0807.1752</identifier>
+        <datestamp>2011-02-11</datestamp>
+            <setSpec>physics:astro-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0807.1752</id>
+        <created>2008-07-23</created>
+            <updated>2011-02-11</updated>
+        <authors>
+                <author>
+                    <keyname>Dame</keyname>
+                        <forenames>T. M.</forenames>
+                </author>
+                <author>
+                    <keyname>Thaddeus</keyname>
+                        <forenames>P.</forenames>
+                </author>
+        </authors>
+        <title>A New Spiral Arm of the Galaxy: The Far 3-Kpc Arm</title>
+            <categories>astro-ph</categories>
+            <comments>ApJ Letters, accepted 9 July 08</comments>
+            <journal-ref>Astrophys.J.683:L143-L146,2008</journal-ref>
+            <doi>10.1086/591669</doi>
+            <license>http://creativecommons.org/licenses/publicdomain/</license>
+            <abstract>  We report the detection in CO of the far-side counterpart of the well-known expanding 3-Kpc Arm in the central region of the Galaxy. In a CO longitude-velocity map at b = 0 deg the Far 3-Kpc Arm can be followed over at least 20 deg of Galactic longitude as a faint lane at positive velocities running parallel to the Near Arm. The Far Arm crosses l = 0 deg at +56 km/s, quite symmetric with the -53 km/s expansion velocity of the Near Arm. In addition to their symmetry in longitude and velocity, we find that the two arms have linewidths (~21 km/s), linear scale heights (~103 pc FWHM), and H2 masses per unit length (~4.3 x 10^6 Mo/kpc) that agree to 26% or better. Guided by the CO, we have also identified the Far Arm in high-resolution 21 cm data and find, subject to the poorly known CO-to-H2 ratio in these objects, that both arms are predominately molecular by a factor of 3-4. The detection of these symmetric expanding arms provides strong support for the existence of a bar at the center of our Galaxy and should allow better determination of the bar&#39;s physical properties.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0802.0485</identifier>
+        <datestamp>2013-05-29</datestamp>
+            <setSpec>physics:cond-mat:soft</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0802.0485</id>
+        <created>2008-02-04</created>
+            <updated>2013-05-29</updated>
+        <authors>
+                <author>
+                    <keyname>Slotterback</keyname>
+                        <forenames>Steven</forenames>
+                </author>
+                <author>
+                    <keyname>Toiya</keyname>
+                        <forenames>Masahiro</forenames>
+                </author>
+                <author>
+                    <keyname>Goff</keyname>
+                        <forenames>Leonard</forenames>
+                </author>
+                <author>
+                    <keyname>Douglas</keyname>
+                        <forenames>Jack F.</forenames>
+                </author>
+                <author>
+                    <keyname>Losert</keyname>
+                        <forenames>Wolfgang</forenames>
+                </author>
+        </authors>
+        <title>Particle motion during the compaction of granular matter</title>
+            <categories>cond-mat.soft</categories>
+            <comments>4 pages, 6 Figures, to be submitted to PRL</comments>
+            <doi>10.1103/PhysRevLett.101.258001</doi>
+            <license>http://creativecommons.org/licenses/publicdomain/</license>
+            <abstract>  We track particle motions in a granular material subjected to compaction using a laser scattering based imaging method where compaction is achieved through thermal cycling. Particle displacements in this jammed fluid correlate strongly with rearrangments of the Voronoi cells defining the local spatial partitioning about the particles, similar to previous observations of Rahman on cooled liquids. Our observations provide further evidence of commonalities between particle dynamics in granular matter close to jamming and supercooled liquids.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0711.1380</identifier>
+        <datestamp>2014-07-11</datestamp>
+            <setSpec>physics:gr-qc</setSpec>
+            <setSpec>physics:hep-th</setSpec>
+            <setSpec>physics:math-ph</setSpec>
+            <setSpec>math:math:MP</setSpec>
+            <setSpec>physics:quant-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0711.1380</id>
+        <created>2014-07-10</created>
+            <updated>2014-07-11</updated>
+        <authors>
+                <author>
+                    <keyname>Glinka</keyname>
+                        <forenames>Lukasz Andrzej</forenames>
+                </author>
+        </authors>
+        <title>Preliminaries in Many-Particle Quantum Gravity: Einstein-Friedmann Spacetime</title>
+            <categories>gr-qc hep-th math-ph math.MP quant-ph</categories>
+            <comments>7 pages, http://serialsjournals.com/articlesview.php?volumesno_id=758&amp;article_id=6590&amp;volumes_id=750&amp;journals_id=246</comments>
+            <journal-ref>New Advances in Physics, Vol. 7, No. 2, July-December 2013, pp. 127-133</journal-ref>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>Preliminaries for Many-Particle approach to quantization of Einstein-Hilbert theory of gravitation are presented in this paper. Einstein-Friedmann Spacetime is detailed discussed from this point of view. Von Neumann-Araki-Woods second quantization in Fock space of canonical Hamilton field equations is presented. In result Spacetime as system with Bose-Einstein statistics is described and thermodynamics of the system is computed.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0808.0764</identifier>
+        <datestamp>2015-03-13</datestamp>
+            <setSpec>math:math:QA</setSpec>
+            <setSpec>math:math:OA</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0808.0764</id>
+        <created>2013-11-13</created>
+            <updated>2015-03-13</updated>
+        <authors>
+                <author>
+                    <keyname>Morrison</keyname>
+                        <forenames>Scott</forenames>
+                </author>
+                <author>
+                    <keyname>Peters</keyname>
+                        <forenames>Emily</forenames>
+                </author>
+                <author>
+                    <keyname>Snyder</keyname>
+                        <forenames>Noah</forenames>
+                </author>
+        </authors>
+        <title>Skein theory for the D_{2n} planar algebras</title>
+            <categories>math.QA math.OA</categories>
+            <comments>Correcting several errors noticed by careful readers!</comments>
+            <msc-class>46L37, 57M15, 46M99</msc-class>
+            <journal-ref>J. Pure Appl. Algebra 214 (2010), no. 2, 117--139</journal-ref>
+            <doi>10.1016/j.jpaa.2009.04.010</doi>
+            <license>http://creativecommons.org/licenses/by/3.0/</license>
+            <abstract>We give a combinatorial description of the ``$D_{2n}$ planar algebra,&#39;&#39; by generators and relations. We explain how the generator interacts with the Temperley-Lieb braiding. This shows the previously known braiding on the even part extends to a `braiding up to sign&#39; on the entire planar algebra.
+  We give a direct proof that our relations are consistent (using this `braiding up to sign&#39;), give a complete description of the associated tensor category and principal graph, and show that the planar algebra is positive definite. These facts allow us to identify our combinatorial construction with the standard invariant of the subfactor $D_{2n}$.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1307.2137</identifier>
+        <datestamp>2016-04-21</datestamp>
+            <setSpec>math:math:CO</setSpec>
+            <setSpec>physics:math-ph</setSpec>
+            <setSpec>math:math:MP</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1307.2137</id>
+        <created>2016-04-20</created>
+            <updated>2016-04-21</updated>
+        <authors>
+                <author>
+                    <keyname>Goulden</keyname>
+                        <forenames>I. P.</forenames>
+                </author>
+                <author>
+                    <keyname>Guay-Paquet</keyname>
+                        <forenames>Mathieu</forenames>
+                </author>
+                <author>
+                    <keyname>Novak</keyname>
+                        <forenames>Jonathan</forenames>
+                </author>
+        </authors>
+        <title>Toda Equations and Piecewise Polynomiality for Mixed Double Hurwitz Numbers</title>
+            <categories>math.CO math-ph math.MP</categories>
+            <proxy>Sigma</proxy>
+            <msc-class>05E10</msc-class>
+            <journal-ref>SIGMA 12 (2016), 040, 10 pages</journal-ref>
+            <doi>10.3842/SIGMA.2016.040</doi>
+            <license>http://creativecommons.org/licenses/by-sa/4.0/</license>
+            <abstract>This article introduces mixed double Hurwitz numbers, which interpolate combinatorially between the classical double Hurwitz numbers studied by Okounkov and the monotone double Hurwitz numbers introduced recently by Goulden, Guay-Paquet and Novak. Generalizing a result of Okounkov, we prove that a certain generating series for the mixed double Hurwitz numbers solves the 2-Toda hierarchy of partial differential equations. We also prove that the mixed double Hurwitz numbers are piecewise polynomial, thereby generalizing a result of Goulden, Jackson and Vakil.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1110.6190</identifier>
+        <datestamp>2016-09-14</datestamp>
+            <setSpec>physics:physics:flu-dyn</setSpec>
+            <setSpec>physics:physics:plasm-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1110.6190</id>
+        <created>2016-09-13</created>
+            <updated>2016-09-14</updated>
+        <authors>
+                <author>
+                    <keyname>Shivamoggi</keyname>
+                        <forenames>B. K.</forenames>
+                </author>
+                <author>
+                    <keyname>van Heijst</keyname>
+                        <forenames>G. J. F.</forenames>
+                </author>
+                <author>
+                    <keyname>Kamp</keyname>
+                        <forenames>L. P. J.</forenames>
+                </author>
+        </authors>
+        <title>The Okubo-Weiss Criteria in Two-Dimensional Hydrodynamic and Magnetohydrodynamic Flows</title>
+            <categories>physics.flu-dyn physics.plasm-ph</categories>
+            <comments>13 pages</comments>
+            <license>http://creativecommons.org/publicdomain/zero/1.0/</license>
+            <abstract>The Okubo [2]-Weiss [3] criterion is recast by using the 2D hydrodynamic Beltrami condition (Shivamoggi et al.[13]) that approximates the slow flow-variation ansatz imposed in its derivation. This turns out to provide an interesting interpretation of the Okubo-Weiss criterion very logically in terms of the topological properties of the underlying vorticity manifold. These developments are then extended to 2D quasi-geostrophic flows (via the potential divorticity framework), magnetohydrodynamic flows and electron magnetohydrodynamic flows (via the generalized magnetic flux framework) and the Okubo-Weiss criteria for these cases are considered.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0707.4025</identifier>
+        <datestamp>2017-07-20</datestamp>
+            <setSpec>physics:physics:gen-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0707.4025</id>
+        <created>2017-06-24</created>
+            <updated>2017-07-20</updated>
+        <authors>
+                <author>
+                    <keyname>Danehkar</keyname>
+                        <forenames>A.</forenames>
+                </author>
+        </authors>
+        <title>On the Cohomological Derivation of Yang-Mills Theory in the Antifield Formalism</title>
+            <categories>physics.gen-ph</categories>
+            <comments>19 pages, few typos corrected, final version</comments>
+            <journal-ref>JHEP Grav.Cosmol.3:368-387,2017</journal-ref>
+            <doi>10.4236/jhepgc.2017.32031</doi>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>We present a brief review of the cohomological solutions of self-coupling interactions of the fields in the free Yang-Mills theory. All consistent interactions among the fields have been obtained using the antifield formalism through several order BRST deformations of the master equation. It is found that the coupling deformations halt exclusively at the second order, whereas higher order deformations are obstructed due to non-local interactions. The results demonstrate the BRST cohomological derivation of the interacting Yang-Mills theory.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0710.5646</identifier>
+        <datestamp>2019-05-29</datestamp>
+            <setSpec>physics:math-ph</setSpec>
+            <setSpec>math:math:MP</setSpec>
+            <setSpec>math:math:QA</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0710.5646</id>
+        <created>2019-05-25</created>
+            <updated>2019-05-29</updated>
+        <authors>
+                <author>
+                    <keyname>Wu</keyname>
+                        <forenames>Weicai</forenames>
+                </author>
+                <author>
+                    <keyname>Zhang</keyname>
+                        <forenames>Shouchuan</forenames>
+                </author>
+                <author>
+                    <keyname>He</keyname>
+                        <forenames>Jieqiong</forenames>
+                </author>
+                <author>
+                    <keyname>Wang</keyname>
+                        <forenames>Peng</forenames>
+                </author>
+        </authors>
+        <title>On the Hopf Algebra of Rooted Trees</title>
+            <categories>math-ph math.MP math.QA</categories>
+            <comments>7 pages. arXiv admin note: text overlap with arXiv:math/0105210 by other authors</comments>
+            <msc-class>16W30</msc-class>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>We find a formula to compute the number of the generators, which generate the $n$-filtered space of Hopf algebra of rooted trees, i.e. the number of equivalent classes of rooted trees with weight $n$. Applying Hopf algebra of rooted trees, we show that the analogue of Andruskiewitsch and Schneider&#39;s Conjecture is not true. The Hopf algebra of rooted trees and the enveloping algebra of the Lie algebra of rooted trees are two important examples of Hopf algebras. We give their representation and show that they have not any nonzero integrals. We structure their graded Drinfeld doubles and show that they are local quasitriangular Hopf algebras.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1203.6903</identifier>
+        <datestamp>2019-10-01</datestamp>
+            <setSpec>physics:astro-ph:CO</setSpec>
+            <setSpec>physics:physics:hist-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1203.6903</id>
+        <created>2018-01-16</created>
+            <updated>2019-10-01</updated>
+        <authors>
+                <author>
+                    <keyname>Horvath</keyname>
+                        <forenames>I.</forenames>
+                </author>
+        </authors>
+        <title>Early publications about nonzero cosmological constant</title>
+            <categories>astro-ph.CO physics.hist-ph</categories>
+            <comments>1 figure</comments>
+            <license>http://creativecommons.org/publicdomain/zero/1.0/</license>
+            <abstract>In 2011 the Nobel Prize in Physics was awarded for the 1998 discovery of the nonzero cosmological constant. This discovery is very important and surely worth to receive the Nobel Prize. However, years earlier several papers had been published (Paal, Horvath, &amp; Lukacs 1992; Holba et al. 1992, Holba et al. 1994) about a very similar discovery from observational data.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0806.0978</identifier>
+        <datestamp>2020-08-18</datestamp>
+            <setSpec>math:math:QA</setSpec>
+            <setSpec>math:math:RA</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0806.0978</id>
+        <created>2020-08-17</created>
+            <updated>2020-08-18</updated>
+        <authors>
+                <author>
+                    <keyname>Škoda</keyname>
+                        <forenames>Zoran</forenames>
+                </author>
+        </authors>
+        <title>Twisted exterior derivatives for universal enveloping algebras I</title>
+            <categories>math.QA math.RA</categories>
+            <comments>v2, v3: radical revisions, background more detailed, expositional corrections and, in the last section some mathematical. Slightly changed title, now part I with sequel planned. v4: 2.5 corrected/expanded to take care of completions, 15 pages. To appear in Contemporary Mathematics (2020), Proceedings of the conference &#34;Representation Theory XVI&#34;, Dubrovnik IUC, June 19-25, 2019</comments>
+            <msc-class>53D55, 16S30</msc-class>
+            <license>http://creativecommons.org/licenses/by-sa/4.0/</license>
+            <abstract>Consider any representation $ϕ$ of a finite-dimensional Lie algebra $g$ by derivations of the completed symmetric algebra $\hat{S}(g^*)$ of its dual. Consider the tensor product of $\hat{S}(g^*)$ and the exterior algebra $Λ(g)$. We show that the representation $ϕ$ extends canonically to the representation $\tildeϕ$ of that tensor product algebra. We construct an exterior derivative on that algebra, giving rise to a twisted version of the exterior differential calculus with the enveloping algebra in the role of the coordinate algebra. In this twisted version, the commutators between the noncommutative differentials and coordinates are formal power series in partial derivatives. The square of the corresponding exterior derivative is zero like in the classical case, but the Leibniz rule is deformed.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0809.3538</identifier>
+        <datestamp>2022-10-04</datestamp>
+            <setSpec>math:math:OA</setSpec>
+            <setSpec>math:math:PR</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0809.3538</id>
+        <created>2022-10-03</created>
+            <updated>2022-10-04</updated>
+        <authors>
+                <author>
+                    <keyname>Skeide</keyname>
+                        <forenames>Michael</forenames>
+                </author>
+        </authors>
+        <title>Spatial Markov Semigroups Admit Hudson-Parthasarathy Dilations</title>
+            <categories>math.OA math.PR</categories>
+            <msc-class>46L55, 46L53, 60J25, 81S25</msc-class>
+            <journal-ref>SIGMA 18 (2022), 071, 8 pages</journal-ref>
+            <doi>10.3842/SIGMA.2022.071</doi>
+            <license>http://creativecommons.org/licenses/by-sa/4.0/</license>
+            <abstract>We present, for the first time, the result (from 2008) that (normal, strongly continuous) Markov semigroups on $\mathscr{B}(G)$ ($G$ a separable Hilbert space) admit a Hudson-Parthasarathy dilation (that is, a dilation to a cocycle perturbation of a noise) if and only if the Markov semigroup is spatial (that is, if it dominates an elementary CP-semigroup). The proof is by general abstract nonsense (taken from Arveson&#39;s classification of $E_0$-semigroups on $\mathscr{B}(H)$ by Arveson systems up to cocycle conjugacy) and not, as usual, by constructing the cocycle as a solution of a quantum stochastic differential equation in the sense of Hudson and Parthasarathy. All other results that make similar statements (especially, [Mem. Amer. Math. Soc. 240 (2016), vi+126 pages, arXiv:0901.1798]) for more general $C^*$-algebras) have been proved later by suitable adaptations of the methods exposed here. (They use Hilbert module techniques, which we carefully avoid here in order to make the result available without any appeal to Hilbert modules.)</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1105.3518</identifier>
+        <datestamp>2023-05-16</datestamp>
+            <setSpec>math:math:GM</setSpec>
+            <setSpec>math:math:NT</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1105.3518</id>
+        <created>2023-05-15</created>
+            <updated>2023-05-16</updated>
+        <authors>
+                <author>
+                    <keyname>Fei</keyname>
+                        <forenames>JinHua</forenames>
+                </author>
+        </authors>
+        <title>About the Kronecker Theorem</title>
+            <categories>math.GM math.NT</categories>
+            <comments>6 pages</comments>
+            <msc-class>11J13 11M06</msc-class>
+            <acm-class>F.2.2; I.2.7</acm-class>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>In this paper, we give a counter-example, in the general case, Kronecker theorem will derive contradiction. Kronecker theorem be correct after removing some conditions.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1208.3778</identifier>
+        <datestamp>2023-06-22</datestamp>
+            <setSpec>math:math:AG</setSpec>
+            <setSpec>math:math:DG</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1208.3778</id>
+        <created>2018-09-12</created>
+            <updated>2023-06-22</updated>
+        <authors>
+                <author>
+                    <keyname>Kamenova</keyname>
+                        <forenames>Ljudmila</forenames>
+                </author>
+        </authors>
+        <title>Hyper-Kähler Fourfolds Fibered by Elliptic Products</title>
+            <categories>math.AG math.DG</categories>
+            <comments>8 pages, EPIGA published version</comments>
+            <msc-class>14D06, 14E05, 53C26</msc-class>
+            <journal-ref>Ã‰pijournal de GÃ©omÃ©trie AlgÃ©brique, Volume 2 (September 21, 2018) epiga:3983</journal-ref>
+            <doi>10.46298/epiga.2018.volume2.3983</doi>
+            <license>http://creativecommons.org/licenses/by-sa/4.0/</license>
+            <abstract>  Every fibration of a projective hyper-Kähler fourfold has fibers which are Abelian surfaces. In case the Abelian surface is a Jacobian of a genus two curve, these have been classified by Markushevich. We study those cases where the Abelian surface is a product of two elliptic curves, under some mild genericity hypotheses.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0709.0078</identifier>
+        <datestamp>2023-08-21</datestamp>
+            <setSpec>physics:physics:soc-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0709.0078</id>
+        <created>2023-08-16</created>
+            <updated>2023-08-21</updated>
+        <authors>
+                <author>
+                    <keyname>Hill</keyname>
+                        <forenames>Sam A.</forenames>
+                </author>
+        </authors>
+        <title>Holding strategies in a bus-route model</title>
+            <categories>physics.soc-ph</categories>
+            <comments>6 pages, 6 figures v2 has been moderately copyedited, but has no new content Paper has been submitted to Physical Review E. v3 updated with correct author&#39;s name and email address</comments>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>A major source of delays in public transportation is the clustering instability, which causes late buses to become progressively later while the buses trailing it become progressively earlier. In this paper, we study this instability and how to neutralize it using the common practices of holding and schedule slack. Starting with an on-time route, we delay one or more buses at a single stop, and determine how these delays grow over time. We compare the effects of two different types of holding on the stability of the system, and briefly investigate how our results change with the use of timepoints.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:0711.3992</identifier>
+        <datestamp>2024-03-04</datestamp>
+            <setSpec>physics:hep-th</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>0711.3992</id>
+        <created>2024-03-01</created>
+            <updated>2024-03-04</updated>
+        <authors>
+                <author>
+                    <keyname>Passos</keyname>
+                        <forenames>E.</forenames>
+                </author>
+                <author>
+                    <keyname>de farias</keyname>
+                        <forenames>K. E. L.</forenames>
+                </author>
+                <author>
+                    <keyname>Anacleto</keyname>
+                        <forenames>M. A.</forenames>
+                </author>
+                <author>
+                    <keyname>Maciel</keyname>
+                        <forenames>E.</forenames>
+                </author>
+                <author>
+                    <keyname>Almeida</keyname>
+                        <forenames>C. A. G.</forenames>
+                </author>
+        </authors>
+        <title>Radiatively induced finite and (un)determined Chern-Simons-like terms</title>
+            <categories>hep-th</categories>
+            <comments>09 pages</comments>
+            <report-no>Biophys. J., 7, (2023)</report-no>
+            <doi>10.23880/psbj-16000253 10.23880/psbj-16000253</doi>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>The problem of Chern-Simons-like term induction via quantum corrections in four-dimensions is investigated in two different cases. In the first case, we consider two distinct approaches to deal with the exact fermion propagator of the extended QED theory up to the first order in the $b$-coefficient. We find different results for distinct approaches in the same regularization scheme. In the second case, we show that when we use a modified derivative expansion method and another regularization scheme, we obtain a result that exactly coincides with one of the results obtained in the former case. This seems to imply an ambiguity absence as one treats the fermion propagator and the self-energy tensor properly.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1009.2938</identifier>
+        <datestamp>2024-04-04</datestamp>
+            <setSpec>math:math:HO</setSpec>
+            <setSpec>math:math:OC</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1009.2938</id>
+        <created>2024-04-03</created>
+            <updated>2024-04-04</updated>
+        <authors>
+                <author>
+                    <keyname>de Bondt</keyname>
+                        <forenames>Michiel</forenames>
+                </author>
+        </authors>
+        <title>Exploring Mount Neverest</title>
+            <categories>math.HO math.OC</categories>
+            <comments>16 pages, 2 errors in v1 are fixed, all estimates are computed in ancillary files</comments>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>The problem `Exploring Mount Neverest&#39; by Henry Ernest Dudeney is solved. Dudeney formulated the problem in the beginning of the 20th century and gave a non-optimal solution (without estimating the non-optimality).</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:2406.16920</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>math:math:DG</setSpec>
+            <setSpec>math:math:ST</setSpec>
+            <setSpec>stat:stat:TH</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>2406.16920</id>
+        <created>2024-06-10</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Bahadursingh</keyname>
+                        <forenames>Roman</forenames>
+                </author>
+        </authors>
+        <title>Exploring Stochastic Mean Curvature Flow on Networks Using Ito Calculus</title>
+            <categories>math.DG math.ST stat.TH</categories>
+            <doi>10.13140/RG.2.2.21595.37923/1</doi>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>In this paper, we investigate the stochastic mean curvature flow (SMCF) on networks, a niche area within stochastic processes and geometric analysis. By applying Ito calculus, we analyze the evolution of network structures influenced by random perturbations. We derive a stochastic differential equation (SDE) for the network edges and utilize numerical simulations to study the stability, long-term behavior, and pattern formation in these systems. Our results offer new insights into the dynamics of complex networks under stochastic influences and open pathways for future research in stochastic geometry.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:2406.16925</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>cs:cs:CL</setSpec>
+            <setSpec>cs:cs:AI</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>2406.16925</id>
+        <created>2024-06-12</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Wang</keyname>
+                        <forenames>Jingwei</forenames>
+                </author>
+        </authors>
+        <title>Analyzing Multi-Head Attention on Trojan BERT Models</title>
+            <categories>cs.CL cs.AI</categories>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>This project investigates the behavior of multi-head attention in Transformer models, specifically focusing on the differences between benign and trojan models in the context of sentiment analysis. Trojan attacks cause models to perform normally on clean inputs but exhibit misclassifications when presented with inputs containing predefined triggers. We characterize attention head functions in trojan and benign models, identifying specific &#39;trojan&#39; heads and analyzing their behavior.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:2406.16934</identifier>
+        <datestamp>2024-06-26</datestamp>
+            <setSpec>eess:eess:SP</setSpec>
+            <setSpec>cs:cs:LG</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>2406.16934</id>
+        <created>2024-06-16</created>
+            <updated>2024-06-26</updated>
+        <authors>
+                <author>
+                    <keyname>Dhuheir</keyname>
+                        <forenames>Marwan</forenames>
+                </author>
+                <author>
+                    <keyname>Erbad</keyname>
+                        <forenames>Aiman</forenames>
+                </author>
+                <author>
+                    <keyname>Al-Fuqaha</keyname>
+                        <forenames>Ala</forenames>
+                </author>
+                <author>
+                    <keyname>Guizani</keyname>
+                        <forenames>Mohsen</forenames>
+                </author>
+        </authors>
+        <title>Multi-UAV Multi-RIS QoS-Aware Aerial Communication Systems using DRL and PSO</title>
+            <categories>eess.SP cs.LG</categories>
+            <comments>This article accepted at IEEE International Conference on Communications, in Denver, CO, USA</comments>
+            <license>http://creativecommons.org/publicdomain/zero/1.0/</license>
+            <abstract>Recently, Unmanned Aerial Vehicles (UAVs) have attracted the attention of researchers in academia and industry for providing wireless services to ground users in diverse scenarios like festivals, large sporting events, natural and man-made disasters due to their advantages in terms of versatility and maneuverability. However, the limited resources of UAVs (e.g., energy budget and different service requirements) can pose challenges for adopting UAVs for such applications. Our system model considers a UAV swarm that navigates an area, providing wireless communication to ground users with RIS support to improve the coverage of the UAVs. In this work, we introduce an optimization model with the aim of maximizing the throughput and UAVs coverage through optimal path planning of UAVs and multi-RIS phase configurations. The formulated optimization is challenging to solve using standard linear programming techniques, limiting its applicability in real-time decision-making. Therefore, we introduce a two-step solution using deep reinforcement learning and particle swarm optimization. We conduct extensive simulations and compare our approach to two competitive solutions presented in the recent literature. Our simulation results demonstrate that our adopted approach is 20 \% better than the brute-force approach and 30\% better than the baseline solution in terms of QoS.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1305.4896</identifier>
+        <datestamp>2025-01-15</datestamp>
+            <setSpec>stat:stat:ME</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1305.4896</id>
+        <created>2025-01-14</created>
+            <updated>2025-01-15</updated>
+        <authors>
+                <author>
+                    <keyname>Shi</keyname>
+                        <forenames>Pixu</forenames>
+                </author>
+                <author>
+                    <keyname>Zhang</keyname>
+                        <forenames>Anru R.</forenames>
+                </author>
+        </authors>
+        <title>Methods to Calculate the Upper Bound of Gini Coefficient Based on Grouped Data and the Result for China</title>
+            <categories>stat.ME</categories>
+            <license>http://creativecommons.org/licenses/by-nc-sa/4.0/</license>
+            <abstract>Determining an upper bound, particularly the optimal upper bound of the Gini coefficient when dealing with grouped data without specified income brackets, remains an important and open question. In this paper, we introduce an efficient algorithm to calculate the exact optimal upper bound of the Gini coefficient with provable guarantees. To exemplify these methods, we also offer computed results for the Gini coefficients of urban and rural China spanning the years 2003 to 2008.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1012.5636</identifier>
+        <datestamp>2025-02-12</datestamp>
+            <setSpec>math:math:DG</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1012.5636</id>
+        <created>2025-02-11</created>
+            <updated>2025-02-12</updated>
+        <authors>
+                <author>
+                    <keyname>Alexander</keyname>
+                        <forenames>Stephanie</forenames>
+                </author>
+                <author>
+                    <keyname>Kapovitch</keyname>
+                        <forenames>Vitali</forenames>
+                </author>
+                <author>
+                    <keyname>Petrunin</keyname>
+                        <forenames>Anton</forenames>
+                </author>
+        </authors>
+        <title>Alexandrov meets Kirszbraun</title>
+            <categories>math.DG</categories>
+            <comments>21 pages, 5 figures</comments>
+            <msc-class>53C23 53C45</msc-class>
+            <journal-ref>Proceedings of 17-th Gokova Geometry-Topology Conference 2010 pp. 88--109</journal-ref>
+            <license>http://creativecommons.org/publicdomain/zero/1.0/</license>
+            <abstract>We give a simplified proof of the generalized Kirszbraun theorem for Alexandrov spaces, which is due to Lang and Schroeder. We also discuss related questions, both solved and open.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1303.5865</identifier>
+        <datestamp>2025-09-18</datestamp>
+            <setSpec>math:math:MG</setSpec>
+            <setSpec>math:math:CO</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1303.5865</id>
+        <created>2025-09-16</created>
+            <updated>2025-09-18</updated>
+        <authors>
+                <author>
+                    <keyname>Mieczkowski</keyname>
+                        <forenames>Edward</forenames>
+                </author>
+        </authors>
+        <title>Arithmetic of triangles</title>
+            <categories>math.MG math.CO</categories>
+            <comments>27 pages, 34 figures, added section</comments>
+            <msc-class>05B45, 05E99, 51M20, 52C20</msc-class>
+            <acm-class>F.2.2; G.2.0</acm-class>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>In this paper, we consider a set of similar triangles with parallel sides, along with a set of points in the plane. It turns out that the set $\mathbb{R}_2= \{\pm &lt;x &gt;=\pm (x^2,x,1); x\in\mathbb{R} \}$ describes this set of triangles quite well. The set $\mathbb{R}_2$ is a subset of the ring $\mathbb{R}^3=\mathbb{R}\times\mathbb{R}\times\mathbb{R}= \{ (x,y,z) ; x,y,z\in\mathbb{R} \}$ with addition and multiplication defined coordinate-wise.
+  The set $\mathbb{R}_2$ is equipped with two operations. Multiplication is inherited from the ring $\mathbb{R}^3$, while addition is a ternary operation that represents homothety and translation of elements in $\mathbb{R}_2$.
+  However, the defined addition has its limitations. It turns out that, within this framework, the reduction of terms with different signs is not always possible. This leads to the distinction between an equation that is true in the arithmetic sense and one that is true in the geometric sense.
+  A novel form of addition in $\mathbb{R}_2$ leads to intriguing properties of multiplication in $\mathbb{R}_2$, which are examined in a dedicated chapter.
+  In the next section we use the construction of adding to describe the dissection of the triangle into 15 triangles of different sides.
+  In the final two sections, we consider a set of two kinds of vectors, along with a set of points on the line. The set $\mathbb{R}_1= \{\pm &lt;x &gt;=\pm (x,1); x\in\mathbb{R} \}$ describes this set vectors quite well and it is a one-dimensional reduction of the set $\mathbb{R}_2$.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1103.4507</identifier>
+        <datestamp>2026-04-14</datestamp>
+            <setSpec>math:math:CO</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1103.4507</id>
+        <created>2026-04-13</created>
+            <updated>2026-04-14</updated>
+        <authors>
+                <author>
+                    <keyname>Grinberg</keyname>
+                        <forenames>Darij</forenames>
+                </author>
+        </authors>
+        <title>Zeckendorf family identities generalized</title>
+            <categories>math.CO</categories>
+            <comments>10 pages. A more detailed version can be found at http://www.cip.ifi.lmu.de/~grinberg/zeckendorfLONG.pdf or in the ancillary files of this preprint. v3 corrects a (non-fatal) miscalculation</comments>
+            <msc-class>05A19</msc-class>
+            <license>http://creativecommons.org/publicdomain/zero/1.0/</license>
+            <abstract>Philip Matchett Wood and Doron Zeilberger have constructed identities for the Fibonacci numbers $f_n$ of the form $1f_n = f_n$ for all $n \geq 1$; $2f_n = f_{n-2} + f_{n+1}$ for all $n \geq 3$; $3f_n = f_{n-2} + f_{n+2}$ for all $n \geq 3$; $4f_n = f_{n-2} + f_{n} + f_{n+2}$ for all $n \geq 3$; ...; the general identity in this family has the form $kf_n = \sum_{s \in S_k} f_{n+s}$ (for all sufficiently high $n$), where $S_k$ is a finite set of integers that depends only on $k$ and contains no two consecutive integers. These identities are generalized, replacing the left-hand side $kf_n$ by arbitrary sums of the form $f_{n+a_1} + f_{n+a_2} + \cdots + f_{n+a_p}$ for arbitrary integers $a_1, a_2, \ldots, a_p$. The resulting theorem is proved using the connection between the Fibonacci numbers and the golden ratio.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1708.06999</identifier>
+        <datestamp>2026-06-02</datestamp>
+            <setSpec>math:math:OC</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1708.06999</id>
+        <created>2026-05-30</created>
+            <updated>2026-06-02</updated>
+        <authors>
+                <author>
+                    <keyname>Proudnikov</keyname>
+                        <forenames>Igor</forenames>
+                </author>
+        </authors>
+        <title>Conditions for representation of a function of many arguments as the difference of convex functions</title>
+            <categories>math.OC</categories>
+            <comments>in Russian</comments>
+            <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license>
+            <abstract>There are given conditions for represention of a function of many arguments as the difference of convex functions.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:1607.03642</identifier>
+        <datestamp>2026-06-04</datestamp>
+            <setSpec>eess:eess:SY</setSpec>
+            <setSpec>cs:cs:SY</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>1607.03642</id>
+        <created>2016-07-19</created>
+            <updated>2026-06-04</updated>
+        <authors>
+                <author>
+                    <keyname>Cooman</keyname>
+                        <forenames>Adam</forenames>
+                </author>
+        </authors>
+        <title>Conversions between Electrical Network Representations</title>
+            <categories>eess.SY cs.SY</categories>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>The behaviour of electrical networks can be described with many different representations, each with their distinct benefits. In this paper, we consider Z, Y, G, H, ABCD, S and T parameters. Formulas exist to go from one representation to another, but implementing them is an error-prone procedure. In this paper, we present a more elegant way to implement the transformations based on matrix calculations.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <record>
+                <header>
+        <identifier>oai:arXiv.org:astro-ph/0012023</identifier>
+        <datestamp>2026-09-17</datestamp>
+            <setSpec>physics:astro-ph</setSpec>
+    </header>
+
+            <metadata>
+                        <arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ https://oaipmh.arxiv.org/OAI/arXiv.xsd">
+        <id>astro-ph/0012023</id>
+        <created>2026-09-16</created>
+            <updated>2026-09-17</updated>
+        <authors>
+                <author>
+                    <keyname>Rosenberg</keyname>
+                        <forenames>David E.</forenames>
+                </author>
+        </authors>
+        <title>Cosmic Conundrums with Quantum Corrections</title>
+            <categories>astro-ph</categories>
+            <comments>8 pages</comments>
+            <license>http://creativecommons.org/licenses/by/4.0/</license>
+            <abstract>Darh energy was discovered over 25 years ago and we do not have an explanation of it. Dark matter comprises 95% of matter in the universe and we still don&#39;t know what it is. The Webb telescope has been finding fully formed galaxies with massive black holes millions of times the mass of the sun in the early universe and we don&#39;t have any explanation. A quantum density limitation will be used to solve these and other outstanding problems.</abstract>
+    </arXiv>
+
+            </metadata>
+        </record>
+
+                    <resumptionToken expirationDate='2026-11-12T00:00:00Z'>verb%3DListRecords%26metadataPrefix%3DarXiv%26from%3D2024-06-27%26until%3D2026-11-10%26skip%3D420</resumptionToken>
+
+    </ListRecords>
+</OAI-PMH>
