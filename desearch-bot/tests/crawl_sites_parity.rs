@@ -96,9 +96,35 @@ fn gaps(hits: &[site_replay::Hit]) -> BTreeMap<String, f64> {
     times.into_iter().filter(|(_, t)| t.len() > 1).map(|(host, t)| (host, t.windows(2).map(|w| w[1] - w[0]).fold(f64::MAX, f64::min))).collect()
 }
 
+/// The Python run with the hosts the strict robots.txt rule keeps off put as `strict_robots.json` says.
+fn expected(python: &Value, strict: &Value) -> Value {
+    let mut want = python.clone();
+    let Some(hosts) = strict.as_object() else { return want };
+    for (host, rust) in hosts {
+        let total = want["total"].as_object_mut().unwrap();
+        for (key, n) in python["hosts"][host].as_object().unwrap() {
+            let left = total[key].as_i64().unwrap() - n.as_i64().unwrap();
+            if left == 0 && n.as_i64().unwrap() > 0 {
+                total.remove(key);
+            } else {
+                total.insert(key.clone(), json!(left));
+            }
+        }
+        for (key, n) in rust["counts"].as_object().unwrap() {
+            let now = total.get(key).and_then(Value::as_i64).unwrap_or(0);
+            total.insert(key.clone(), json!(now + n.as_i64().unwrap()));
+        }
+        want["hosts"][host] = rust["counts"].clone();
+        want["requests"][host] = rust["requests"].clone();
+        want["gaps"].as_object_mut().unwrap().remove(host);
+        want["records"].as_array_mut().unwrap().retain(|r| r["url"].as_str().unwrap().split('/').nth(2) != Some(host.as_str()));
+    }
+    want
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn crawl_sites_runs_as_the_python_crawler() {
-    let (fixture, golden) = (load("fixture.json"), load("golden.json"));
+    let (fixture, golden, strict) = (load("fixture.json"), load("golden.json"), load("strict_robots.json"));
     let runs: Vec<(String, Value)> = fixture["runs"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut started = Vec::new();
     for (name, run) in runs {
@@ -108,7 +134,7 @@ async fn crawl_sites_runs_as_the_python_crawler() {
     let mut wrong: Vec<String> = Vec::new();
     for (name, task) in started {
         let (got, hits) = task.await.unwrap();
-        let want = &golden["runs"][&name];
+        let want = &expected(&golden["runs"][&name], &strict["runs"][&name]);
         for key in ["total", "hosts", "files", "found", "agents"] {
             if got[key] != want[key] {
                 wrong.push(format!("run {name} {key}:\n  python {}\n  rust   {}", want[key], got[key]));

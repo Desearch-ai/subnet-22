@@ -51,88 +51,6 @@ pub fn urlparse(url: &str, scheme: &str) -> Result<[String; 6], urls::Invalid> {
     Ok([scheme, p.netloc.unwrap_or_default(), path, params, p.query.unwrap_or_default(), p.fragment.unwrap_or_default()])
 }
 
-/// Python 3.12's `urlunsplit`.
-fn urlunsplit(scheme: &str, netloc: &str, path: &str, query: &str, fragment: &str) -> String {
-    let mut url = path.to_string();
-    if !netloc.is_empty() {
-        if !url.is_empty() && !url.starts_with('/') {
-            url.insert(0, '/');
-        }
-        url = format!("//{netloc}{url}");
-    } else if url.starts_with("//") || (!scheme.is_empty() && urls::USES_NETLOC.contains(&scheme) && (url.is_empty() || url.starts_with('/'))) {
-        url = format!("//{url}");
-    }
-    if !scheme.is_empty() {
-        url = format!("{scheme}:{url}");
-    }
-    if !query.is_empty() {
-        url = format!("{url}?{query}");
-    }
-    if !fragment.is_empty() {
-        url = format!("{url}#{fragment}");
-    }
-    url
-}
-
-fn urlunparse(scheme: &str, netloc: &str, path: &str, params: &str, query: &str, fragment: &str) -> String {
-    let path = if params.is_empty() { path.to_string() } else { format!("{path};{params}") };
-    urlunsplit(scheme, netloc, &path, query, fragment)
-}
-
-/// Python 3.12's `urllib.parse.urljoin`, which parses `;params` off the last segment and drops empty parts.
-pub fn urljoin(base: &str, url: &str) -> Result<String, urls::Invalid> {
-    if base.is_empty() {
-        return Ok(url.to_string());
-    }
-    if url.is_empty() {
-        return Ok(base.to_string());
-    }
-    let [bscheme, bnetloc, bpath, bparams, bquery, _] = urlparse(base, "")?;
-    let [scheme, mut netloc, mut path, mut params, mut query, fragment] = urlparse(url, &bscheme)?;
-    if scheme != bscheme || !urls::USES_RELATIVE.contains(&scheme.as_str()) {
-        return Ok(url.to_string());
-    }
-    if urls::USES_NETLOC.contains(&scheme.as_str()) {
-        if !netloc.is_empty() {
-            return Ok(urlunparse(&scheme, &netloc, &path, &params, &query, &fragment));
-        }
-        netloc = bnetloc;
-    }
-    if path.is_empty() && params.is_empty() {
-        (path, params) = (bpath, bparams);
-        if query.is_empty() {
-            query = bquery;
-        }
-        return Ok(urlunparse(&scheme, &netloc, &path, &params, &query, &fragment));
-    }
-    let mut base_parts: Vec<&str> = bpath.split('/').collect();
-    if base_parts.last() != Some(&"") {
-        base_parts.pop();
-    }
-    let segments: Vec<&str> = if path.starts_with('/') {
-        path.split('/').collect()
-    } else {
-        let all: Vec<&str> = base_parts.into_iter().chain(path.split('/')).collect();
-        let last = all.len() - 1;
-        all.iter().enumerate().filter(|(i, s)| *i == 0 || *i == last || !s.is_empty()).map(|(_, s)| *s).collect()
-    };
-    let mut resolved: Vec<&str> = Vec::new();
-    for seg in &segments {
-        match *seg {
-            ".." => {
-                resolved.pop();
-            }
-            "." => {}
-            other => resolved.push(other),
-        }
-    }
-    if matches!(segments.last(), Some(&".") | Some(&"..")) {
-        resolved.push("");
-    }
-    let joined = resolved.join("/");
-    Ok(urlunparse(&scheme, &netloc, if joined.is_empty() { "/" } else { &joined }, &params, &query, &fragment))
-}
-
 /// Python's `urllib.parse.parse_qsl(query, keep_blank_values=True)`.
 pub fn parse_qsl(query: &str) -> Vec<(String, String)> {
     query
@@ -161,7 +79,7 @@ pub fn urlencode(pairs: &[(String, String)]) -> String {
 
 /// An absolute http(s) URL without fragment, default port or tracking parameters.
 pub fn normalize(url: &str, base: &str) -> Option<String> {
-    let joined = urljoin(base, pystr::strip(url)).ok()?;
+    let joined = urls::join(base, pystr::strip(url)).ok()?;
     let parts = urls::split(&joined).ok()?;
     let port = parts.port().ok()?;
     let scheme = parts.scheme.as_deref().unwrap_or("");
@@ -296,7 +214,7 @@ pub fn robots_meta(doc: &Doc, header: &str) -> HashSet<String> {
 /// Links a page offers to follow, in page order, without rel=nofollow ones.
 pub fn page_links(doc: &Doc, url: &str) -> Result<Vec<String>, Crash> {
     let base_url = match doc.base.as_ref().and_then(|href| href.as_deref()).filter(|href| !href.is_empty()) {
-        Some(href) => urljoin(url, href).map_err(|_| Crash("ValueError"))?,
+        Some(href) => urls::join(url, href).map_err(|_| Crash("ValueError"))?,
         None => url.to_string(),
     };
     let mut seen = HashSet::new();

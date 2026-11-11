@@ -21,32 +21,35 @@
     "https://refuse401.test/c"
    ],
    "gaps": {
-    "badbase.test": 1.01,
+    "badbase.test": 0.998,
     "capped.test": 0.993,
-    "charset.test": 0.991,
-    "cookie.test": 0.996,
+    "charset.test": 0.992,
+    "cookie.test": 0.988,
     "deep.test": 0.992,
-    "elsewhere.test": 1.971,
-    "errors.test": 0.006,
-    "frhome.test": 0.992,
+    "elsewhere.test": 1.977,
+    "errors.test": 0.003,
+    "frhome.test": 0.993,
     "homeredirect.test": 0.0,
-    "idp.cookie.test": 0.999,
-    "lang.test": 0.996,
-    "midforbid.test": 0.992,
-    "named.test": 0.995,
-    "near.test": 0.996,
-    "plain.test": 0.991,
-    "ratelimit.test": 1.0,
-    "refuse401.test": 0.994,
-    "robots403.test": 0.992,
-    "seeded.test": 0.991,
-    "sitemap.test": 0.992,
-    "skip.test": 0.996,
+    "idp.cookie.test": 1.005,
+    "lang.test": 0.988,
+    "midforbid.test": 0.989,
+    "named.test": 0.986,
+    "near.test": 0.993,
+    "plain.test": 0.986,
+    "ratelimit.test": 0.987,
+    "refuse401.test": 0.988,
+    "robots401.test": 0.989,
+    "robots403.test": 0.989,
+    "robots410.test": 0.995,
+    "robots429.test": 0.989,
+    "seeded.test": 0.994,
+    "sitemap.test": 0.989,
+    "skip.test": 0.993,
     "slots.test": 0.0,
-    "slow.test": 1.996,
-    "variants.test": 0.994,
-    "www.bare.test": 0.996,
-    "www.homeredirect.test": 1.0
+    "slow.test": 2.001,
+    "variants.test": 0.988,
+    "www.bare.test": 0.999,
+    "www.homeredirect.test": 0.998
    },
    "hosts": {
     "badbase.test": {
@@ -143,9 +146,24 @@
      "sitemap_status_404": 1,
      "status_401": 1
     },
+    "robots401.test": {
+     "left_in_queue": 0,
+     "page": 2,
+     "sitemap_status_404": 1
+    },
     "robots403.test": {
      "left_in_queue": 0,
      "page": 3,
+     "sitemap_status_404": 1
+    },
+    "robots410.test": {
+     "left_in_queue": 0,
+     "page": 2,
+     "sitemap_status_404": 1
+    },
+    "robots429.test": {
+     "left_in_queue": 0,
+     "page": 2,
      "sitemap_status_404": 1
     },
     "robots503.test": {
@@ -200,19 +218,11 @@
    "records": [
     {
      "content_type": "text/html",
-     "html": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/fr/a\">fr</a><a href=\"/en/a\">en</a><a href=\"/x\">x</a></body></html>",
+     "html": "<html><head><title>t</title></head><body><a href=\"/no/a\">/no/a</a><a href=\"/no/yes\">/no/yes</a><a href=\"/page.php\">/page.php</a><a href=\"/page.php?x=1\">/page.php?x=1</a><a href=\"/ok\">/ok</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://lang.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/ok\">/ok</a><a href=\"/e1\">/e1</a><a href=\"/e2\">/e2</a><a href=\"/ok2\">/ok2</a><a href=\"/e3\">/e3</a><a href=\"/e4\">/e4</a><a href=\"/e5\">/e5</a><a href=\"/e6\">/e6</a><a href=\"/e7\">/e7</a><a href=\"/after\">/after</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://errors.test/"
+     "url": "https://named.test/"
     },
     {
      "content_type": "text/html",
@@ -224,43 +234,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/art\">/art</a><a href=\"/nocookie\">/nocookie</a><a href=\"/blk\">/blk</a><a href=\"/loop\">/loop</a></body></html>",
+     "html": "<html><head><title>t</title></head><body><a href=\"/private/x\">/private/x</a><a href=\"/y\">/y</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://cookie.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/no/a\">/no/a</a><a href=\"/no/yes\">/no/yes</a><a href=\"/page.php\">/page.php</a><a href=\"/page.php?x=1\">/page.php?x=1</a><a href=\"/ok\">/ok</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://named.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a><a href=\"/f1\">/f1</a><a href=\"/b\">/b</a><a href=\"/f2\">/f2</a><a href=\"/f3\">/f3</a><a href=\"/f4\">/f4</a><a href=\"/c\">/c</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://midforbid.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/list?related=0\">/list?related=0</a><a href=\"/list?related=1\">/list?related=1</a><a href=\"/list?related=2\">/list?related=2</a><a href=\"/list?related=3\">/list?related=3</a><a href=\"/list?related=4\">/list?related=4</a><a href=\"/list?related=5\">/list?related=5</a><a href=\"/list?related=6\">/list?related=6</a><a href=\"/list?related=7\">/list?related=7</a><a href=\"/list?related=8\">/list?related=8</a><a href=\"/list?related=9\">/list?related=9</a><a href=\"/list?related=10\">/list?related=10</a><a href=\"/list?related=11\">/list?related=11</a><a href=\"/list?utm_source=a\">/list?utm_source=a</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://variants.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/held\">/held</a><a href=\"/fresh\">/fresh</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://skip.test/"
+     "url": "https://robots403.test/"
     },
     {
      "content_type": "text/html",
@@ -268,7 +246,15 @@
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://seeded.test/"
+     "url": "https://robots401.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots429.test/"
     },
     {
      "content_type": "text/html",
@@ -280,22 +266,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/c0\">/c0</a><a href=\"/c1\">/c1</a><a href=\"/c2\">/c2</a><a href=\"/c3\">/c3</a><a href=\"/c4\">/c4</a><a href=\"/c5\">/c5</a><a href=\"/c6\">/c6</a><a href=\"/c7\">/c7</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://capped.test/"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/blog/1\">/blog/1</a><a href=\"/docs/1\">/docs/1</a><a href=\"/blog/2\">/blog/2</a><a href=\"/docs/2\">/docs/2</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://near.test/"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><a href=\"/p1\">/p1</a><a href=\"/p2\">/p2</a><a href=\"/p3\">/p3</a><a href=\"/p4\">/p4</a></body></html>",
      "meta": {},
      "source": "site",
@@ -304,11 +274,43 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/private/x\">/private/x</a><a href=\"/y\">/y</a></body></html>",
+     "html": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/fr/a\">fr</a><a href=\"/en/a\">en</a><a href=\"/x\">x</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://robots403.test/"
+     "url": "https://lang.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/list?related=0\">/list?related=0</a><a href=\"/list?related=1\">/list?related=1</a><a href=\"/list?related=2\">/list?related=2</a><a href=\"/list?related=3\">/list?related=3</a><a href=\"/list?related=4\">/list?related=4</a><a href=\"/list?related=5\">/list?related=5</a><a href=\"/list?related=6\">/list?related=6</a><a href=\"/list?related=7\">/list?related=7</a><a href=\"/list?related=8\">/list?related=8</a><a href=\"/list?related=9\">/list?related=9</a><a href=\"/list?related=10\">/list?related=10</a><a href=\"/list?related=11\">/list?related=11</a><a href=\"/list?utm_source=a\">/list?utm_source=a</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://variants.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/art\">/art</a><a href=\"/nocookie\">/nocookie</a><a href=\"/blk\">/blk</a><a href=\"/loop\">/loop</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://cookie.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/ok\">/ok</a><a href=\"/e1\">/e1</a><a href=\"/e2\">/e2</a><a href=\"/ok2\">/ok2</a><a href=\"/e3\">/e3</a><a href=\"/e4\">/e4</a><a href=\"/e5\">/e5</a><a href=\"/e6\">/e6</a><a href=\"/e7\">/e7</a><a href=\"/after\">/after</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://errors.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a><a href=\"/f1\">/f1</a><a href=\"/b\">/b</a><a href=\"/f2\">/f2</a><a href=\"/f3\">/f3</a><a href=\"/f4\">/f4</a><a href=\"/c\">/c</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://midforbid.test/"
     },
     {
      "content_type": "text/html",
@@ -328,11 +330,51 @@
     },
     {
      "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/c0\">/c0</a><a href=\"/c1\">/c1</a><a href=\"/c2\">/c2</a><a href=\"/c3\">/c3</a><a href=\"/c4\">/c4</a><a href=\"/c5\">/c5</a><a href=\"/c6\">/c6</a><a href=\"/c7\">/c7</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://capped.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/held\">/held</a><a href=\"/fresh\">/fresh</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://skip.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots410.test/"
+    },
+    {
+     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><a href=\"/s0\">/s0</a><a href=\"/s1\">/s1</a><a href=\"/s2\">/s2</a><a href=\"/s3\">/s3</a><a href=\"/s4\">/s4</a><a href=\"/s5\">/s5</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
      "url": "https://slots.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://seeded.test/"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/blog/1\">/blog/1</a><a href=\"/docs/1\">/docs/1</a><a href=\"/blog/2\">/blog/2</a><a href=\"/docs/2\">/docs/2</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://near.test/"
     },
     {
      "content_type": "text/html",
@@ -344,30 +386,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>a</p><a href=\"/hidden\" rel=\"nofollow\">h</a><a href=\"/a2\">a2</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://plain.test/a"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>ok</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://errors.test/ok"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/en/b\">b</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://frhome.test/en/a"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><p>yes</p></body></html>",
      "meta": {},
      "source": "site",
@@ -376,11 +394,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>a</p><a href=\"/hidden\" rel=\"nofollow\">h</a><a href=\"/a2\">a2</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://variants.test/list?related=0"
+     "url": "https://plain.test/a"
     },
     {
      "content_type": "text/html",
@@ -388,7 +406,23 @@
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://midforbid.test/a"
+     "url": "https://robots429.test/a"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>p</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots403.test/private/x"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots401.test/a"
     },
     {
      "content_type": "text/html",
@@ -404,39 +438,23 @@
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://capped.test/c0"
+     "url": "https://variants.test/list?related=0"
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>fresh</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>ok</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://skip.test/fresh"
+     "url": "https://errors.test/ok"
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>d1</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>a</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://near.test/docs/1"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/from-seed\">s</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://seeded.test/start?x=1"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>p</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://robots403.test/private/x"
+     "url": "https://midforbid.test/a"
     },
     {
      "content_type": "text/html",
@@ -448,14 +466,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>0</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://slots.test/s0"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><a href=\"/d2\">/d2</a></body></html>",
      "meta": {},
      "source": "site",
@@ -464,11 +474,67 @@
     },
     {
      "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://capped.test/c0"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>d1</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://near.test/docs/1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>fresh</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://skip.test/fresh"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/en/b\">b</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://frhome.test/en/a"
+    },
+    {
+     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><p>1</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
      "url": "https://slots.test/s1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://slots.test/s0"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/from-seed\">s</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://seeded.test/start?x=1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots410.test/a"
     },
     {
      "content_type": "text/html",
@@ -496,6 +562,14 @@
     },
     {
      "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>y</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://robots403.test/y"
+    },
+    {
+     "content_type": "text/html",
      "html": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/fr/d\">d</a><a href=\"/en/b\">b</a></body></html>",
      "meta": {},
      "source": "site",
@@ -509,6 +583,22 @@
      "source": "site",
      "status": 200,
      "url": "https://variants.test/list?related=1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/d3\">/d3</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://deep.test/d2"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><body><p>€ � “q”</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://charset.test/cp1252"
     },
     {
      "content_type": "text/html",
@@ -528,35 +618,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><body><p>€ � “q”</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>art</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://charset.test/cp1252"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/d3\">/d3</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://deep.test/d2"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>y</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://robots403.test/y"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>2</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://slots.test/s2"
+     "url": "https://cookie.test/art"
     },
     {
      "content_type": "text/html",
@@ -568,11 +634,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>art</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>2</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://cookie.test/art"
+     "url": "https://slots.test/s2"
     },
     {
      "content_type": "text/html",
@@ -592,22 +658,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html lang=\"EN-us\"><head><title>t</title></head><body><p>b</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://frhome.test/en/b"
-    },
-    {
-     "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>b</p></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://midforbid.test/b"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><p>2</p></body></html>",
      "meta": {},
      "source": "site",
@@ -616,11 +666,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>s</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>b</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://seeded.test/from-seed"
+     "url": "https://midforbid.test/b"
     },
     {
      "content_type": "text/html",
@@ -637,6 +687,22 @@
      "source": "site",
      "status": 200,
      "url": "https://deep.test/d3"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"EN-us\"><head><title>t</title></head><body><p>b</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://frhome.test/en/b"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>s</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://seeded.test/from-seed"
     },
     {
      "content_type": "text/html",
@@ -688,14 +754,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/d5\">/d5</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://deep.test/d4"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><a href=\"/s1\">/s1</a></body></html>",
      "meta": {},
      "source": "site",
@@ -704,11 +762,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>4</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><a href=\"/d5\">/d5</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://variants.test/list?related=4"
+     "url": "https://deep.test/d4"
     },
     {
      "content_type": "text/html",
@@ -720,11 +778,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/d6\">/d6</a></body></html>",
+     "html": "<html><head><title>t</title></head><body><p>4</p></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://deep.test/d5"
+     "url": "https://variants.test/list?related=4"
     },
     {
      "content_type": "text/html",
@@ -733,6 +791,14 @@
      "source": "site",
      "status": 200,
      "url": "https://sitemap.test/s1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><a href=\"/d6\">/d6</a></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://deep.test/d5"
     },
     {
      "content_type": "text/html",
@@ -752,14 +818,6 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><a href=\"/d7\">/d7</a></body></html>",
-     "meta": {},
-     "source": "site",
-     "status": 200,
-     "url": "https://deep.test/d6"
-    },
-    {
-     "content_type": "text/html",
      "html": "<html><head><title>t</title></head><body><p>s2</p></body></html>",
      "meta": {},
      "source": "site",
@@ -768,11 +826,11 @@
     },
     {
      "content_type": "text/html",
-     "html": "<html><head><title>t</title></head><body><p>s5</p></body></html>",
+     "html": "<html><head><title>t</title></head><body><a href=\"/d7\">/d7</a></body></html>",
      "meta": {},
      "source": "site",
      "status": 200,
-     "url": "https://sitemap.test/s5"
+     "url": "https://deep.test/d6"
     },
     {
      "content_type": "text/html",
@@ -781,6 +839,14 @@
      "source": "site",
      "status": 200,
      "url": "https://ratelimit.test/p2"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>t</title></head><body><p>s5</p></body></html>",
+     "meta": {},
+     "source": "site",
+     "status": 200,
+     "url": "https://sitemap.test/s5"
     },
     {
      "content_type": "text/html",
@@ -1022,6 +1088,13 @@
      "/a",
      "/b"
     ],
+    "robots401.test": [
+     "/robots.txt",
+     "/",
+     "/sitemap.xml",
+     "/",
+     "/a"
+    ],
     "robots403.test": [
      "/robots.txt",
      "/",
@@ -1029,6 +1102,20 @@
      "/",
      "/private/x",
      "/y"
+    ],
+    "robots410.test": [
+     "/robots.txt",
+     "/",
+     "/sitemap.xml",
+     "/",
+     "/a"
+    ],
+    "robots429.test": [
+     "/robots.txt",
+     "/",
+     "/sitemap.xml",
+     "/",
+     "/a"
     ],
     "robots503.test": [
      "/robots.txt",
@@ -1068,12 +1155,12 @@
      "/",
      "/sitemap.xml",
      "/",
-     "/s0",
      "/s1",
-     "/s2",
+     "/s0",
      "/s3",
-     "/s5",
-     "/s4"
+     "/s2",
+     "/s4",
+     "/s5"
     ],
     "slow.test": [
      "/robots.txt",
@@ -1110,7 +1197,7 @@
      "/h1"
     ]
    },
-   "seconds": 22.4,
+   "seconds": 22.3,
    "total": {
     "cookie_round_trip": 1,
     "crashed_ValueError": 1,
@@ -1121,7 +1208,7 @@
     "not_html": 1,
     "other_language": 4,
     "other_language_path": 1,
-    "page": 81,
+    "page": 87,
     "query_variants_capped": 7,
     "rate_limited": 1,
     "redirect": 2,
@@ -1132,7 +1219,7 @@
     "robots_disallowed": 3,
     "server_errors_0": 1,
     "sitemap": 4,
-    "sitemap_status_404": 22,
+    "sitemap_status_404": 25,
     "skipped_held": 2,
     "status_401": 1,
     "status_403": 4,
@@ -1151,11 +1238,11 @@
    "files": 1,
    "found": null,
    "gaps": {
-    "setland.test": 1.003,
+    "setland.test": 0.996,
     "setnews.test": 1.0,
     "setout.test": 1.007,
-    "setwhole.test": 1.0,
-    "unlisted.test": 1.011
+    "setwhole.test": 0.996,
+    "unlisted.test": 1.007
    },
    "hosts": {
     "setland.test": {
@@ -1323,7 +1410,7 @@
    "files": 1,
    "found": null,
    "gaps": {
-    "prefixed.test": 1.003
+    "prefixed.test": 0.995
    },
    "hosts": {
     "prefixed.test": {
@@ -1359,7 +1446,7 @@
      "/docs/a"
     ]
    },
-   "seconds": 3.2,
+   "seconds": 3.3,
    "total": {
     "left_in_queue": 1,
     "page": 2,

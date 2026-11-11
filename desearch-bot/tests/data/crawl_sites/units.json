@@ -412,7 +412,7 @@
     "lang": "",
     "meta": [],
     "links": [
-     "https://ex.test/p/&<©&copyx¬∉"
+     "https://ex.test/p/&<©&copyx¬∉;"
     ]
    }
   ],
@@ -1071,12 +1071,12 @@
   [
    "x;",
    "https://e.test/p/q",
-   "https://e.test/p/x"
+   "https://e.test/p/x;"
   ],
   [
    "x;?a=1",
    "https://e.test/p/q",
-   "https://e.test/p/x?a=1"
+   "https://e.test/p/x;?a=1"
   ],
   [
    "x;p",
@@ -1096,12 +1096,12 @@
   [
    "..;p",
    "https://e.test/p/q/r",
-   "https://e.test/p/;p"
+   "https://e.test/p/q/..;p"
   ],
   [
    "https://e.test/a;",
    "https://e.test/",
-   "https://e.test/a"
+   "https://e.test/a;"
   ],
   [
    "#f",
@@ -3121,7 +3121,7 @@
    ]
   ],
   [
-   "H4sIAAAAAAACE02NWwqAIBBFtxItYG59FpN7CRMVetEMKK0+A4k+z32yRHXbfMZ9cbnJ27rL1AbVcwRSSlRtoePyEBsKCKqIjobWcCXD62HNW5XSdZnUiUJ6KqPkb8ZrM740/s/mAWJ9q/SIAAAA",
+   "H4sIAAAAAAAC/02NWwqAIBBFtxItYG59FpN7CRMVetEMKK0+A4k+z32yRHXbfMZ9cbnJ27rL1AbVcwRSSlRtoePyEBsKCKqIjobWcCXD62HNW5XSdZnUiUJ6KqPkb8ZrM740/s/mAWJ9q/SIAAAA",
    [
     [],
     [
@@ -3136,7 +3136,7 @@
    }
   ],
   [
-   "H4sIAAAAAAACE12OzQ7CIBCEX4Vw8LjbelP5eRZsiG0ChbCr4NtLqzHR48x8XzLKthjEwxda0qrlCIO0Rt1LIM+iTytpOTPnM2KtFWhhH10mSOWGNM09EH5KHOAkd9eokCYjNo+66BuwJ0YnFG6Dwp35gv/c1TY9HlzMl6c+/ig=",
+   "H4sIAAAAAAAC/12OzQ7CIBCEX4Vw8LjbelP5eRZsiG0ChbCr4NtLqzHR48x8XzLKthjEwxda0qrlCIO0Rt1LIM+iTytpOTPnM2KtFWhhH10mSOWGNM09EH5KHOAkd9eokCYjNo+66BuwJ0YnFG6Dwp35gv/c1TY9HlzMl6c+/ig=",
    [
     [],
     []

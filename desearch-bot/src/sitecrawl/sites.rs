@@ -445,9 +445,9 @@ pub async fn crawl(ctx: &Ctx, site: &Site, found: Option<&Mutex<Vec<String>>>) -
         crawl.push(normalize(seed, "").as_deref(), 0, true);
     }
     if site.sitemaps {
-        let mut listed = rules.sitemaps.iter().map(|s| links::urljoin(&root, s)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash("ValueError"))?;
+        let mut listed = rules.sitemaps.iter().map(|s| urls::join(&root, s)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash("ValueError"))?;
         if listed.is_empty() {
-            listed.push(links::urljoin(&root, "/sitemap.xml").map_err(|_| Crash("ValueError"))?);
+            listed.push(urls::join(&root, "/sitemap.xml").map_err(|_| Crash("ValueError"))?);
         }
         for url in sitemap_urls(ctx, listed, &crawl.host, &crawl.counts, 10 * site.max_pages).await? {
             crawl.push(normalize(&url, "").as_deref(), 1, false);

@@ -381,14 +381,25 @@ impl Rules {
     }
 }
 
-/// A 2xx is the rules, a 3xx or 4xx is none, a server error or no answer keeps us off.
+/// False reads robots.txt as the Python crawler does, every 3xx and 4xx no rules; true keeps refusals and 429s off the host.
+pub const STRICT_4XX: bool = true;
+/// The robots.txt answers that refuse us the host for the run under the strict rule.
+pub const REFUSING: [u16; 4] = [401, 402, 403, 451];
+
+/// An answer that is asked again after a pause and, still so, keeps us off: no answer, a server error, and a 429 under the strict rule.
+pub fn ask_again(status: u16) -> bool {
+    status == 0 || status >= 500 || (STRICT_4XX && status == 429)
+}
+
+/// A 2xx is the rules, a 404 or 410 (and under the Python rule any 3xx or 4xx) is none, anything else keeps us off.
 pub fn parse(host: &str, status: u16, body: &str) -> Rules {
     if (200..300).contains(&status) {
         let p = Protego::parse(body);
         let delay = p.crawl_delay(TOKEN).filter(|d| *d != 0.0);
         return Rules { host: host.to_string(), refused: None, delay, sitemaps: p.sitemaps.clone(), parsed: Some(p) };
     }
-    if (300..500).contains(&status) {
+    let refused = STRICT_4XX && (REFUSING.contains(&status) || status == 429);
+    if (300..500).contains(&status) && !refused {
         return Rules { host: host.to_string(), ..Rules::default() };
     }
     let why = if status == 0 { "unreachable".to_string() } else { status.to_string() };
@@ -413,7 +424,7 @@ impl Robots {
             return Ok(found.clone());
         }
         let mut r = self.read(host, false).await?;
-        if r.status == 0 || r.status >= 500 {
+        if ask_again(r.status) {
             tokio::time::sleep(self.retry_pause).await;
             r = self.read(host, true).await?;
         }
@@ -428,7 +439,7 @@ impl Robots {
         let mut r = self.http.get(&url, MAX_BYTES, patient).await;
         for _ in 0..5 {
             let Some(location) = r.header("location").filter(|_| REDIRECTS.contains(&r.status)) else { break };
-            url = super::links::urljoin(&url, location).map_err(|_| Crash("ValueError"))?;
+            url = urls::join(&url, location).map_err(|_| Crash("ValueError"))?;
             r = self.http.get(&url, MAX_BYTES, patient).await;
         }
         Ok(r)
@@ -452,15 +463,25 @@ mod tests {
     }
 
     #[test]
-    fn a_4xx_means_no_rules_and_only_server_errors_keep_us_off() {
-        for status in [202, 204, 301, 401, 403, 404, 429, 451] {
+    fn refusals_and_429s_keep_us_off_and_a_missing_file_allows_all() {
+        for status in [202, 204, 301, 400, 404, 405, 410] {
             assert!(parse("a.test", status, "").allowed("https://a.test/anything"), "{status}");
         }
         assert!(!parse("a.test", 203, "User-agent: *\nDisallow: /\n").allowed("https://a.test/x"));
-        for (status, why) in [(500, "robots_500"), (503, "robots_503"), (0, "robots_unreachable")] {
+        for (status, why) in [
+            (401, "robots_401"),
+            (402, "robots_402"),
+            (403, "robots_403"),
+            (451, "robots_451"),
+            (429, "robots_429"),
+            (500, "robots_500"),
+            (503, "robots_503"),
+            (0, "robots_unreachable"),
+        ] {
             let r = parse("a.test", status, "");
-            assert!(r.refused.as_deref() == Some(why) && !r.allowed("https://a.test/"));
+            assert!(r.refused.as_deref() == Some(why) && !r.allowed("https://a.test/"), "{status}");
         }
+        assert!(ask_again(429) && ask_again(503) && ask_again(0) && !ask_again(403) && !ask_again(404));
     }
 
     #[test]

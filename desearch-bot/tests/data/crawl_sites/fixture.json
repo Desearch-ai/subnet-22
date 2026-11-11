@@ -735,6 +735,21 @@
     "type": "text/plain"
    }
   },
+  "robots401.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 401
+   }
+  },
   "robots403.test": {
    "/": {
     "body": "<html><head><title>t</title></head><body><a href=\"/private/x\">/private/x</a><a href=\"/y\">/y</a></body></html>",
@@ -753,6 +768,42 @@
     "body": "<html><head><title>t</title></head><body><p>y</p></body></html>",
     "status": 200,
     "type": "text/html"
+   }
+  },
+  "robots410.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 410
+   }
+  },
+  "robots429.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "headers": [
+     [
+      "Retry-After",
+      "1"
+     ]
+    ],
+    "status": 429
    }
   },
   "robots503.test": {
@@ -934,7 +985,7 @@
     "type": "application/xml"
    },
    "/sm2.xml.gz": {
-    "b64": "H4sIAAAAAAACEy2NQQqAMBADvyJ9QOPFg7L2L1KKCtWKWanPt1WPyWSIXGdk0Obe4s7RLKrHAOScLVcN23TQpnMG/VIC8ZdobW+cFNdJTN5VjcX7sdVABTtBhYJ3h+/JPVRNAk5yAAAA",
+    "b64": "H4sIAAAAAAAC/y2NQQqAMBADvyJ9QOPFg7L2L1KKCtWKWanPt1WPyWSIXGdk0Obe4s7RLKrHAOScLVcN23TQpnMG/VIC8ZdobW+cFNdJTN5VjcX7sdVABTtBhYJ3h+/JPVRNAk5yAAAA",
     "status": 200,
     "type": "application/x-gzip"
    },
@@ -1164,6 +1215,9 @@
     "plain.test",
     "robots403.test",
     "robots503.test",
+    "robots401.test",
+    "robots429.test",
+    "robots410.test",
     "slow.test",
     "named.test",
     "ratelimit.test",
