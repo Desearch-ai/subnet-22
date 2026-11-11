@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,8 +13,8 @@ use crate::sources::{Build, Source};
 const DAY1: &str = "2026-11-09T02:00:00Z";
 const DAY2: &str = "2026-11-16T02:00:00Z";
 const DAY2_SECS: u64 = 1_794_794_400;
-const FULL: Build = Build { name: "subnets", argv: &[], full_list: true };
-const PARTIAL: Build = Build { name: "subnets", argv: &[], full_list: false };
+const FULL: Build = Build { name: "subnets", argv: &[], full_list: true, volatile: false };
+const PARTIAL: Build = Build { name: "subnets", argv: &[], full_list: false, volatile: false };
 
 fn run_folder(path: &Path, pages: &[(String, String)], fetched_us: i64, removed: &[&str]) -> std::path::PathBuf {
     std::fs::create_dir_all(path).unwrap();
@@ -113,7 +113,7 @@ fn a_large_change_is_flagged_and_removed_txt_counts() {
 fn copy_source(name: &'static str, prepared: &Path, fetch: &'static [&'static [&'static str]]) -> Source {
     let argv: &'static [&'static str] =
         Box::leak(vec!["cp", "-R", Box::leak(prepared.display().to_string().into_boxed_str()) as &str, "{out}"].into_boxed_slice());
-    let builds: &'static [Build] = Box::leak(vec![Build { name: "subnets", argv, full_list: true }].into_boxed_slice());
+    let builds: &'static [Build] = Box::leak(vec![Build { name: "subnets", argv, full_list: true, volatile: false }].into_boxed_slice());
     Source { name, fetch, builds, cwd: "/", python: "/usr/bin/true", memory_bytes: 0, timeout_s: 60 }
 }
 
@@ -122,14 +122,14 @@ fn refresh_runs_the_commands_publishes_and_hides() {
     let tmp = tempfile::tempdir().unwrap();
     let prepared = run_folder(&tmp.path().join("prepared"), &urls(3), 1, &[]);
     let source = copy_source("test", &prepared, &[]);
-    let sent = RefCell::new(Vec::new());
-    let hidden = RefCell::new(Vec::new());
+    let sent = Mutex::new(Vec::new());
+    let hidden = Mutex::new(Vec::new());
     let publish = |folder: &Path, _: &Path| {
-        sent.borrow_mut().push(diff::read_urls(folder).unwrap());
+        sent.lock().unwrap().push(diff::read_urls(folder).unwrap());
         Ok("rc=0".to_string())
     };
     let hide = |name: &str, urls: &[String]| {
-        hidden.borrow_mut().push((name.to_string(), urls.to_vec()));
+        hidden.lock().unwrap().push((name.to_string(), urls.to_vec()));
         Ok(())
     };
     let hooks = Hooks { publish: &publish, hide: &hide };
@@ -137,12 +137,12 @@ fn refresh_runs_the_commands_publishes_and_hides() {
 
     let report = run::refresh(&source, &home, false, DAY2_SECS, "", None, &hooks).unwrap();
     assert_eq!(report["builds"]["subnets"]["new"], 3);
-    assert_eq!(sent.borrow().len(), 1);
-    assert_eq!(*hidden.borrow(), [("test".to_string(), Vec::<String>::new())]);
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert_eq!(*hidden.lock().unwrap(), [("test".to_string(), Vec::<String>::new())]);
 
     let again = run::refresh(&source, &home, false, DAY2_SECS + 7 * 86_400, "", None, &hooks).unwrap();
     assert_eq!(again["builds"]["subnets"]["unchanged"], 3);
-    assert_eq!(sent.borrow().len(), 1);
+    assert_eq!(sent.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -268,12 +268,12 @@ fn a_finished_build_can_be_published_without_fetching_again() {
     let report = run::refresh(&source, &home, true, DAY2_SECS, "", None, &Hooks { publish: &publish, hide: &hide }).unwrap();
     let work = home.join("work/test").join(report["run"].as_str().unwrap());
     std::fs::remove_dir_all(&prepared).unwrap();
-    let sent = RefCell::new(0);
+    let sent = Mutex::new(0);
     let publish = |_: &Path, _: &Path| {
-        *sent.borrow_mut() += 1;
+        *sent.lock().unwrap() += 1;
         Ok("rc=0".to_string())
     };
     let hide = |_: &str, _: &[String]| Ok(());
     let again = run::refresh(&source, &home, false, DAY2_SECS + 60, "", Some(&work), &Hooks { publish: &publish, hide: &hide }).unwrap();
-    assert_eq!((again["builds"]["subnets"]["new"].as_u64(), *sent.borrow()), (Some(3), 1));
+    assert_eq!((again["builds"]["subnets"]["new"].as_u64(), *sent.lock().unwrap()), (Some(3), 1));
 }

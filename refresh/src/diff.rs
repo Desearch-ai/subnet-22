@@ -278,7 +278,7 @@ pub fn diff(con: &Connection, build: &Build, folder: &Path, out: &Path, run: &st
     counts.gone = gone.into_iter().collect();
     counts.gone.sort();
     counts.removed = counts.gone.len();
-    counts.large = !known.is_empty() && (counts.new + counts.changed) as f64 > LARGE_SHARE * known.len() as f64;
+    counts.large = !build.volatile && !known.is_empty() && (counts.new + counts.changed) as f64 > LARGE_SHARE * known.len() as f64;
     writer.close(run, as_of, json!({"pages": counts.new + counts.changed, "new": counts.new, "changed": counts.changed}))?;
     Ok(counts)
 }

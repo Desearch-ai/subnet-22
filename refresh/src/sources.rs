@@ -6,6 +6,8 @@ pub struct Build {
     pub argv: &'static [&'static str],
     /// The build lists every page the source has, so a page missing from it is gone.
     pub full_list: bool,
+    /// Pages carry live numbers, so most change every run and a large share changing is no alarm.
+    pub volatile: bool,
 }
 
 pub struct Source {
@@ -37,16 +39,19 @@ pub const SOURCES: &[Source] = &[
                 name: "subnets",
                 argv: &["{python}", "-m", "bulk", "subnets", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/subnets-chain.json"],
                 full_list: true,
+                volatile: true,
             },
             Build {
                 name: "subnet-sites",
                 argv: &["{python}", "-m", "bulk", "subnet-sites", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/sites"],
                 full_list: true,
+                volatile: false,
             },
             Build {
                 name: "subnet-github",
                 argv: &["{python}", "-m", "bulk", "subnet-github", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/github"],
                 full_list: true,
+                volatile: false,
             },
         ],
         cwd: "",
@@ -61,6 +66,7 @@ pub const SOURCES: &[Source] = &[
             name: "arxiv",
             argv: &["{python}", "-m", "bulk", "arxiv", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/oai/*.xml"],
             full_list: false,
+            volatile: false,
         }],
         cwd: "",
         python: "",
@@ -74,6 +80,7 @@ pub const SOURCES: &[Source] = &[
             name: "edgar",
             argv: &["{python}", "-m", "crawler", "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "1"],
             full_list: false,
+            volatile: false,
         }],
         cwd: CRAWLER,
         python: CRAWLER_PYTHON,
@@ -83,7 +90,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "fred",
         fetch: &[],
-        builds: &[Build { name: "fred", argv: &["{python}", "-m", "crawler", "refresh", "fred", "--out", "{out}"], full_list: false }],
+        builds: &[Build { name: "fred", argv: &["{python}", "-m", "crawler", "refresh", "fred", "--out", "{out}"], full_list: false, volatile: true }],
         cwd: CRAWLER,
         python: CRAWLER_PYTHON,
         memory_bytes: CRAWLER_MEMORY,

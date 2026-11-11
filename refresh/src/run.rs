@@ -162,8 +162,8 @@ pub fn last_ok(root: &Path, source: &str) -> String {
 }
 
 pub struct Hooks<'a> {
-    pub publish: &'a dyn Fn(&Path, &Path) -> Result<String>,
-    pub hide: &'a dyn Fn(&str, &[String]) -> Result<()>,
+    pub publish: &'a (dyn Fn(&Path, &Path) -> Result<String> + Sync),
+    pub hide: &'a (dyn Fn(&str, &[String]) -> Result<()> + Sync),
 }
 
 pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &str, reuse: Option<&Path>, hooks: &Hooks) -> Result<Value> {
@@ -213,15 +213,32 @@ pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &st
         diffs.push((i, counts, out));
     }
     let mut builds = serde_json::Map::new();
-    for (i, mut counts, out) in diffs {
+    let published: Vec<Result<String>> = std::thread::scope(|scope| {
+        let waits: Vec<_> = diffs
+            .iter()
+            .map(|(_, counts, out)| {
+                let send = !dry_run && counts.new + counts.changed > 0;
+                scope.spawn(move || if send { (hooks.publish)(out, root) } else { Ok(String::new()) })
+            })
+            .collect();
+        waits.into_iter().map(|w| w.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a publish thread panicked")))).collect()
+    });
+    let mut failed = Vec::new();
+    for ((i, mut counts, _), sent) in diffs.into_iter().zip(published) {
         let build = &source.builds[i];
-        if !dry_run {
-            if counts.new + counts.changed > 0 {
-                counts.published = (hooks.publish)(&out, root)?;
+        match sent {
+            Ok(line) => {
+                counts.published = line;
+                if !dry_run {
+                    diff::keep(&mut con, build, &counts, &run, &as_of)?;
+                }
             }
-            diff::keep(&mut con, build, &counts, &run, &as_of)?;
+            Err(e) => failed.push(format!("{}: {e:#}", build.name)),
         }
         builds.insert(build.name.to_string(), serde_json::to_value(&counts)?);
+    }
+    if !failed.is_empty() {
+        bail!("{}", failed.join("; "));
     }
     let hidden = diff::hidden_urls(&con)?;
     if !dry_run {
