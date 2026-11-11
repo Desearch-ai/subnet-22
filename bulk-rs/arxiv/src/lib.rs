@@ -12,7 +12,7 @@ mod harvest;
 mod kaggle;
 mod oai;
 
-pub use harvest::{harvest_with, resumption_token, urlencode, OAI, TRIES};
+pub use harvest::{harvest_with, oai_error, resumption_token, urlencode, BUSY_TRIES, NO_RECORDS, OAI, TRIES};
 pub use kaggle::{kaggle_date, kaggle_record, kaggle_records};
 pub use oai::{oai_papers, oai_records, papers_in, OaiItem, ARXIV_NS, OAI_NS};
 

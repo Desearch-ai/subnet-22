@@ -118,3 +118,44 @@ fn a_page_that_is_not_xml_is_saved_then_fails() {
     assert!(harvest_with(tmp.path(), "2026-11-01", "2026-11-02", AGENT, &base, Duration::ZERO).is_err());
     assert_eq!(std::fs::read(tmp.path().join("oai-000001.xml")).unwrap(), b"<html>");
 }
+
+fn oai_error_page(code: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<OAI-PMH xmlns=\"http://www.openarchives.org/OAI/2.0/\"><responseDate>2026-11-11T13:00:00Z</responseDate><request verb=\"ListRecords\">https://oaipmh.arxiv.org/oai</request><error code=\"{code}\">says {code}</error></OAI-PMH>\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_range_with_no_changes_ends_after_its_one_page() {
+    let (base, _seen) = serve(vec![Some((200, vec![], oai_error_page("noRecordsMatch")))]);
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(harvest_with(tmp.path(), "2026-11-07", "2026-11-07", AGENT, &base, Duration::ZERO).unwrap(), 1);
+    assert!(tmp.path().join("oai-000001.xml").exists());
+}
+
+#[test]
+fn any_other_oai_error_fails_the_harvest() {
+    let (base, _seen) = serve(vec![Some((200, vec![], oai_error_page("badArgument")))]);
+    let tmp = tempfile::tempdir().unwrap();
+    let error = harvest_with(tmp.path(), "2026-11-12", "2026-11-10", AGENT, &base, Duration::ZERO).unwrap_err();
+    assert!(error.to_string().contains("badArgument"), "{error:#}");
+}
+
+#[test]
+fn no_records_after_the_first_page_fails_the_harvest() {
+    let one = std::fs::read(data("oai-1.xml")).unwrap();
+    let (base, _seen) = serve(vec![Some((200, vec![], one)), Some((200, vec![], oai_error_page("noRecordsMatch")))]);
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(harvest_with(tmp.path(), "2026-11-01", "2026-11-02", AGENT, &base, Duration::ZERO).is_err());
+}
+
+#[test]
+fn an_endpoint_that_stays_busy_fails_the_harvest() {
+    let replies = (0..bulk_arxiv::BUSY_TRIES).map(|_| Some((503, vec![("Retry-After", "0")], b"busy".to_vec()))).collect();
+    let (base, _seen) = serve(replies);
+    let tmp = tempfile::tempdir().unwrap();
+    let error = harvest_with(tmp.path(), "2026-11-01", "2026-11-02", AGENT, &base, Duration::ZERO).unwrap_err();
+    assert!(error.to_string().contains("503"), "{error:#}");
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+}

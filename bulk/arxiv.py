@@ -25,6 +25,8 @@ OAI = "https://oaipmh.arxiv.org/oai"
 NS = {"o": "http://www.openarchives.org/OAI/2.0/", "a": "http://arxiv.org/OAI/arXiv/"}
 # arXiv's robots.txt asks for 15 s between requests; OAI-PMH asks for 3 s and sends Retry-After when busy.
 DELAY_S = 15.0
+BUSY_TRIES = 60
+NO_RECORDS = "noRecordsMatch"
 SITE = "arXiv"
 # Licences under which a commercial index may keep and show a paper's full text.
 OPEN = frozenset(
@@ -95,7 +97,7 @@ def harvest(out: Path, since: str, until: str, user_agent: str) -> int:
         "from": since,
         "until": until,
     }
-    pages = 0
+    pages = busy = 0
     while True:
         request = urllib.request.Request(
             f"{OAI}?{urllib.parse.urlencode(query)}", headers={"User-Agent": user_agent}
@@ -105,12 +107,21 @@ def harvest(out: Path, since: str, until: str, user_agent: str) -> int:
                 body = response.read()
         except urllib.error.HTTPError as error:
             if error.code in (429, 503):
+                busy += 1
+                if busy >= BUSY_TRIES:
+                    raise
                 time.sleep(float(error.headers.get("Retry-After") or 60))
                 continue
             raise
         pages += 1
         (out / f"oai-{pages:06d}.xml").write_bytes(body)
-        token = etree.fromstring(body).find(".//o:resumptionToken", NS)
+        root = etree.fromstring(body)
+        error = root.find(".//o:error", NS)
+        if error is not None:
+            if error.get("code") == NO_RECORDS and pages == 1:
+                return pages
+            raise RuntimeError(f"OAI-PMH error {error.get('code')} on page {pages}: {(error.text or '').strip()}")
+        token = root.find(".//o:resumptionToken", NS)
         if token is None or not (token.text or "").strip():
             return pages
         query = {"verb": "ListRecords", "resumptionToken": token.text.strip()}

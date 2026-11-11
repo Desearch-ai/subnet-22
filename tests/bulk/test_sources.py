@@ -157,6 +157,8 @@ def test_pmc_bucket_reads_keep_only_a_few_articles_ahead_of_the_reader():
 def test_pmc_bucket_reads_retry_server_errors_and_skip_versions_gone_since_the_inventory(monkeypatch):
     import http.client
     import io
+
+    import pytest
     import urllib.error
 
     calls = {}
@@ -454,3 +456,25 @@ def test_batch_files_hold_the_upload_schema(tmp_path):
         pq.read_schema(tmp_path / "run" / "arxiv-000001.parquet").remove_metadata()
         == PAGE_SCHEMA.remove_metadata()
     )
+
+
+def test_arxiv_harvest_ends_on_no_records_and_fails_on_other_oai_errors(tmp_path, monkeypatch):
+    import io
+
+    import pytest
+
+    from bulk import arxiv
+
+    def page(code):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?><OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">'
+            f'<error code="{code}">says {code}</error></OAI-PMH>'
+        ).encode()
+
+    replies = []
+    monkeypatch.setattr(arxiv.urllib.request, "urlopen", lambda request, timeout: io.BytesIO(replies.pop(0)))
+    replies.append(page("noRecordsMatch"))
+    assert arxiv.harvest(tmp_path / "none", "2026-11-07", "2026-11-07", "test") == 1
+    replies.append(page("badArgument"))
+    with pytest.raises(RuntimeError, match="badArgument"):
+        arxiv.harvest(tmp_path / "bad", "2026-11-12", "2026-11-10", "test")
