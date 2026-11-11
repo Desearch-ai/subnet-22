@@ -1,0 +1,20 @@
+[package]
+name = "bulk"
+description = "bulk: turn one bulk source into a folder of batch files for `publisher bulk`"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bulk"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bulk-arxiv.workspace = true
+bulk-arxiv-text.workspace = true
+bulk-core.workspace = true
+bulk-pmc.workspace = true
+bulk-pubmed.workspace = true
+clap.workspace = true
