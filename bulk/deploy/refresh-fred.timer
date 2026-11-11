@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly refresh of the FRED series pages
+
+[Timer]
+OnCalendar=*-*-01 04:00:00 UTC
+Unit=refresh@fred.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

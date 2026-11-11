@@ -8,6 +8,7 @@ import glob
 import hashlib
 import json
 import os
+import resource
 import sqlite3
 import subprocess
 import sys
@@ -54,6 +55,9 @@ class Source:
     fetch: tuple[tuple[str, ...], ...]
     builds: tuple[Build, ...]
     cwd: str = ""
+    python: str = ""
+    memory_bytes: int = 0
+    timeout_s: int = COMMAND_TIMEOUT_S
 
 
 def bulk_build(command: str, *inputs: str) -> tuple[str, ...]:
@@ -86,7 +90,33 @@ ARXIV = Source(
     fetch=(("{python}", "-m", "bulk", "arxiv-harvest", "--out", "{work}/oai", "--from", "{since}", "--until", "{until}"),),
     builds=(Build("arxiv", bulk_build("arxiv", "{work}/oai/*.xml"), full_list=False),),
 )
-SOURCES = {source.name: source for source in (BITTENSOR, ARXIV)}
+CRAWLER = "~/desearch-engine.v8"
+CRAWLER_PYTHON = "~/venv/bin/python"
+CRAWLER_MEMORY = 4 << 30
+EDGAR = Source(
+    "edgar",
+    fetch=(),
+    builds=(
+        Build(
+            "edgar",
+            ("{python}", "-m", "crawler", "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "1"),
+            full_list=False,
+        ),
+    ),
+    cwd=CRAWLER,
+    python=CRAWLER_PYTHON,
+    memory_bytes=CRAWLER_MEMORY,
+)
+FRED = Source(
+    "fred",
+    fetch=(),
+    builds=(Build("fred", ("{python}", "-m", "crawler", "refresh", "fred", "--out", "{out}"), full_list=False),),
+    cwd=CRAWLER,
+    python=CRAWLER_PYTHON,
+    memory_bytes=CRAWLER_MEMORY,
+    timeout_s=80 * 3600,
+)
+SOURCES = {source.name: source for source in (BITTENSOR, ARXIV, EDGAR, FRED)}
 
 
 class Refused(RuntimeError):
@@ -221,14 +251,24 @@ def hidden_urls(con: sqlite3.Connection) -> list[str]:
 
 def expand(part: str, values: dict[str, str]) -> list[str]:
     """One argument filled in; a path with a wildcard becomes the files it matches."""
-    filled = part.format(python=sys.executable, **values)
+    filled = part.format(**{"python": sys.executable, **values})
     if filled.startswith("/") and any(c in filled for c in "*?["):
         return sorted(glob.glob(filled)) or [filled]
     return [filled]
 
 
-def run_command(argv: tuple[str, ...], values: dict[str, str], log: Path, cwd: Path = REPO) -> None:
+def run_command(argv: tuple[str, ...], values: dict[str, str], log: Path, source: Source | None = None) -> None:
+    source = source or Source("", (), ())
+    cwd = Path(source.cwd).expanduser() if source.cwd else REPO
+    if source.python:
+        values = {**values, "python": str(Path(source.python).expanduser())}
     command = [arg for part in argv for arg in expand(part, values)]
+    limit = source.memory_bytes
+
+    def cap_memory() -> None:
+        if limit and sys.platform.startswith("linux"):
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+
     with log.open("a") as out:
         out.write(f"$ {' '.join(command)}\n")
         out.flush()
@@ -238,7 +278,8 @@ def run_command(argv: tuple[str, ...], values: dict[str, str], log: Path, cwd: P
             stdout=out,
             stderr=subprocess.STDOUT,
             check=True,
-            timeout=COMMAND_TIMEOUT_S,
+            timeout=source.timeout_s,
+            preexec_fn=cap_memory,
         )
 
 
@@ -314,17 +355,16 @@ def refresh(
         "since": since,
         "until": as_of.strftime("%Y-%m-%d"),
     }
-    cwd = Path(source.cwd).expanduser() if source.cwd else REPO
     for argv in source.fetch:
-        run_command(argv, values, log, cwd)
+        run_command(argv, values, log, source)
     con = open_state(root / "state" / f"{source.name}.sqlite")
     diffs: dict[str, tuple[Build, Counts, Path]] = {}
     for build in source.builds:
         folder = work / "build" / build.name
-        run_command(build.argv, {**values, "out": str(folder)}, log, cwd)
+        run_command(build.argv, {**values, "out": str(folder)}, log, source)
         out = work / "publish" / f"refresh-{build.name}-{run}"
         out.parent.mkdir(parents=True, exist_ok=True)
-        diffs[build.name] = (build, diff(con, build, folder, out, run, as_of), out)
+        diffs[build.name] = (build, diff(con, build, folder, out, f"{build.name}-{run}", as_of), out)
     report = {"source": source.name, "run": run, "as_of": values["as_of"], "since": since, "dry_run": dry_run, "builds": {}}
     for name, (build, counts, out) in diffs.items():
         if not dry_run:
@@ -410,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     root.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    with (root / "lock").open("w") as lock:
+    with (root / f"{source.name}.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             report = refresh(source, root, a.dry_run, since=a.since)

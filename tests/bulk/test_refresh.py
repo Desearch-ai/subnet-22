@@ -270,3 +270,10 @@ def test_the_discord_line_says_what_was_published_or_why_not():
     )
     bad = {"source": "arxiv", "ok": False, "refused": True, "error": "Refused('short')", "seconds": 3}
     assert refresh.summary(bad) == "⚠️ refresh arxiv refused after 3 s: Refused('short')"
+
+
+def test_a_source_runs_in_its_own_folder_with_its_own_python(tmp_path):
+    log = tmp_path / "log.txt"
+    source = refresh.Source("x", (), (), cwd=str(tmp_path), python=sys.executable, memory_bytes=8 << 30)
+    refresh.run_command(("{python}", "-c", "import os; print(os.getcwd())"), {}, log, source)
+    assert log.read_text().splitlines()[-1] == str(tmp_path.resolve())
