@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ RECEIPTS = "receipts"
 READY = ".ready"
 RECEIPT_POLL_S = 30
 HIDE_SSH = "refresh-hide"
+STATUS = "status.jsonl"
 MIN_SEEN_SHARE = 0.95
 LARGE_SHARE = 0.30
 COMMAND_TIMEOUT_S = 6 * 3600
@@ -48,10 +50,12 @@ class Source:
     name: str
     fetch: tuple[tuple[str, ...], ...]
     builds: tuple[Build, ...]
+    cwd: str = ""
 
 
 def bulk_build(command: str, *inputs: str) -> tuple[str, ...]:
     return (
+        "{python}",
         "-m",
         "bulk",
         command,
@@ -67,14 +71,19 @@ def bulk_build(command: str, *inputs: str) -> tuple[str, ...]:
 
 BITTENSOR = Source(
     "bittensor",
-    fetch=(("-m", "bulk", "bittensor-fetch", "--out", "{work}/src"),),
+    fetch=(("{python}", "-m", "bulk", "bittensor-fetch", "--out", "{work}/src"),),
     builds=(
         Build("subnets", bulk_build("subnets", "{work}/src/subnets-chain.json")),
         Build("subnet-sites", bulk_build("subnet-sites", "{work}/src/sites")),
         Build("subnet-github", bulk_build("subnet-github", "{work}/src/github")),
     ),
 )
-SOURCES = {source.name: source for source in (BITTENSOR,)}
+ARXIV = Source(
+    "arxiv",
+    fetch=(("{python}", "-m", "bulk", "arxiv-harvest", "--out", "{work}/oai", "--from", "{since}", "--until", "{until}"),),
+    builds=(Build("arxiv", bulk_build("arxiv", "{work}/oai/*.xml"), full_list=False),),
+)
+SOURCES = {source.name: source for source in (BITTENSOR, ARXIV)}
 
 
 class Refused(RuntimeError):
@@ -207,14 +216,22 @@ def hidden_urls(con: sqlite3.Connection) -> list[str]:
     ]
 
 
-def run_command(argv: tuple[str, ...], values: dict[str, str], log: Path) -> None:
-    command = [sys.executable, *(part.format(**values) for part in argv)]
+def expand(part: str, values: dict[str, str]) -> list[str]:
+    """One argument filled in; a path with a wildcard becomes the files it matches."""
+    filled = part.format(python=sys.executable, **values)
+    if filled.startswith("/") and any(c in filled for c in "*?["):
+        return sorted(glob.glob(filled)) or [filled]
+    return [filled]
+
+
+def run_command(argv: tuple[str, ...], values: dict[str, str], log: Path, cwd: Path = REPO) -> None:
+    command = [arg for part in argv for arg in expand(part, values)]
     with log.open("a") as out:
         out.write(f"$ {' '.join(command)}\n")
         out.flush()
         subprocess.run(
             command,
-            cwd=REPO,
+            cwd=cwd,
             stdout=out,
             stderr=subprocess.STDOUT,
             check=True,
@@ -261,10 +278,28 @@ def hide(source: str, urls: list[str]) -> None:
         )
 
 
+def last_ok(root: Path, source: str) -> str:
+    """The as-of time of the source's last run that published, or ""."""
+    path, last = root / STATUS, ""
+    if path.exists():
+        for line in path.read_text().splitlines():
+            entry = json.loads(line)
+            if entry.get("source") == source and entry.get("ok") and not entry.get("dry_run"):
+                last = max(last, entry.get("as_of", ""))
+    return last
+
+
 def refresh(
-    source: Source, root: Path, dry_run: bool = False, now: datetime | None = None
+    source: Source,
+    root: Path,
+    dry_run: bool = False,
+    now: datetime | None = None,
+    since: str = "",
 ) -> dict:
     as_of = (now or datetime.now(timezone.utc)).replace(microsecond=0)
+    since = since or last_ok(root, source.name)[:10]
+    if not since and any("{since}" in part for argv in source.fetch for part in argv):
+        raise Refused(f"{source.name} has no run that published yet; give its first run --since")
     run = as_of.strftime("%Y%m%d-%H%M")
     work = root / "work" / source.name / run
     work.mkdir(parents=True, exist_ok=False)
@@ -273,18 +308,21 @@ def refresh(
         "work": str(work),
         "as_of": as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "run": run,
+        "since": since,
+        "until": as_of.strftime("%Y-%m-%d"),
     }
+    cwd = Path(source.cwd).expanduser() if source.cwd else REPO
     for argv in source.fetch:
-        run_command(argv, values, log)
+        run_command(argv, values, log, cwd)
     con = open_state(root / "state" / f"{source.name}.sqlite")
     diffs: dict[str, tuple[Build, Counts, Path]] = {}
     for build in source.builds:
         folder = work / "build" / build.name
-        run_command(build.argv, {**values, "out": str(folder)}, log)
+        run_command(build.argv, {**values, "out": str(folder)}, log, cwd)
         out = work / "publish" / f"refresh-{build.name}-{run}"
         out.parent.mkdir(parents=True, exist_ok=True)
         diffs[build.name] = (build, diff(con, build, folder, out, run, as_of), out)
-    report = {"source": source.name, "run": run, "dry_run": dry_run, "builds": {}}
+    report = {"source": source.name, "run": run, "as_of": values["as_of"], "since": since, "dry_run": dry_run, "builds": {}}
     for name, (build, counts, out) in diffs.items():
         if not dry_run:
             if counts.new + counts.changed:
@@ -319,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fetch, build and diff, but publish and hide nothing",
     )
+    one.add_argument("--since", default="", help="first day to fetch, YYYY-MM-DD; the last published run's day by default")
     first = commands.add_parser(
         "seed", help="record runs already published, before a source's first refresh"
     )
@@ -344,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     with (root / "lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            report = refresh(source, root, a.dry_run)
+            report = refresh(source, root, a.dry_run, since=a.since)
             report["ok"] = True
         except Exception as e:
             report = {
@@ -355,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         report["seconds"] = round(time.time() - started)
         report["finished"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with (root / "status.jsonl").open("a") as status:
+        with (root / STATUS).open("a") as status:
             status.write(json.dumps(report) + "\n")
     print(json.dumps(report, indent=1))
     return 0 if report["ok"] else 1

@@ -86,6 +86,8 @@ only the pages that are new or changed since the last run, publishes them and hi
   minutes, publishes it with `publish-one.sh` and sends the output back as a receipt in `~/refresh/receipts`.
 - **Hide:** pages a source dropped go to index-1 as exact-path rules in the source's own section of
   `hidden-urls.txt` (`refresh_hidden.py`), rewritten whole each run, so a page that comes back is shown again.
+- **Incremental sources** such as arXiv fetch from `{since}`, the day of their last run that published, to `{until}`,
+  today. A first run takes `--since`.
 - **Report:** one JSON line a run in `~/refresh/status.jsonl`.
 
 `deploy/` holds the crawler box's `refresh@.service` and timers, the planner box's `refresh-pull` and the crawler

@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -147,6 +148,7 @@ def test_a_large_change_is_flagged_and_removed_txt_counts(tmp_path):
 def test_refresh_runs_the_commands_publishes_and_hides(tmp_path, monkeypatch):
     src = run_folder(tmp_path / "prepared", urls(3))
     copy = (
+        "{python}",
         "-c",
         "import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2])",
         str(src),
@@ -172,6 +174,7 @@ def test_refresh_runs_the_commands_publishes_and_hides(tmp_path, monkeypatch):
 def test_dry_run_publishes_and_records_nothing(tmp_path, monkeypatch):
     src = run_folder(tmp_path / "prepared", urls(3))
     copy = (
+        "{python}",
         "-c",
         "import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2])",
         str(src),
@@ -230,3 +233,27 @@ def test_a_failed_publish_raises(tmp_path, monkeypatch):
     (tmp_path / "receipts" / "refresh-subnets-x.txt").write_text("rc=1\nerror: no room\n")
     with pytest.raises(RuntimeError, match="no room"):
         refresh.publish(folder, tmp_path)
+
+
+def test_an_incremental_source_fetches_from_the_last_published_run(tmp_path, monkeypatch):
+    src = run_folder(tmp_path / "prepared", urls(2))
+    record = ("{python}", "-c", "import sys; open(sys.argv[1], 'a').write(sys.argv[2] + ' ' + sys.argv[3] + '\\n')", str(tmp_path / "calls"), "{since}", "{until}")
+    copy = ("{python}", "-c", "import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2])", str(src) + "/../prepared", "{out}")
+    source = refresh.Source("inc", fetch=(record,), builds=(refresh.Build("arxiv", copy, full_list=False),))
+    monkeypatch.setattr(refresh, "publish", lambda folder, root: "rc=0")
+    monkeypatch.setattr(refresh, "hide", lambda name, u: None)
+    home = tmp_path / "home"
+
+    with pytest.raises(refresh.Refused):
+        refresh.refresh(source, home, now=DAY2)
+    report = refresh.refresh(source, home, now=DAY2, since="2026-11-10")
+    (home / refresh.STATUS).write_text(json.dumps({**report, "ok": True}) + "\n")
+    refresh.refresh(source, home, now=datetime(2026, 11, 17, tzinfo=timezone.utc))
+    assert (tmp_path / "calls").read_text() == "2026-11-10 2026-11-16\n2026-11-16 2026-11-17\n"
+
+
+def test_wildcard_paths_expand_to_the_files_they_match(tmp_path):
+    for name in ("b.xml", "a.xml", "c.txt"):
+        (tmp_path / name).write_text("")
+    assert refresh.expand("{work}/*.xml", {"work": str(tmp_path)}) == [str(tmp_path / "a.xml"), str(tmp_path / "b.xml")]
+    assert refresh.expand("{python}", {}) == [sys.executable]
