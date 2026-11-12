@@ -78,17 +78,20 @@ impl Db {
             let (done, result) = oneshot::channel();
             let job: Job = Box::new(move |conn| {
                 let started = Instant::now();
+                let waited = started - queued;
                 // Immediate, so a second copy of the API writing the same file waits its turn instead of failing.
                 let outcome = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(anyhow::Error::from).and_then(|tx| {
                     let value = work(&tx)?;
                     tx.commit()?;
                     Ok(value)
                 });
-                note_slow("write", "writer", caller, started - queued, started.elapsed());
-                let _ = done.send(outcome);
+                note_slow("write", "writer", caller, waited, started.elapsed());
+                let _ = done.send((outcome, waited));
             });
             self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
-            result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
+            let (outcome, waited) = result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?;
+            crate::http::note_db_wait(waited);
+            outcome
         }
     }
 }
@@ -145,7 +148,7 @@ impl Reader {
             let (done, result) = oneshot::channel();
             let job: Job = Box::new(move |conn| {
                 let started = Instant::now();
-                let _ = done.send(work(conn));
+                let _ = done.send((work(conn), started - queued));
                 note_slow("read", &pool, caller, started - queued, started.elapsed());
                 waiting.fetch_sub(1, Ordering::SeqCst);
             });
@@ -153,7 +156,9 @@ impl Reader {
                 self.waiting.fetch_sub(1, Ordering::SeqCst);
                 return Err(anyhow!("the SQLite reader stopped"));
             }
-            result.await.map_err(|_| anyhow!("the SQLite reader stopped"))?
+            let (outcome, waited) = result.await.map_err(|_| anyhow!("the SQLite reader stopped"))?;
+            crate::http::note_db_wait(waited);
+            outcome
         }
     }
 }

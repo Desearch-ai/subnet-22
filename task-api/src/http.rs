@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, MatchedPath, Request, State as Shared};
@@ -29,6 +30,9 @@ pub const CLAIM_PATH: &str = "/v1/tasks/claim";
 const SLOW_INSIDE_S: f64 = 5.0;
 /// Requests signed this long before they arrived are counted too: they were slow on the way here.
 const LATE_ARRIVAL_S: f64 = 10.0;
+/// Requests that took this long get a line of their own.
+const SLOW_LINE_S: f64 = 1.0;
+const SLOW_LINES_PER_MINUTE: u64 = 300;
 
 pub enum ApiError {
     Status {
@@ -156,10 +160,51 @@ async fn limit_body(request: Request, next: Next) -> Response {
         return too_large(limit);
     }
     let (parts, body) = request.into_parts();
-    match to_bytes(body, limit).await {
+    let reading = Instant::now();
+    let read = to_bytes(body, limit).await;
+    note(|spent| {
+        spent.body_us.store(reading.elapsed().as_micros() as u64, Ordering::Relaxed);
+        spent.body_bytes.store(read.as_ref().map_or(0, |bytes| bytes.len() as u64), Ordering::Relaxed);
+    });
+    match read {
         Ok(bytes) => next.run(Request::from_parts(parts, Body::from(bytes))).await,
         Err(_) => too_large(limit),
     }
+}
+
+/// Where one request's time went, filled in by the layers and database calls that serve it.
+#[derive(Default)]
+pub struct Spent {
+    body_bytes: AtomicU64,
+    body_us: AtomicU64,
+    db_wait_us: AtomicU64,
+}
+
+tokio::task_local! {
+    static SPENT: Arc<Spent>;
+}
+
+fn note(fill: impl FnOnce(&Spent)) {
+    let _ = SPENT.try_with(|spent| fill(spent));
+}
+
+/// Time a database call of this request waited for its connection.
+pub fn note_db_wait(waited: Duration) {
+    note(|spent| {
+        spent.db_wait_us.fetch_add(waited.as_micros() as u64, Ordering::Relaxed);
+    });
+}
+
+fn slow_line(route: &str, via: &str, status: u16, spent: &Spent, took: f64) -> String {
+    let ms = |us: &AtomicU64| us.load(Ordering::Relaxed) / 1000;
+    let total = (took * 1000.0) as u64;
+    let body = ms(&spent.body_us);
+    format!(
+        "slow request: {route} via {via} status {status}, body {} bytes, {total} ms in all: reading the body {body} ms, handling {} ms, of it waiting for the database {} ms",
+        spent.body_bytes.load(Ordering::Relaxed),
+        total.saturating_sub(body),
+        ms(&spent.db_wait_us),
+    )
 }
 
 pub fn peer(request: &Request) -> String {
@@ -203,6 +248,7 @@ struct Minute {
     answered: u64,
     slow: HashMap<String, (u64, f64)>,
     late: (u64, f64),
+    lines: u64,
 }
 
 static MINUTE: LazyLock<Mutex<Minute>> = LazyLock::new(Mutex::default);
@@ -214,7 +260,10 @@ async fn time_requests(request: Request, next: Next) -> Response {
     let route = request.extensions().get::<MatchedPath>().map_or_else(|| "unrouted".to_string(), |path| path.as_str().to_string());
     let route = format!("{} {route}", request.method());
     let signed = request.headers().get("X-Timestamp").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok());
-    let response = next.run(request).await;
+    let headers = request.headers();
+    let via = if headers.contains_key("CF-Ray") || headers.contains_key(crate::auth::CLIENT_ADDRESS_HEADER) { "cloudflare" } else { "direct" };
+    let spent = Arc::new(Spent::default());
+    let response = SPENT.scope(spent.clone(), next.run(request)).await;
     let took = started.elapsed().as_secs_f64();
     let mut minute = MINUTE.lock().expect("request minute");
     let now = (desearch::time::now() / 60.0) as i64;
@@ -234,6 +283,14 @@ async fn time_requests(request: Request, next: Next) -> Response {
         *minute = Minute { at: now, ..Minute::default() };
     }
     minute.answered += 1;
+    if took >= SLOW_LINE_S {
+        minute.lines += 1;
+        if minute.lines <= SLOW_LINES_PER_MINUTE {
+            eprintln!("{}", slow_line(&route, via, response.status().as_u16(), &spent, took));
+        } else if minute.lines == SLOW_LINES_PER_MINUTE + 1 {
+            eprintln!("slow request lines: over {SLOW_LINES_PER_MINUTE} this minute, the rest are only counted");
+        }
+    }
     if took >= SLOW_INSIDE_S {
         let (count, worst) = minute.slow.entry(route).or_default();
         *count += 1;
@@ -306,6 +363,31 @@ mod tests {
         assert!(redis_down(&read_only));
         let wrong = redis::parse_redis_value(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n").unwrap().extract_error().unwrap_err();
         assert!(!redis_down(&wrong));
+    }
+
+    #[test]
+    fn a_slow_line_splits_the_time_between_the_body_and_the_handler() {
+        let spent = Spent::default();
+        spent.body_bytes.store(900_000, Ordering::Relaxed);
+        spent.body_us.store(6_100_000, Ordering::Relaxed);
+        spent.db_wait_us.store(250_000, Ordering::Relaxed);
+        assert_eq!(
+            slow_line("POST /v1/tasks/{task_id}/complete", "cloudflare", 200, &spent, 6.5),
+            "slow request: POST /v1/tasks/{task_id}/complete via cloudflare status 200, body 900000 bytes, 6500 ms in all: reading the body 6100 ms, handling 400 ms, of it waiting for the database 250 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_waits_add_up_inside_the_request_and_are_ignored_outside_it() {
+        note_db_wait(Duration::from_millis(5));
+        let spent = Arc::new(Spent::default());
+        SPENT
+            .scope(spent.clone(), async {
+                note_db_wait(Duration::from_millis(30));
+                note_db_wait(Duration::from_millis(20));
+            })
+            .await;
+        assert_eq!(spent.db_wait_us.load(Ordering::Relaxed), 50_000);
     }
 
     #[test]
