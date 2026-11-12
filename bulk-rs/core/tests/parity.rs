@@ -358,3 +358,31 @@ fn an_empty_run_has_a_manifest_and_no_files() {
     assert!(!args.out.join("removed.txt").exists());
     assert_eq!((summary.files, summary.rows, summary.removed), (0, 0, 0));
 }
+
+#[test]
+fn diff_by_url_ignores_order_and_the_named_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, order: &[usize], fetched: i64, changed: Option<usize>| {
+        let out = dir.path().join(name);
+        let mut batches = Batches::with_rows_per_file(&out, "edgar", name, 0, 2).unwrap();
+        for &i in order {
+            let mut page = Page { title: format!("t{i}"), text: format!("text {i}"), ..Page::default() };
+            if changed == Some(i) {
+                page.text.push_str(" changed");
+            }
+            batches.add(upload_row(&format!("https://x/{i}"), page, fetched, "text/html")).unwrap();
+        }
+        batches.close(&Counts::default()).unwrap();
+        out
+    };
+    let a = write("a", &[0, 1, 2, 3], 10, None);
+    let b = write("b", &[3, 1, 0, 2], 99, None);
+    let ignore = vec!["fetched_at".to_string()];
+    assert!(bulk_core::runs::diff_by_url(&a, &b, &ignore, 5).unwrap().same());
+    assert!(!bulk_core::runs::diff_by_url(&a, &b, &[], 5).unwrap().same());
+    let c = write("c", &[2, 0, 1], 10, Some(1));
+    let found = bulk_core::runs::diff_by_url(&a, &c, &ignore, 5).unwrap();
+    assert_eq!(found.rows_differing, 2);
+    assert!(found.examples.iter().any(|e| e.starts_with("https://x/1: text (+1 columns)")), "{:?}", found.examples);
+    assert!(found.examples.iter().any(|e| e == "https://x/3: only in a"), "{:?}", found.examples);
+}

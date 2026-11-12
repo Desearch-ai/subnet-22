@@ -1,5 +1,6 @@
 //! `bulk diff`: whether two run folders hold the same manifest and the same rows, column by column.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,13 @@ pub struct DiffArgs {
     /// Differing rows to describe.
     #[arg(long, default_value_t = 20)]
     pub show: usize,
+    /// Match rows by URL instead of by place, for runs whose rows come in no fixed order; the run name, as-of time and
+    /// file names are then not compared.
+    #[arg(long = "by-url")]
+    pub by_url: bool,
+    /// Columns left out of the comparison, such as fetch times, with --by-url.
+    #[arg(long, value_delimiter = ',')]
+    pub ignore: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -278,9 +286,125 @@ fn first_difference(a: &RecordBatch, i: usize, b: &RecordBatch, j: usize) -> Opt
     found.map(|(column, x, y)| if more > 0 { (format!("{column} (+{more} columns)"), x, y) } else { (column, x, y) })
 }
 
+/// A cell's value, owned so rows from both runs can be held together.
+#[derive(Clone, Debug, PartialEq)]
+enum Owned {
+    Null,
+    Text(String),
+    Bytes(Vec<u8>),
+    Int(i64),
+    Bool(bool),
+    Other(String),
+}
+
+impl Owned {
+    fn of(cell: &Cell) -> Owned {
+        match cell {
+            Cell::Null => Owned::Null,
+            Cell::Text(s) => Owned::Text(s.to_string()),
+            Cell::Bytes(b) => Owned::Bytes(b.to_vec()),
+            Cell::Int(n) => Owned::Int(*n),
+            Cell::Bool(b) => Owned::Bool(*b),
+            Cell::Other(s) => Owned::Other(s.clone()),
+        }
+    }
+
+    fn cell(&self) -> Cell<'_> {
+        match self {
+            Owned::Null => Cell::Null,
+            Owned::Text(s) => Cell::Text(s),
+            Owned::Bytes(b) => Cell::Bytes(b),
+            Owned::Int(n) => Cell::Int(*n),
+            Owned::Bool(b) => Cell::Bool(*b),
+            Owned::Other(s) => Cell::Other(s.clone()),
+        }
+    }
+}
+
+type ByUrl = BTreeMap<String, Vec<(String, Owned)>>;
+
+/// Every row of a run by URL, without the ignored columns; a URL listed twice is a difference.
+fn rows_by_url(run: &Run, ignore: &[String], side: &str, differences: &mut Vec<String>) -> Result<(ByUrl, u64)> {
+    let mut found = ByUrl::new();
+    let mut count = 0;
+    for name in files(run) {
+        let mut rows = file_rows(&run.root, &name, side, differences)?;
+        while let Some((batch, i)) = rows.next()? {
+            count += 1;
+            let mut url = None;
+            let mut values = Vec::new();
+            for (index, field) in batch.schema().fields().iter().enumerate() {
+                let value = Owned::of(&cell(batch.column(index).as_ref(), i));
+                if field.name() == "url" {
+                    url = Some(match &value {
+                        Owned::Text(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    });
+                }
+                if !ignore.iter().any(|c| c == field.name()) {
+                    values.push((field.name().clone(), value));
+                }
+            }
+            let url = url.with_context(|| format!("{name} has no url column"))?;
+            if found.insert(url.clone(), values).is_some() {
+                differences.push(format!("{url} is listed twice in {side}"));
+            }
+        }
+    }
+    Ok((found, count))
+}
+
+/// `diff` with rows matched by URL and the `ignore` columns left out.
+pub fn diff_by_url(a: &Path, b: &Path, ignore: &[String], show: usize) -> Result<Diff> {
+    let (run_a, run_b) = (open_run(a)?, open_run(b)?);
+    let mut out = Diff::default();
+    for field in ["source", "removed", "rows", "counts"] {
+        let (x, y) = (pyjson::dumps(&run_a.manifest[field], None), pyjson::dumps(&run_b.manifest[field], None));
+        if x != y {
+            out.manifest_differences.push(format!("{field}: {} != {}", desearch::text::head(&x, 200), desearch::text::head(&y, 200)));
+        }
+    }
+    let sorted = |run: &Run| -> Result<Option<Vec<String>>> {
+        Ok(removed_lines(run)?.map(|mut lines| {
+            lines.sort();
+            lines
+        }))
+    };
+    if sorted(&run_a)? != sorted(&run_b)? {
+        out.manifest_differences.push(format!("{REMOVED} differs"));
+    }
+    let (rows_a, count_a) = rows_by_url(&run_a, ignore, "a", &mut out.manifest_differences)?;
+    let (rows_b, count_b) = rows_by_url(&run_b, ignore, "b", &mut out.manifest_differences)?;
+    out.rows_a = count_a;
+    out.rows_b = count_b;
+    let note = |out: &mut Diff, text: String| {
+        out.rows_differing += 1;
+        if out.examples.len() < show {
+            out.examples.push(text);
+        }
+    };
+    for (url, values) in &rows_a {
+        let Some(other) = rows_b.get(url) else {
+            note(&mut out, format!("{url}: only in a"));
+            continue;
+        };
+        let differing: Vec<&(String, Owned)> =
+            values.iter().filter(|(column, value)| other.iter().find(|(c, _)| c == column).map(|(_, v)| v) != Some(value)).collect();
+        if let Some((column, value)) = differing.first() {
+            let theirs = other.iter().find(|(c, _)| c == column).map_or(Owned::Null, |(_, v)| v.clone());
+            let more = if differing.len() > 1 { format!(" (+{} columns)", differing.len() - 1) } else { String::new() };
+            note(&mut out, format!("{url}: {column}{more}: {} != {}", shown(&value.cell(), &theirs.cell()), shown(&theirs.cell(), &value.cell())));
+        }
+    }
+    for url in rows_b.keys().filter(|url| !rows_a.contains_key(*url)) {
+        note(&mut out, format!("{url}: only in b"));
+    }
+    Ok(out)
+}
+
 /// Prints the diff as one JSON line; an error when the runs differ.
 pub fn main(args: DiffArgs) -> Result<()> {
-    let found = diff(&args.a, &args.b, args.show)?;
+    let found = if args.by_url { diff_by_url(&args.a, &args.b, &args.ignore, args.show)? } else { diff(&args.a, &args.b, args.show)? };
     let line = json!({
         "a": args.a.to_string_lossy(),
         "b": args.b.to_string_lossy(),
