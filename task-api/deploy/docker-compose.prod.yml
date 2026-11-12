@@ -1,13 +1,9 @@
-# docker compose --env-file .env -f deploy/docker-compose.prod.yml up -d --build
-
-x-app: &app
-  build:
-    context: ../..
-    dockerfile: task-api/Dockerfile
-  restart: unless-stopped
-  logging:
-    driver: json-file
-    options: { max-size: "50m", max-file: "5" }
+# The task API outside a TEE, on a host of our own:
+#   TASK_API_IMAGE_DIGEST=sha256:... docker compose --env-file .env -f deploy/docker-compose.prod.yml up -d
+#
+# It runs the Rust API from the image CI built from a release tag, named by its digest, never a local
+# build: check the digest with task-api/deploy/rebuild.sh or `gh attestation verify` (docs/verify-task-api.md).
+# Production runs in a TEE instead, from task-api/deploy/dstack/ (docs/tee.md); this file is the fallback.
 
 x-r2-env: &r2-env
   CF_R2_ENDPOINT: ${CF_R2_ENDPOINT:?set CF_R2_ENDPOINT}
@@ -21,8 +17,11 @@ x-r2-env: &r2-env
 
 services:
   api:
-    <<: *app
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+    image: ghcr.io/desearch-ai/sn22-task-api@${TASK_API_IMAGE_DIGEST:?set the sha256 digest CI printed for the release}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
     environment:
       <<: *r2-env
       TASK_API_REGISTRY: chain
@@ -39,17 +38,18 @@ services:
     volumes: ["api-data:/data"]
     ports: ["${TASK_API_BIND:-127.0.0.1:8080}:8080"]
     networks: [coolify]
+    # The image's own check, spelled out: /v1/ping answers once the subnet's hotkeys are loaded.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
       start_period: 20s
 
 volumes:
   api-data:
 
-# Redis is its own Coolify resource on this network.
+# Redis is its own Coolify resource on this network. In the TEE it runs inside the CVM instead.
 networks:
   coolify:
     external: true

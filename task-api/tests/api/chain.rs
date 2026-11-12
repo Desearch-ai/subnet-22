@@ -7,10 +7,11 @@ use futures::future::join_all;
 use serde_json::json;
 use task_api::chain::Chain;
 use task_api::registry::{self, Entry};
-use task_api::settings::RegistryMode;
+use task_api::settings::ChainOptions;
+use task_api::settings::{RegistryMode, SeedsMode};
 use task_api::state::State;
 
-use crate::fakechain::FakeChain;
+use crate::fakechain::{hash_of, FakeChain};
 use crate::harness::Harness;
 
 #[tokio::test]
@@ -85,7 +86,7 @@ async fn a_kept_metagraph_lets_a_restarted_copy_serve_while_the_chain_refuses() 
     let fake = FakeChain::start(1_000, 12.0).await;
     fake.refuse(true);
     let h = Harness::start().await;
-    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()) }];
+    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()), incentive: None }];
     h.state.db.run(move |conn| registry::save(conn, &kept)).await.unwrap();
     let mut settings = h.state.settings.clone();
     settings.registry = RegistryMode::Chain { netuid: 22, network: fake.url.clone() };
@@ -107,4 +108,116 @@ async fn with_no_metagraph_yet_a_caller_is_asked_to_come_back() {
     let refused = h.miner.post("/v1/tasks/claim", json!({})).await.unwrap_err();
     assert_eq!(refused.status, 503);
     assert!(started.elapsed() < Duration::from_secs(8), "turned away, not held");
+}
+
+fn quorum(of: usize) -> ChainOptions {
+    ChainOptions { quorum: of, finalized: true, count_on: false, refresh_s: 1.0 }
+}
+
+#[tokio::test]
+async fn a_quorum_takes_the_finalized_head_and_hashes_only_when_enough_endpoints_agree() {
+    let honest = [FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await];
+    let liar = FakeChain::start(5_000, 12.0).await;
+    liar.lie(true);
+    let network = format!("{},{},{}", honest[0].url, liar.url, honest[1].url);
+    let chain = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert_eq!(chain.current_block().await.unwrap(), 4_998, "the finalized head, not the liar's 1000 blocks ahead");
+    assert_eq!(chain.block_hash(4_990).await.unwrap(), Some(hash_of(4_990)), "the two honest endpoints outvote the liar");
+    assert_eq!(chain.block_hash(4_999).await.unwrap(), None, "past the finalized head is not a seed yet");
+
+    honest[1].refuse(true);
+    let alone = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert_eq!(alone.current_block().await.unwrap(), 4_998, "the second highest head is the honest one: a liar can only hold time back");
+    assert_eq!(alone.block_hash(4_980).await.unwrap(), None, "a hash without a quorum is taken as not made yet");
+    honest[0].refuse(true);
+    let none = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert!(none.current_block().await.is_err(), "the liar alone is not a quorum");
+    assert!(Chain::with(&honest[0].url, &quorum(2)).is_err(), "a quorum of two needs two endpoints");
+}
+
+#[tokio::test]
+async fn without_counting_on_the_clock_the_block_only_moves_when_read() {
+    let fake = FakeChain::start(5_000, 0.05).await;
+    let chain = Arc::new(Chain::with(&fake.url, &ChainOptions { quorum: 1, finalized: false, count_on: false, refresh_s: 30.0 }).unwrap());
+    let read = chain.current_block().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chain.current_block().await.unwrap(), read, "blocks passed on the fake chain, but none was read");
+    let counting = Arc::new(Chain::new(&fake.url).unwrap());
+    counting.assume(read, desearch::time::now() - 25.0);
+    assert!(counting.current_block().await.unwrap() > read, "counting on the clock moves it");
+}
+
+#[tokio::test]
+async fn deadlines_run_on_the_finalized_block_never_counted_on_the_clock() {
+    let fake = FakeChain::start(5_000, 0.05).await;
+    let chain = Arc::new(Chain::new(&fake.url).unwrap());
+    let first = chain.finalized_block().await.unwrap();
+    assert!((4_998..=5_000).contains(&first), "{first}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chain.finalized_block().await.unwrap(), first, "read every few seconds, not counted on between reads");
+    assert_eq!(fake.calls("chain_getFinalizedHead"), 1);
+}
+
+#[tokio::test]
+async fn every_copy_and_every_restart_keeps_the_first_anchor() {
+    let fake = FakeChain::start(7_000, 12.0).await;
+    let h = Harness::start().await;
+    let mut settings = h.state.settings.clone();
+    settings.seeds = SeedsMode::Chain { network: fake.url.clone() };
+    let first = State::new(settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    let clock = first.clock().await.unwrap();
+    let tick = first.tick().await.unwrap();
+    // The fake chain finalizes two blocks behind its head, which moves on every 12 s of a slow start.
+    assert!((6_998..=6_999).contains(&clock.anchor_block), "{}", clock.anchor_block);
+    assert_eq!((clock.block_seconds, tick.at), (12.0, clock.anchor_at));
+    let again = State::new(settings, h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    assert_eq!(again.clock().await.unwrap(), clock);
+    assert!(first.started_at() <= tick.at, "a restart is dated by the first finalized block it read");
+}
+
+#[tokio::test]
+async fn a_lying_endpoint_listed_first_neither_sets_what_an_anchor_signs_nor_keeps_it_off_the_chain() {
+    let (liar, one, two) = (FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await);
+    liar.lie(true);
+    let network = format!("{},{},{}", liar.url, one.url, two.url);
+    let options = ChainOptions { quorum: 2, finalized: true, count_on: false, refresh_s: 6.0 };
+    let chain = Chain::with(&network, &options).unwrap();
+    // The first endpoint that answers is the liar: what anchoring used to sign over.
+    assert_eq!(chain.rpc("chain_getBlockHash", json!([0])).await.unwrap(), json!(crate::fakechain::forged_hash_of(0)));
+    assert_eq!(chain.agreed("chain_getBlockHash", json!([0])).await.unwrap(), json!(hash_of(0)), "the genesis hash two endpoints agree on");
+    assert_eq!(chain.agreed("system_accountNextIndex", json!(["x"])).await.unwrap(), json!(7));
+    assert_eq!(chain.agreed("state_getRuntimeVersion", json!([])).await.unwrap()["specVersion"], 300);
+    chain.broadcast("author_submitExtrinsic", json!(["0x00"])).await.unwrap();
+    assert_eq!(
+        [liar.calls("author_submitExtrinsic"), one.calls("author_submitExtrinsic"), two.calls("author_submitExtrinsic")],
+        [1, 1, 1],
+        "sent to every endpoint"
+    );
+    one.refuse(true);
+    chain.broadcast("author_submitExtrinsic", json!(["0x01"])).await.expect("one endpoint that takes it is enough");
+    two.refuse(true);
+    liar.refuse(true);
+    assert!(chain.broadcast("author_submitExtrinsic", json!(["0x02"])).await.is_err(), "none took it");
+}
+
+#[tokio::test]
+async fn anchors_are_read_through_their_own_quorum_not_the_api_chains() {
+    let (one, two) = (FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await);
+    let anchoring = task_api::settings::AnchorSettings {
+        network: format!("{},{}", one.url, two.url),
+        quorum: 2,
+        netuid: 22,
+        key_uri: "//sn22-anchor-test".into(),
+        every_blocks: 12,
+        min_blocks: 3,
+        per_epoch: 30,
+    };
+    let h = Harness::with(move |s| {
+        s.chain.quorum = 3;
+        s.anchor = Some(anchoring);
+    })
+    .await;
+    let chain = task_api::anchor::chain_of(&h.state).expect("two anchor endpoints are enough for an anchor quorum of two");
+    assert_eq!(chain.endpoints(), 2);
+    assert_eq!(chain.agreed("chain_getBlockHash", json!([0])).await.unwrap(), json!(hash_of(0)));
 }

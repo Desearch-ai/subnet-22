@@ -10,7 +10,7 @@ use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{checks, lifecycle, sampling, uploadlog};
 
 use crate::checks::{established_in, settled};
-use crate::harness::{judged, task_id, urls, vectors, Client, Harness};
+use crate::harness::{is_random_upload_key, judged, task_id, urls, vectors, Client, Harness};
 
 fn pages() -> Value {
     json!((0..2).map(|i| json!({"url": format!("https://site{i}.example/story/{i}"), "host": format!("site{i}.example"), "page_key": format!("pages/{i:040x}.zst"), "content_sha1": format!("{i:040x}")})).collect::<Vec<_>>())
@@ -224,23 +224,56 @@ async fn a_failed_embed_task_strikes_only_the_embed_pool() {
     embed_round(&h, input()).await;
     let task = embed_task(&h, &h.miner).await;
     h.opened(Some(&h.validator), None).await;
-    let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
-    assert_eq!(scored["verdict"], "fail");
-    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
+    let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "malformed", "vectors_malformed")).await.unwrap();
+    assert_eq!(scored["verdict"], "pending", "a fail waits for the validation deadline");
+    h.past_deadline().await;
+    assert_eq!(h.view(&task_id(&task)).await["score"]["verdict"], "fail");
+    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_malformed".to_string())]);
     assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
 }
 
 #[tokio::test]
-async fn an_embed_upload_written_again_after_completion_fails_its_check_and_strikes_the_miner() {
+async fn one_validators_model_alone_cannot_fail_an_embed_upload_and_two_independent_ones_can() {
+    let h = embedding().await;
+    embed_round(&h, inputs(2)[0].clone()).await;
+    let task = task_id(&embed_task(&h, &h.miner).await);
+    h.opened(Some(&h.validator), None).await;
+    let lone = score(&h, &task, embed_score("fail", "mismatched", "vectors_mismatch")).await;
+    assert_eq!((lone["verdict"].clone(), lone["reason"].clone()), (json!("void"), json!("too_few_references")));
+    assert!(strikes(&h).await.is_empty(), "one reference is no proof");
+    assert_eq!(budgets_of(&h, EMBED).await, budgets::START);
+
+    // Both validators check embed uploads, so the next one waits for both references.
+    embed_round(&h, inputs(2)[1].clone()).await;
+    let next = task_id(&embed_task(&h, &h.miner).await);
+    h.state.validation.present_for(&h.redis, EMBED, &h.other_validator.ss58(), h.state.rule_now().await.unwrap()).await.unwrap();
+    h.opened(Some(&h.validator), Some(&next)).await;
+    assert_eq!(score(&h, &next, embed_score("fail", "mismatched", "vectors_mismatch")).await["verdict"], "pending");
+    let path = format!("/v1/validation/{next}/score");
+    let second = h.other_validator.post(&path, embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
+    assert_eq!(second["verdict"], "pending", "both voted, but a fail waits for the validation deadline");
+    h.past_deadline().await;
+    let view = h.view(&next).await;
+    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("vectors_mismatch")));
+    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
+}
+
+async fn budgets_of(h: &Harness, pool: &'static str) -> i64 {
+    let hotkey = h.miner.ss58();
+    h.state.db.run(move |conn| Ok(budgets::get(conn, &hotkey, pool)?.budget)).await.unwrap()
+}
+
+#[tokio::test]
+async fn an_embed_upload_written_again_after_completion_charges_nothing_and_checks_the_next_uploads() {
     let h = embedding().await;
     embed_round(&h, input()).await;
     let task = task_id(&embed_task(&h, &h.miner).await);
     h.opened(Some(&h.validator), None).await;
     let changed = json!({"verdict": "fail", "reason": UPLOAD_CHANGED, "sampled": 0, "matched": 0, "mismatched": 0, "malformed": 0, "min_similarity": null, "samples": []});
-    assert_eq!(score(&h, &task, changed).await["verdict"], "fail");
+    assert_eq!(score(&h, &task, changed).await["verdict"], "void");
     assert_eq!(h.view(&task).await["score"]["reason"], UPLOAD_CHANGED);
-    assert_eq!(strikes(&h).await, [("embed".to_string(), UPLOAD_CHANGED.to_string())]);
+    assert_eq!(strikes(&h).await, [], "not the miner's doing alone, so no strike");
     assert_eq!(rechecks(&h).await, (0, sampling::RECHECK_UPLOADS), "its next embed uploads are checked");
 }
 
@@ -479,7 +512,7 @@ async fn an_embed_upload_is_one_float16_vector_per_text_and_its_size_is_checked_
     embed_round(&h, input()).await;
     let task = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
     let key = task["upload"]["key"].as_str().unwrap();
-    assert!(key.starts_with("uploads/task=") && key.ends_with(".f16"), "{key}");
+    assert!(is_random_upload_key(key, ".f16"), "{key}");
     assert_eq!(task["upload"]["content_type"], "application/octet-stream");
     let url = task["upload"]["url"].as_str().unwrap();
     let complete = format!("/v1/tasks/{}/complete", task_id(&task));
@@ -571,8 +604,9 @@ async fn a_failed_embed_check_takes_back_the_unchecked_embed_uploads_since_the_l
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
     assert_eq!(rechecks(&h).await, (0, sampling::RECHECK_UPLOADS - 1));
 
-    let verdict = score(&h, &checked, embed_score("fail", "mismatched", "vectors_mismatch")).await;
-    assert_eq!(verdict["verdict"], "fail");
+    score(&h, &checked, embed_score("fail", "malformed", "vectors_malformed")).await;
+    h.past_deadline().await;
+    assert_eq!(h.view(&checked).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, EMBED).await, 0, "its characters are taken back");
     let refused: Vec<String> = h.redis.clone().zrange(PWITHDRAWN, 0, -1).await.unwrap();
@@ -596,6 +630,7 @@ async fn a_second_embed_fail_among_the_last_checks_costs_the_embed_day_and_locks
         let task = task_id(&embed_task(&h, &h.miner).await);
         assert_eq!(settled(&h, &task).await, sampling::RECHECK);
         score(&h, &task, embed_score("fail", "malformed", "vectors_malformed")).await;
+        h.past_deadline().await;
     }
     let (crawl, embed) = locked(&h).await;
     assert!(embed.expect("locked out of embed") - now() > 47.0 * 3600.0);
@@ -614,7 +649,7 @@ async fn every_completed_embed_upload_is_logged_with_its_texts_and_characters() 
     let written = h.json_object(&upload_log_key(1)).unwrap();
     assert_eq!(
         written["entries"],
-        json!([{"kind": "embed", "key": job["key"], "task_id": task, "miner": h.miner.ss58(), "completed_at": job["completed_at"], "texts": 6, "chars": 5400}])
+        json!([{"kind": "embed", "key": job["key"], "etag": job["etag"], "task_id": task, "miner": h.miner.ss58(), "completed_at": job["completed_at"], "texts": 6, "chars": 5400}])
     );
 }
 

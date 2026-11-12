@@ -19,7 +19,20 @@ use task_api::state::{redis_from, State};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
 
-pub const REDIS_URL: &str = "redis://127.0.0.1:6379/13";
+/// The Redis the tests use, `127.0.0.1:6379` unless `TASK_API_TEST_REDIS` (or `TASK_API_TEST_REDIS_ADDR`) names another, so
+/// checkouts testing at once can each have their own.
+pub fn redis_addr() -> &'static str {
+    static ADDR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        std::env::var("TASK_API_TEST_REDIS").or_else(|_| std::env::var("TASK_API_TEST_REDIS_ADDR")).unwrap_or_else(|_| "127.0.0.1:6379".into())
+    });
+    &ADDR
+}
+
+pub fn redis_url(db: u8) -> String {
+    format!("redis://{}/{db}", redis_addr())
+}
+
+/// Redis db 13 at `redis_addr`, which A's tests name as one.
 pub const MINER: &str = "//miner-api-test";
 pub const RIVAL: &str = "//rival-api-test";
 pub const VALIDATOR: &str = "//validator-api-test";
@@ -94,9 +107,13 @@ impl Client {
     }
 
     pub async fn call(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value, Refused> {
+        self.call_at(method, path, body, desearch::time::now() as i64).await
+    }
+
+    /// A request signed as sent at `timestamp`, as a client whose clock differs from this machine's signs it.
+    pub async fn call_at(&self, method: Method, path: &str, body: Option<Value>, timestamp: i64) -> Result<Value, Refused> {
         let bytes = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
         let nonce = format!("{:032x}", rand::random::<u128>());
-        let timestamp = desearch::time::now() as i64;
         let mut request = self.http.request(method.clone(), format!("{}{path}", self.base)).header("content-type", "application/json");
         let signed_path = path.split('?').next().unwrap_or(path);
         for (name, value) in auth_headers(&self.hotkey, method.as_str(), signed_path, &bytes, timestamp, &nonce) {
@@ -114,6 +131,24 @@ impl Client {
 
     pub async fn post(&self, path: &str, body: Value) -> Result<Value, Refused> {
         self.call(Method::POST, path, Some(body)).await
+    }
+
+    /// A signed POST and the hash naming it, as a relaying validator's witness gives it.
+    pub async fn post_hashed(&self, path: &str, body: Option<Value>) -> (Result<Value, Refused>, String) {
+        let bytes = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
+        let nonce = format!("{:032x}", rand::random::<u128>());
+        let timestamp = desearch::time::now() as i64;
+        let headers = auth_headers(&self.hotkey, "POST", path, &bytes, timestamp, &nonce);
+        let hashed = task_api::auth::request_hash("POST", path, &bytes, &self.ss58(), &timestamp.to_string(), &nonce, &headers[3].1);
+        let mut request = self.http.post(format!("{}{path}", self.base)).header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request.body(bytes).send().await.expect("the API answers");
+        let status = response.status();
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let answer = if status.is_success() { Ok(body) } else { Err(Refused { status: status.as_u16(), detail: body.get("detail").cloned().unwrap_or(body) }) };
+        (answer, hashed)
     }
 
     pub async fn claim(&self) -> Value {
@@ -154,7 +189,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
     Settings {
         listen: "127.0.0.1:0".into(),
         data,
-        redis_url: REDIS_URL.into(),
+        redis_url: redis_url(13),
         claim_ttl: 180.0,
         embed_claim_ttl: 300.0,
         validation_ttl: 900.0,
@@ -178,9 +213,6 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         task_urls: 3,
         embed_tasks: false,
         embed_model: "desearch-4b-v1".into(),
-        embed_reference_urls: Vec::new(),
-        embed_reference_key: String::new(),
-        embed_reference_calls: 4,
         active_s: 3600.0,
         publish_ttl: 600.0,
         publish_tries: 5,
@@ -195,11 +227,39 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         pages_prefix: PAGES_PREFIX.into(),
         pages_store: None,
         registry: RegistryMode::Local { validator_uris: [VALIDATOR, OTHER_VALIDATOR, THIRD_VALIDATOR].join(",") },
+        validator_min_stake: 10_000.0,
+        validator_min_alpha: 20.0,
         seeds: SeedsMode::Local { block_seconds: 0.02, genesis: 0.0 },
         admin_hotkeys: Vec::new(),
         admin_uris: ADMIN.into(),
+        journal_every: 30.0,
+        journal_shares_every: 600.0,
+        snapshot_every: 21_600.0,
+        journal_keep: 8.0 * 86_400.0,
+        anchor: None,
         key_uri: String::new(),
         cors_origins: Vec::new(),
+        canary_every: 0.0,
+        upload_lock_s: 0.0,
+        storage_witness_quorum: 2,
+        storage_witness_window: 300.0,
+        client_address_header: task_api::auth::CLIENT_ADDRESS_HEADER.into(),
+        chain: Default::default(),
+        tee: Default::default(),
+        storage_probe_s: 30.0,
+        clock_skew_s: 30.0,
+        finality_stall_blocks: 10,
+        objective_quorum: 1,
+        embed_references: 2,
+        loadability_samples: 30,
+        neutral_uploads: 3,
+        neutral_share: 0.5,
+        incentive_full: 0.5,
+        incentive_grace_h: 24,
+        crawl_emission: 0.2,
+        embed_emission: 0.5,
+        wrong_reports: 5,
+        wrong_reports_window_s: 86_400.0,
     }
 }
 
@@ -215,14 +275,14 @@ impl Harness {
         let endpoint = format!("http://{}", stub.addr);
         let mut settings = settings(dir.0.join("data"), &endpoint);
         tune(&mut settings);
-        let redis = redis_from(REDIS_URL).await.expect("Redis on localhost");
+        let redis = redis_from(&redis_url(13)).await.expect("Redis on localhost");
         let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
-        let proxy = Proxy::start("127.0.0.1:6379").await;
+        let proxy = Proxy::start(redis_addr()).await;
         let relayed = redis_from(&format!("redis://{}/13", proxy.addr)).await.expect("Redis through the relay");
         let (storage, pages) = buckets(&settings, &endpoint);
-        let mut state = State::new(settings, relayed, storage, pages).await.expect("the state opens");
+        let state = State::new(settings, relayed, storage, pages).await.expect("the state opens");
         // Running since long before any claim, so no claim counts as held through a restart.
-        state.started_at = f64::NEG_INFINITY;
+        state.set_started_at(f64::NEG_INFINITY);
         let state = Arc::new(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("an address");
@@ -249,6 +309,33 @@ impl Harness {
             _dir: dir,
             _serial: serial,
         }
+    }
+
+    /// Serves another API on the same buckets but its own Redis db and data directory, as a second CVM would; returns it and its URL.
+    pub async fn sibling(&self, redis_db: u8, tune: impl FnOnce(&mut Settings)) -> (Arc<State>, String, TempDir) {
+        let dir = TempDir(std::env::temp_dir().join(format!("task-api-sibling-{}", uuid::Uuid::new_v4().simple())));
+        let endpoint = format!("http://{}", self.stub.addr);
+        let mut settings = settings(dir.0.join("data"), &endpoint);
+        settings.redis_url = redis_url(redis_db);
+        tune(&mut settings);
+        let redis = redis_from(&settings.redis_url).await.expect("Redis on localhost");
+        let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
+        let (storage, pages) = buckets(&settings, &endpoint);
+        let state = State::new(settings, redis, storage, pages).await.expect("the sibling opens");
+        state.set_started_at(f64::NEG_INFINITY);
+        let state = Arc::new(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        let router = task_api::http::router(state.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.expect("serving");
+        });
+        (state, url, dir)
+    }
+
+    /// A client for another API, signing as one of this harness's roles.
+    pub fn client_of(&self, base: &str, uri: &str) -> Client {
+        Client { hotkey: Hotkey::from_uri(uri).expect("a test key"), base: base.to_string(), http: self.http.clone() }
     }
 
     /// Serves another copy started now on the same Redis and database, as after a restart; returns its URL.
@@ -285,6 +372,96 @@ impl Harness {
 
     pub async fn view(&self, task_id: &str) -> Value {
         self.public(&format!("/v1/tasks/{task_id}")).await.1
+    }
+
+    /// Closes the rounds whose tasks are all done, then every other round some finalized crawl upload waits on, through the
+    /// API's own close, as if the round's last task were done: their accounts settle on the round as it stands. Returns the
+    /// rounds closed early.
+    pub async fn settle(&self) -> Vec<String> {
+        lifecycle::close_finished(&self.state).await.expect("close finished rounds");
+        let held: Vec<String> = self
+            .state
+            .db
+            .run(|conn| {
+                let mut statement = conn.prepare("SELECT DISTINCT round_id FROM round_uploads ORDER BY round_id")?;
+                let rounds = statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+                Ok(rounds)
+            })
+            .await
+            .expect("held rounds");
+        for round_id in &held {
+            let serving = self.state.current.lock().expect("current rounds").clone();
+            lifecycle::close_round(&self.state, round_id).await.expect("close the round");
+            // Closed before its last task: the round opens again and serves the tasks it has left as the test goes on; its
+            // real close settles whatever finalizes later.
+            let open: i64 = self.redis.clone().scard(lifecycle::open_round_key(round_id)).await.expect("open tasks");
+            if open > 0 {
+                let reopened = round_id.clone();
+                self.state
+                    .db
+                    .run(move |conn| {
+                        conn.execute("UPDATE rounds SET closed_at = NULL WHERE round_id = ?", [&reopened])?;
+                        conn.execute("DELETE FROM anchors WHERE round_id = ?", [&reopened])?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("reopen the round");
+                *self.state.current.lock().expect("current rounds") = serving;
+            }
+        }
+        held
+    }
+
+    /// Finalizes every open upload as if its validation deadline had passed, on the votes it has, and settles the rounds its
+    /// crawl uploads wait on: a fail on validators' reports is decided only then. Returns the uploads finalized.
+    pub async fn past_deadline(&self) -> Vec<String> {
+        // A deadline seconds away is waited for; one far off is moved to now in Redis, which the log does not see.
+        let mut latest = 0.0_f64;
+        for task in self.state.validation.open_ids(&self.redis, 1000).await.expect("open uploads") {
+            let Some(mut job) = self.state.validation.job(&self.redis, &task).await.expect("an open job") else { continue };
+            let deadline = job["deadline"].as_f64().unwrap_or(0.0);
+            if deadline - desearch::time::now() > 10.0 {
+                job["deadline"] = (self.state.rule_now().await.expect("rule time") - 1.0).into();
+                let _: () = self.redis.clone().set(format!("vjob:{task}"), job.to_string()).await.expect("move the deadline");
+            } else {
+                latest = latest.max(deadline);
+            }
+        }
+        while self.state.rule_now().await.expect("rule time") < latest {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let at = self.state.rule_now().await.expect("rule time");
+        let finalized = lifecycle::finalize_due(&self.state, at).await.expect("finalize at the deadline");
+        self.settle().await;
+        finalized
+    }
+
+    /// A finalized crawl upload's answer once its round closed: its accounts as they settled.
+    pub async fn settled_answer(&self, mut answer: Value) -> Value {
+        if answer["verdict"] != lifecycle::HELD {
+            return answer;
+        }
+        self.settle().await;
+        let task_id = answer["task_id"].as_str().unwrap_or_default().to_string();
+        let found = self
+            .state
+            .db
+            .run(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT v.verdict, v.reason, v.credited, v.miner FROM validations v WHERE v.task_id = ? ORDER BY v.id DESC LIMIT 1",
+                    [&task_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
+                )?)
+            })
+            .await
+            .expect("the settled verdict");
+        let (verdict, reason, credited, miner) = found;
+        let budget = self.state.db.run(move |conn| task_api::budgets::get(conn, &miner, task_api::budgets::CRAWL)).await.expect("budget").budget;
+        answer["verdict"] = verdict.into();
+        answer["reason"] = reason.into();
+        answer["credited"] = credited.into();
+        answer["miner_budget"] = budget.into();
+        answer
     }
 
     pub fn object(&self, key: &str) -> Option<Vec<u8>> {
@@ -420,6 +597,11 @@ pub fn score(verdict: &str, returned: i64, reason: &str, outcome: Option<&str>, 
     })
 }
 
+/// Overrides that fail a check on a fact of the file, which charges the miner, not on the live pages, which does not.
+pub fn objective_fail() -> Value {
+    json!({"reason": "text_not_from_html", "reextract_mismatch": 1, "integrity_checked": 1})
+}
+
 /// Votes on the task, or on the oldest upload this validator has not voted on, sampling the task's own URLs.
 pub async fn judged(h: &Harness, validator: &Client, verdict: &str, task_id: Option<&str>, overrides: Value) -> (Value, Result<Value, Refused>) {
     let job = h.opened(Some(validator), task_id).await;
@@ -435,7 +617,17 @@ pub async fn judged(h: &Harness, validator: &Client, verdict: &str, task_id: Opt
     }
     let path = format!("/v1/validation/{}/score", job["task_id"].as_str().unwrap_or_default());
     let answer = validator.post(&path, body).await;
+    // A crawl verdict's accounts wait for its round to close; the round is closed at once so a test reads them.
+    let answer = match answer {
+        Ok(answer) => Ok(h.settled_answer(answer).await),
+        refused => refused,
+    };
     (job, answer)
+}
+
+/// A key the claim drew at random: `uploads/`, 32 hex characters and the kind's suffix, naming no task or miner.
+pub fn is_random_upload_key(key: &str, suffix: &str) -> bool {
+    key.strip_prefix("uploads/").and_then(|name| name.strip_suffix(suffix)).is_some_and(|name| name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 pub fn task_id(task: &Value) -> String {

@@ -281,9 +281,8 @@ impl TaskQueue {
         })
     }
 
-    /// The claims this hotkey still holds restart their clock now; returns the new expiry.
-    pub async fn start_clocks(&self, redis: &Redis, hotkey: &str, task_ids: &[String], now: f64) -> Result<f64> {
-        let expiry = now + self.claim_ttl;
+    /// The claims this hotkey still holds restart their clock: they now end at `expiry`, the rule time of a whole block.
+    pub async fn start_clocks(&self, redis: &Redis, hotkey: &str, task_ids: &[String], expiry: f64) -> Result<f64> {
         let mut invocation = START.key(CLAIMS);
         invocation.arg(hotkey).arg(number(expiry));
         for task_id in task_ids {
@@ -340,8 +339,9 @@ pub async fn claim_expiry(redis: &Redis, task_id: &str) -> Result<Option<f64>> {
     Ok(redis.clone().zscore(CLAIMS, task_id).await?)
 }
 
+/// Claims whose deadline is behind `now`; one ending at `now` is still the miner's.
 pub async fn expired_claims(redis: &Redis, now: f64) -> Result<Vec<String>> {
-    Ok(redis.clone().zrangebyscore(CLAIMS, "-inf", number(now)).await?)
+    Ok(redis.clone().zrangebyscore(CLAIMS, "-inf", format!("({}", number(now))).await?)
 }
 
 /// An upload closed by its verdict: the job and every vote it had.

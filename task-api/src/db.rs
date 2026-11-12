@@ -13,7 +13,7 @@ use rusqlite::{Connection, Row, TransactionBehavior};
 use serde_json::{Map, Value};
 use tokio::sync::oneshot;
 
-use crate::{budgets, checks, hours, registry, roundlog, roundstore, validations};
+use crate::{budgets, canary, checks, clock, hours, journal, outages, registry, roundlog, roundstore, rules, validations};
 
 pub const FILE: &str = "task_api.db";
 
@@ -64,8 +64,15 @@ impl Db {
         roundstore::create(&conn)?;
         validations::create(&conn)?;
         checks::create(&conn)?;
+        clock::create(&conn)?;
+        outages::create(&conn)?;
+        rules::create(&conn)?;
         registry::create(&conn)?;
         hours::create(&conn)?;
+        canary::create(&conn)?;
+        journal::create(&conn)?;
+        crate::anchor::create(&conn)?;
+        crate::custody::create(&conn)?;
         conn.busy_timeout(BUSY)?;
         Ok(Db { jobs: spawn("sqlite", conn)? })
     }
@@ -93,6 +100,18 @@ impl Db {
             crate::http::note_db_wait(waited);
             outcome
         }
+    }
+}
+
+impl Db {
+    /// Runs `work` on the writer thread outside any transaction, for what SQLite will not run inside one: `VACUUM INTO`, a restore.
+    pub async fn whole<T: Send + 'static>(&self, work: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static) -> Result<T> {
+        let (done, result) = oneshot::channel();
+        let job: Job = Box::new(move |conn| {
+            let _ = done.send(work(conn));
+        });
+        self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
+        result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
     }
 }
 

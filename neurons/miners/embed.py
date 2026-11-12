@@ -20,7 +20,7 @@ from desearch.embedding import (
 )
 from desearch.kinds import EMBED
 from neurons.miners.config import ENV_FILE, Settings
-from neurons.miners.miner import HEADROOM, TaskWorker, with_retries
+from neurons.miners.miner import HEADROOM, TaskWorker
 
 log = logging.getLogger("embed_miner")
 
@@ -82,7 +82,6 @@ class EmbedMiner(TaskWorker):
                 raise ValueError(f"asked for {task['model']}, this miner runs {served}")
             left = task["expires_at"] - time.time() - UPLOAD_MARGIN_S
             rows, out = await asyncio.wait_for(self.embedded(task), max(left, 0.0))
-            await with_retries(lambda: self.upload(upload, out))
             report = {
                 "key": upload["key"],
                 "rows": len(rows),
@@ -90,9 +89,7 @@ class EmbedMiner(TaskWorker):
                 "errors": 0,
                 "bytes": len(out),
             }
-            await with_retries(
-                lambda: self.api.post(f"/v1/tasks/{task_id}/complete", report)
-            )
+            await self.deliver(task_id, upload, out, report)
         except asyncio.CancelledError:
             await self.abandon(task_id, "shutting down")
             raise

@@ -261,6 +261,7 @@ fn validator_row(hotkey: &str, totals: Option<&Value>, standing: Option<&Value>,
     row.insert("agreement".into(), if judged > 0.0 { round_to(number(&counts["agreed"]) / judged, 4).into() } else { Value::Null });
     row.insert("audits".into(), 0.into());
     row.insert("disagreements".into(), 0.into());
+    row.insert("wrong_reports".into(), 0.into());
     row.insert("excluded".into(), false.into());
     if let Some(Value::Object(standing)) = standing {
         row.extend(standing.clone());
@@ -268,9 +269,9 @@ fn validator_row(hotkey: &str, totals: Option<&Value>, standing: Option<&Value>,
     row
 }
 
-fn validator_rows_at(conn: &Connection, since: f64, until: f64, last_seen: &HashMap<String, f64>) -> Result<Vec<Map<String, Value>>> {
+fn validator_rows_at(conn: &Connection, since: f64, until: f64, last_seen: &HashMap<String, f64>, wrong: (f64, i64)) -> Result<Vec<Map<String, Value>>> {
     let totals = validations::validator_totals(conn, since, until)?;
-    let standing = validations::audit_standing(conn)?;
+    let standing = validations::audit_standing(conn, wrong.0, wrong.1)?;
     let hotkeys: BTreeSet<&String> = totals.keys().chain(standing.keys()).chain(last_seen.keys()).collect();
     let mut rows: Vec<Map<String, Value>> = hotkeys.into_iter().map(|h| validator_row(h, totals.get(h), standing.get(h), last_seen)).collect();
     rows.sort_by(|a, b| {
@@ -304,8 +305,9 @@ async fn miner_rows(state: &Arc<State>, hours: i64, kind: &'static str) -> Resul
 
 async fn validator_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
     let until = visible(state);
-    let last_seen: HashMap<String, f64> = state.validation.last_seen(&state.redis, now()).await?.into_iter().collect();
-    let rows = state.reader.read(move |conn| validator_rows_at(conn, until - hours as f64 * HOUR, until, &last_seen)).await?;
+    let last_seen: HashMap<String, f64> = state.validation.last_seen(&state.redis, state.rule_now().await?).await?.into_iter().collect();
+    let wrong = (state.rule_now().await? - state.settings.wrong_reports_window_s, state.settings.wrong_reports);
+    let rows = state.reader.read(move |conn| validator_rows_at(conn, until - hours as f64 * HOUR, until, &last_seen, wrong)).await?;
     Ok(rows
         .into_iter()
         .map(|row| {
@@ -683,9 +685,17 @@ pub async fn events(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
     let miner = id_param(&query, "miner")?;
     let task_id = id_param(&query, "task_id")?;
     let outcome = literal_param(&query, "outcome", &["issued", "completed", "refused", "reclaimed", "dropped"])?;
+    let request = id_param(&query, "request")?;
     let before = optional_int(&query, "before")?;
     let limit = int_param(&query, "limit", PAGE, 1, MAX_PAGE)?;
-    let (found, next) = state.reader.read(move |conn| roundlog::events(conn, miner.as_deref(), task_id.as_deref(), outcome.as_deref(), before, limit)).await?;
+    let (found, next) = state
+        .reader
+        .read(move |conn| {
+            let filter =
+                roundlog::EventFilter { miner: miner.as_deref(), task_id: task_id.as_deref(), outcome: outcome.as_deref(), request: request.as_deref() };
+            roundlog::events(conn, &filter, before, limit)
+        })
+        .await?;
     Ok(Json(json!({"events": found, "next": next})))
 }
 

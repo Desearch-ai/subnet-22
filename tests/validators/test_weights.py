@@ -112,10 +112,27 @@ def test_without_the_burn_hotkey_the_pools_keep_their_proportions():
     assert not weights_from_shares(["m1"], {}).any()
 
 
-def weights_of(hotkeys, ledger=None):
+class Followed:
+    """The task API's log as a follower finds it: holding together unless `distrust` says why not."""
+
+    def __init__(self, distrust=None, spans=()):
+        self.why, self.spans = distrust, list(spans)
+
+    def distrust(self):
+        return self.why
+
+    def fraud_spans(self):
+        return self.spans
+
+    def round_views(self):
+        return {}
+
+
+def weights_of(hotkeys, ledger=None, journal=None):
     made = Validator.__new__(Validator)
     made.metagraph = SimpleNamespace(hotkeys=hotkeys)
     made.ledger = ledger or Ledger(":memory:")
+    made.journal = journal or Followed()
     return asyncio.run(made.weights())
 
 
@@ -329,3 +346,60 @@ def test_flags_from_older_launch_commands_are_ignored(tmp_path, capsys):
     )
     assert (made.wallet.name, made.netuid) == ("validator", 22)
     assert "--axon.port 8091" in capsys.readouterr().err
+
+
+def test_while_the_task_apis_log_is_distrusted_only_this_validators_checks_pay(
+    monkeypatch,
+):
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.0)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 1.0)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.0)
+    ledger = Ledger(":memory:")
+    now = time.time()
+    # m1 uploaded three times and was checked once; m2 uploaded once and was checked once.
+    for miner, uploads in (("m1", 3), ("m2", 1)):
+        ledger.add_uploads(
+            [logged(f"{miner}-{n}", miner, now - 60, ok=100) for n in range(uploads)]
+        )
+        ledger.record_check(f"{miner}-0", miner, now - 60, "pass", 100, 100, 100, 100)
+
+    trusted = weights_of(["m1", "m2", BURN], ledger)
+    assert list(trusted) == pytest.approx([0.75, 0.25, 0.0])
+
+    distrusted = weights_of(
+        ["m1", "m2", BURN], ledger, Followed("the task API's log shows fraud")
+    )
+    assert list(distrusted) == pytest.approx(
+        [0.5, 0.5, 0.0]
+    ), "the uploads only the API's log shows count for nothing"
+
+    # Back to trusting the log, uploads logged while it showed fraud are still never paid.
+    spans = [(now - 120, now - 30)]
+    after = weights_of(["m1", "m2", BURN], ledger, Followed(None, spans))
+    assert list(after) == pytest.approx([0.5, 0.5, 0.0])
+
+
+def test_a_validator_that_sets_weights_does_not_start_without_the_replay_tool(
+    tmp_path, caplog
+):
+    def started(**neuron):
+        made = Validator.__new__(Validator)
+        made.config = SimpleNamespace(
+            neuron=SimpleNamespace(
+                **{
+                    "no_replay": False,
+                    "disable_set_weights": False,
+                    "replay_bin": str(tmp_path / "missing"),
+                    **neuron,
+                }
+            )
+        )
+        made.require_replay()
+
+    with pytest.raises(SystemExit):
+        started()
+    assert "Not starting" in caplog.text and "--neuron.no_replay" in caplog.text
+    caplog.clear()
+    started(no_replay=True)
+    assert "own checks only" in caplog.text, "running without it is said out loud"
+    started(disable_set_weights=True)

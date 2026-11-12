@@ -1,9 +1,11 @@
 //! A stand-in for R2 that keeps objects as files under one folder, for tests and local runs; it checks no signatures.
+//! It can also act as a versioned bucket under Object Lock: every write is kept as a version that reads may name,
+//! and a locked version can't be deleted.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -21,6 +23,21 @@ pub struct State {
     delays: Mutex<Vec<(String, String, u32, std::time::Duration)>>,
     next_upload: AtomicU64,
     counts: Mutex<HashMap<String, u64>>,
+    versioned: AtomicBool,
+    locked: AtomicBool,
+    next_version: AtomicU64,
+    /// Every version written to each `bucket/key` while versioned, oldest first.
+    versions: Mutex<HashMap<String, Vec<Version>>>,
+}
+
+#[derive(Clone)]
+struct Version {
+    id: String,
+    data: Vec<u8>,
+    etag: String,
+    modified: String,
+    /// Object Lock in compliance mode until this date, as the retention request named it.
+    locked_until: Option<String>,
 }
 
 pub struct Stub {
@@ -76,6 +93,46 @@ impl State {
     /// Requests served by method, failures included.
     pub fn count(&self, method: &str) -> u64 {
         self.counts.lock().unwrap().get(method).copied().unwrap_or(0)
+    }
+
+    /// Keeps every write as a version from now on, as a bucket with versioning on does.
+    pub fn set_versioned(&self, on: bool) {
+        self.versioned.store(on, Ordering::Relaxed);
+    }
+
+    /// Refuses to delete any version, as Object Lock in compliance mode does within its retention.
+    pub fn set_locked(&self, on: bool) {
+        self.locked.store(on, Ordering::Relaxed);
+    }
+
+    /// The versions of an object, oldest first.
+    pub fn versions(&self, bucket: &str, key: &str) -> Vec<String> {
+        self.versions.lock().unwrap().get(&format!("{bucket}/{key}")).map(|all| all.iter().map(|v| v.id.clone()).collect()).unwrap_or_default()
+    }
+
+    /// The version a write just made, kept when versioning is on.
+    fn keep_version(&self, name: &str, path: &Path) -> Option<String> {
+        if !self.versioned.load(Ordering::Relaxed) {
+            return None;
+        }
+        let id = format!("v{:016x}", self.next_version.fetch_add(1, Ordering::Relaxed) + 1);
+        let version = Version {
+            id: id.clone(),
+            data: std::fs::read(path).ok()?,
+            etag: etag(path).unwrap_or_default(),
+            modified: last_modified(path).unwrap_or_default(),
+            locked_until: None,
+        };
+        self.versions.lock().unwrap().entry(name.to_string()).or_default().push(version);
+        Some(id)
+    }
+
+    fn version(&self, name: &str, id: &str) -> Option<Version> {
+        self.versions.lock().unwrap().get(name)?.iter().find(|v| v.id == id).cloned()
+    }
+
+    fn current_version(&self, name: &str) -> Option<String> {
+        self.versions.lock().unwrap().get(name)?.last().map(|v| v.id.clone())
     }
 }
 
@@ -163,6 +220,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         204 => "No Content",
         206 => "Partial Content",
+        403 => "Forbidden",
         404 => "Not Found",
         412 => "Precondition Failed",
         503 => "Service Unavailable",
@@ -247,7 +305,8 @@ fn respond(state: &State, request: Request) -> Response {
                 return (500, empty(), Vec::new());
             }
             let tag = etag(&path).unwrap_or_default();
-            (200, empty(), format!("<CompleteMultipartUploadResult><ETag>{tag}</ETag></CompleteMultipartUploadResult>").into_bytes())
+            let headers = state.keep_version(&name, &path).map(|id| BTreeMap::from([("x-amz-version-id", id)])).unwrap_or_default();
+            (200, headers, format!("<CompleteMultipartUploadResult><ETag>{tag}</ETag></CompleteMultipartUploadResult>").into_bytes())
         }
         ("DELETE", Some(id), _) => {
             state.uploads.lock().unwrap().remove(id);
@@ -267,10 +326,27 @@ fn respond(state: &State, request: Request) -> Response {
             }
             let copied = state.meta.lock().unwrap().get(&source).cloned();
             if let Some(meta) = copied {
-                state.meta.lock().unwrap().insert(name, meta);
+                state.meta.lock().unwrap().insert(name.clone(), meta);
             }
             let tag = etag(&path).unwrap_or_default();
-            (200, empty(), format!("<CopyObjectResult><ETag>{tag}</ETag></CopyObjectResult>").into_bytes())
+            let headers = state.keep_version(&name, &path).map(|id| BTreeMap::from([("x-amz-version-id", id)])).unwrap_or_default();
+            (200, headers, format!("<CopyObjectResult><ETag>{tag}</ETag></CopyObjectResult>").into_bytes())
+        }
+        // An object's ACL changes who may read it, never its bytes.
+        ("PUT", None, _) if request.query.contains_key("acl") => (200, empty(), Vec::new()),
+        ("PUT", None, _) if request.query.contains_key("retention") => {
+            let body = String::from_utf8_lossy(&request.body);
+            let until = body.split("<RetainUntilDate>").nth(1).and_then(|rest| rest.split("</RetainUntilDate>").next()).map(String::from);
+            let id = request.query.get("versionId").cloned().unwrap_or_default();
+            let mut versions = state.versions.lock().unwrap();
+            match versions.get_mut(&name).and_then(|all| all.iter_mut().find(|v| v.id == id)) {
+                Some(version) if until.is_some() && request.headers.contains_key("content-md5") => {
+                    version.locked_until = until;
+                    (200, empty(), Vec::new())
+                }
+                Some(_) => (400, empty(), b"<Error><Code>InvalidRequest</Code></Error>".to_vec()),
+                None => (404, empty(), Vec::new()),
+            }
         }
         ("PUT", None, _) => {
             if write(&path, &request.body).is_err() {
@@ -278,12 +354,39 @@ fn respond(state: &State, request: Request) -> Response {
             }
             let content_type = request.headers.get("content-type").cloned().unwrap_or_default();
             let cache_control = request.headers.get("cache-control").cloned().unwrap_or_default();
-            state.meta.lock().unwrap().insert(name, (content_type, cache_control));
-            (200, BTreeMap::from([("ETag", etag(&path).unwrap_or_default())]), Vec::new())
+            state.meta.lock().unwrap().insert(name.clone(), (content_type, cache_control));
+            let mut headers = BTreeMap::from([("ETag", etag(&path).unwrap_or_default())]);
+            if let Some(id) = state.keep_version(&name, &path) {
+                headers.insert("x-amz-version-id", id);
+            }
+            (200, headers, Vec::new())
         }
         ("DELETE", None, _) => {
+            if let Some(id) = request.query.get("versionId") {
+                if state.locked.load(Ordering::Relaxed) || state.version(&name, id).is_some_and(|v| v.locked_until.is_some()) {
+                    return (403, empty(), b"<Error><Code>AccessDenied</Code><Message>locked</Message></Error>".to_vec());
+                }
+                if let Some(all) = state.versions.lock().unwrap().get_mut(&name) {
+                    all.retain(|v| v.id != *id);
+                }
+                return (204, empty(), Vec::new());
+            }
             let _ = std::fs::remove_file(&path);
             (204, empty(), Vec::new())
+        }
+        ("HEAD" | "GET", None, _) if request.query.contains_key("versionId") => {
+            let Some(found) = state.version(&name, &request.query["versionId"]) else {
+                return (404, empty(), Vec::new());
+            };
+            if request.headers.get("if-match").is_some_and(|wanted| *wanted != found.etag) {
+                return (412, empty(), Vec::new());
+            }
+            let mut headers = BTreeMap::from([("ETag", found.etag), ("Last-Modified", found.modified), ("x-amz-version-id", found.id)]);
+            if let Some(until) = found.locked_until {
+                headers.insert("x-amz-object-lock-mode", "COMPLIANCE".into());
+                headers.insert("x-amz-object-lock-retain-until-date", until);
+            }
+            served(&request, headers, found.data)
         }
         ("HEAD" | "GET", None, _) => {
             let (Some(tag), Ok(data)) = (etag(&path), std::fs::read(&path)) else {
@@ -293,24 +396,32 @@ fn respond(state: &State, request: Request) -> Response {
                 return (412, empty(), Vec::new());
             }
             let mut headers = BTreeMap::from([("ETag", tag), ("Last-Modified", last_modified(&path).unwrap_or_default())]);
-            if request.method == "HEAD" {
-                headers.insert("length", data.len().to_string());
-                return (200, headers, Vec::new());
+            if let Some(id) = state.current_version(&name) {
+                headers.insert("x-amz-version-id", id);
             }
-            match request.headers.get("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
-                Some(("", tail)) => {
-                    let tail: usize = tail.parse().unwrap_or(0);
-                    (206, headers, data[data.len().saturating_sub(tail)..].to_vec())
-                }
-                Some((start, end)) => {
-                    let start: usize = start.parse().unwrap_or(0);
-                    let end: usize = end.parse::<usize>().map_or(data.len(), |e| (e + 1).min(data.len()));
-                    (206, headers, data.get(start..end).unwrap_or_default().to_vec())
-                }
-                None => (200, headers, data),
-            }
+            served(&request, headers, data)
         }
         _ => (400, empty(), Vec::new()),
+    }
+}
+
+/// An object's bytes as a HEAD, a whole GET or a ranged GET asks for them.
+fn served(request: &Request, mut headers: BTreeMap<&'static str, String>, data: Vec<u8>) -> Response {
+    if request.method == "HEAD" {
+        headers.insert("length", data.len().to_string());
+        return (200, headers, Vec::new());
+    }
+    match request.headers.get("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+        Some(("", tail)) => {
+            let tail: usize = tail.parse().unwrap_or(0);
+            (206, headers, data[data.len().saturating_sub(tail)..].to_vec())
+        }
+        Some((start, end)) => {
+            let start: usize = start.parse().unwrap_or(0);
+            let end: usize = end.parse::<usize>().map_or(data.len(), |e| (e + 1).min(data.len()));
+            (206, headers, data.get(start..end).unwrap_or_default().to_vec())
+        }
+        None => (200, headers, data),
     }
 }
 

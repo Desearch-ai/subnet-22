@@ -41,6 +41,18 @@ class FakeChain:
             block = await self.block()
         return SimpleNamespace(number=block, hash=local_block_hash(block))
 
+    async def rpc(self, method: str, params: list):
+        """The node calls a validator makes by block number, answered from the clock; no block holds any extrinsic."""
+        if method == "chain_getFinalizedHead":
+            return "local:head"
+        if method == "chain_getHeader":
+            return {"number": hex(await self.block())}
+        if method == "chain_getBlockHash":
+            return local_block_hash(int(params[0]))
+        if method == "chain_getBlock":
+            return {"block": {"extrinsics": []}}
+        raise ValueError(f"the sandbox chain does not answer {method}")
+
     async def metagraph(self, netuid: int, block: int | None = None) -> SimpleNamespace:
         return SimpleNamespace(
             hotkeys=list(self.hotkeys), num_uids=len(self.hotkeys), tempo=self.tempo

@@ -11,7 +11,7 @@ use task_api::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
 use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{budgets, checks, lifecycle, sampling, uploadlog};
 
-use crate::harness::{judged, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
+use crate::harness::{judged, objective_fail, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
 
 async fn started(task_urls: usize, check_share: f64) -> Harness {
     let h = Harness::with(|s| {
@@ -48,7 +48,11 @@ pub async fn settled(h: &Harness, task: &str) -> String {
     while Instant::now() < deadline {
         lifecycle::settle_seeded(&h.state).await.unwrap();
         match h.state.validation.job(&h.redis, task).await.unwrap() {
-            None => return "finalized".into(),
+            None => {
+                // Finalized on the miner's own report; its round closes at once so its accounts settle.
+                h.settle().await;
+                return "finalized".into();
+            }
             Some(job) if job.get("picked").is_some_and(|p| p.is_string()) => return job["picked"].as_str().unwrap().into(),
             Some(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
@@ -108,8 +112,10 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
     start_recheck(&h, hotkey.clone()).await;
     let checked = task_id(&h.mine(&h.miner, 0).await);
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
-    let verdict = judged(&h, &h.validator, "fail", Some(&checked), json!({})).await.1.unwrap();
-    assert_eq!(verdict["verdict"], "fail");
+    let verdict = judged(&h, &h.validator, "fail", Some(&checked), objective_fail()).await.1.unwrap();
+    assert_eq!(verdict["verdict"], "pending", "a fail waits for the validation deadline");
+    assert_eq!(h.past_deadline().await, [checked.as_str()]);
+    assert_eq!(h.view(&checked).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
     let taken = h.public(&format!("/v1/miners/{hotkey}")).await.1["take_backs"].clone();
@@ -128,12 +134,13 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
 }
 
 #[tokio::test]
-async fn an_upload_written_again_after_completion_fails_its_check_as_the_miners_fault() {
+async fn an_upload_written_again_after_completion_charges_nothing_and_checks_the_next_uploads() {
     let h = started(2, 0.0).await;
     let hotkey = h.miner.ss58();
     established(&h, hotkey.clone()).await;
     let unchecked = task_id(&h.mine(&h.miner, 0).await);
     settled(&h, &unchecked).await;
+    let earned = credits(&h, hotkey.clone()).await;
     start_recheck(&h, hotkey.clone()).await;
     let checked = task_id(&h.mine(&h.miner, 0).await);
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
@@ -142,22 +149,23 @@ async fn an_upload_written_again_after_completion_fails_its_check_as_the_miners_
     for count in ["returned", "missing", "duplicates", "error_rows", "sampled", "matched", "mismatched", "unverifiable", "not_fetched", "errors_confirmed"] {
         changed[count] = 0.into();
     }
-    let verdict = h.validator.post(&format!("/v1/validation/{checked}/score"), changed).await.unwrap();
-    assert_eq!(verdict["verdict"], "fail");
+    // Read without a pinned version, the key could have been rewritten by the bucket's owner or a relay that saw its link.
+    let verdict = h.settled_answer(h.validator.post(&format!("/v1/validation/{checked}/score"), changed).await.unwrap()).await;
+    assert_eq!((verdict["verdict"].clone(), verdict["published"].clone()), (json!("void"), json!(false)));
     assert_eq!(h.view(&checked).await["score"]["reason"], UPLOAD_CHANGED);
-    assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
-    assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
+    assert_ne!(h.view(&unchecked).await["score"]["verdict"], "withdrawn", "nothing is taken back");
+    assert_eq!(credits(&h, hotkey.clone()).await, earned, "and the changed upload costs nothing");
     let asked = hotkey.clone();
     let (recheck, struck) = h
         .state
         .db
         .run(move |conn| {
-            let struck: String = conn.query_row("SELECT reason FROM strikes WHERE hotkey = ?", [&asked], |row| row.get(0))?;
+            let struck: i64 = conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [&asked], |row| row.get(0))?;
             Ok((checks::recheck_left(conn, &asked, CRAWL)?, struck))
         })
         .await
         .unwrap();
-    assert_eq!((recheck, struck.as_str()), (sampling::RECHECK_UPLOADS, UPLOAD_CHANGED));
+    assert_eq!((recheck, struck), (sampling::RECHECK_UPLOADS, 0), "the validators' fail still has its next uploads checked");
 }
 
 #[tokio::test]
@@ -169,7 +177,8 @@ async fn two_fails_among_the_last_ten_checks_lock_out_and_wipe_the_day() {
         start_recheck(&h, hotkey.clone()).await;
         let task = task_id(&h.mine(&h.miner, 0).await);
         settled(&h, &task).await;
-        judged(&h, &h.validator, "fail", Some(&task), json!({})).await.1.unwrap();
+        judged(&h, &h.validator, "fail", Some(&task), objective_fail()).await.1.unwrap();
+        h.past_deadline().await;
     }
     let asked = hotkey.clone();
     let until = h.state.db.run(move |conn| budgets::locked_until(conn, &asked, "crawl", desearch::time::now())).await.unwrap().expect("locked out");
@@ -181,8 +190,9 @@ async fn two_fails_among_the_last_ten_checks_lock_out_and_wipe_the_day() {
 async fn a_checked_upload_that_overstates_its_report_fails() {
     let h = started(3, 1.0).await;
     let task = task_id(&h.mine(&h.miner, 0).await);
-    let verdict = judged(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("errors_confirmed"), "")).await.1.unwrap();
-    assert_eq!(verdict["verdict"], "fail");
+    judged(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("errors_confirmed"), "")).await.1.unwrap();
+    h.past_deadline().await;
+    assert_eq!(h.view(&task).await["score"]["verdict"], "fail");
     assert_eq!(h.view(&task).await["score"]["reason"], lifecycle::REPORTED_ROWS);
 }
 
@@ -253,7 +263,7 @@ async fn every_completed_upload_is_logged_signed_for_validators() {
     let again = uploadlog::flush(&h.state, &h.state.storage).await.unwrap();
     let written = h.json_object(&upload_log_key(1)).unwrap();
     let later = uploadlog::flush(&h.state, &h.state.storage).await.unwrap();
-    assert_eq!(h.json_object(UPLOAD_LOG_LATEST), Some(json!({"seq": 2})));
+    assert_eq!(h.json_object(UPLOAD_LOG_LATEST).unwrap()["seq"], 2);
     let signature: Vec<u8> = (0..128).step_by(2).map(|i| u8::from_str_radix(&written["signature"].as_str().unwrap()[i..i + 2], 16).unwrap()).collect();
     assert!(desearch::hotkey::verify(&desearch::hotkey::public_of(&h.state.signer()).unwrap(), &log_payload(written.as_object().unwrap()), &signature));
     let entries: Vec<Value> = written["entries"].as_array().unwrap().iter().map(|e| e["task_id"].clone()).collect();

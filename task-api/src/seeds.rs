@@ -27,6 +27,22 @@ impl Seeds {
         }
     }
 
+    /// The height every deadline is measured on: the chain's newest finalized block as last read, never counted on the clock.
+    pub async fn height(&self) -> Result<i64> {
+        match self {
+            Seeds::Local { .. } => self.current_block().await,
+            Seeds::Chain(chain) => chain.finalized_block().await,
+        }
+    }
+
+    /// Seconds a block stands for when a duration is turned into blocks.
+    pub fn block_seconds(&self) -> f64 {
+        match self {
+            Seeds::Local { block_seconds, .. } => *block_seconds,
+            Seeds::Chain(_) => BLOCK_SECONDS,
+        }
+    }
+
     pub async fn target_block(&self) -> Result<i64> {
         Ok(self.current_block().await? + REVEAL_AFTER_BLOCKS)
     }
@@ -38,14 +54,20 @@ impl Seeds {
         }
     }
 
-    /// The seed of a block that exists, None before it does.
-    pub async fn seed_for(&self, block: i64) -> Result<Option<String>> {
+    /// The hash of a block that exists, None before it does; the log keeps it beside every decision it seeds, so anyone can check it
+    /// against a node of their own.
+    pub async fn block_hash(&self, block: i64) -> Result<Option<String>> {
         if self.current_block().await? < block {
             return Ok(None);
         }
         Ok(match self {
-            Seeds::Local { .. } => Some(seed_from_hash(&local_block_hash(block))),
-            Seeds::Chain(chain) => chain.block_hash(block).await?.map(|hash| seed_from_hash(&hash)),
+            Seeds::Local { .. } => Some(local_block_hash(block)),
+            Seeds::Chain(chain) => chain.block_hash(block).await?,
         })
+    }
+
+    /// The seed of a block that exists, None before it does.
+    pub async fn seed_for(&self, block: i64) -> Result<Option<String>> {
+        Ok(self.block_hash(block).await?.map(|hash| seed_from_hash(&hash)))
     }
 }

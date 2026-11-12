@@ -34,6 +34,11 @@ const LATE_ARRIVAL_S: f64 = 10.0;
 const SLOW_LINE_S: f64 = 1.0;
 const SLOW_LINES_PER_MINUTE: u64 = 300;
 
+/// The key a read was signed with, when it was answered, and the signature; `signed_read` says what it covers.
+pub const SIGNER_HEADER: &str = "x-desearch-signer";
+pub const SIGNED_AT_HEADER: &str = "x-desearch-signed-at";
+pub const SIGNATURE_HEADER: &str = "x-desearch-signature";
+
 pub enum ApiError {
     Status {
         status: u16,
@@ -139,7 +144,9 @@ pub fn json_body(body: &[u8]) -> Result<Value, ApiError> {
 pub type Query = HashMap<String, String>;
 
 pub fn body_limit(path: &str) -> usize {
-    if path == "/v1/admin/enqueue" || path.ends_with("/score") {
+    if path == crate::custody::RECEIVE_PATH {
+        crate::custody::HANDOVER_BYTES
+    } else if path == "/v1/admin/enqueue" || path.ends_with("/score") {
         LARGE_BODY_BYTES
     } else {
         BODY_BYTES
@@ -213,7 +220,7 @@ pub fn peer(request: &Request) -> String {
 
 async fn limit_requests(Shared(state): Shared<Arc<State>>, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
-    let address = crate::auth::client_address(request.headers(), &peer(&request));
+    let address = crate::auth::client_address(request.headers(), &peer(&request), &state.settings.client_address_header);
     let wait = match *request.method() {
         Method::GET => state.read_wait(&address, logs::PATHS.iter().any(|p| path.starts_with(p))).await,
         Method::POST => state.write_wait(&address).await,
@@ -229,13 +236,60 @@ async fn limit_requests(Shared(state): Shared<Arc<State>>, request: Request, nex
     }
 }
 
+/// What a read's signature covers, as canonical JSON: the path and query asked, when it was answered, and the SHA-256 of the body sent.
+pub fn signed_read(path: &str, at: &str, body: &[u8]) -> Vec<u8> {
+    crate::py::canonical(&json!({"path": path, "at": at, "sha256": crate::proofs::sha256(body)}))
+}
+
+/// Every answered read is signed, so a page or a screenshot of one can be shown to have come from the API, and when.
+async fn sign_reads(Shared(state): Shared<Arc<State>>, request: Request, next: Next) -> Response {
+    if request.method() != Method::GET {
+        return next.run(request).await;
+    }
+    let path = request.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
+    let response = next.run(request).await;
+    if !response.status().is_success() {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+        return detail(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".into());
+    };
+    let at = format!("{:.3}", desearch::time::now());
+    let signature = state.sign(&signed_read(&path, &at, &bytes));
+    for (name, value) in [(SIGNER_HEADER, state.signer()), (SIGNED_AT_HEADER, at), (SIGNATURE_HEADER, signature)] {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            parts.headers.insert(HeaderName::from_static(name), value);
+        }
+    }
+    Response::from_parts(parts, Body::from(bytes))
+}
+
+/// A copy that does not hold the log turns writes away: it would sign with a key validators do not follow.
+async fn hold_writes(Shared(state): Shared<Arc<State>>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let exempt = path == crate::custody::RECEIVE_PATH || path == crate::custody::HANDOVER_PATH;
+    if *request.method() == Method::POST && !exempt && !state.custody.signing() {
+        if path == CLAIM_PATH {
+            return unavailable(CLAIM_PATH);
+        }
+        let status = serde_json::to_value(state.custody.status()).unwrap_or_default();
+        return with_retry_after(
+            detail(StatusCode::SERVICE_UNAVAILABLE, format!("this copy does not hold the log ({})", status.as_str().unwrap_or("")).into()),
+            "30",
+        );
+    }
+    next.run(request).await
+}
+
 fn cors(origins: &[String]) -> CorsLayer {
     let allowed: Vec<HeaderValue> = origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
-    CorsLayer::new()
-        .allow_origin(AllowOrigin::list(allowed))
-        .allow_methods([Method::GET])
-        .allow_headers(Any)
-        .expose_headers([HeaderName::from_static("retry-after")])
+    CorsLayer::new().allow_origin(AllowOrigin::list(allowed)).allow_methods([Method::GET]).allow_headers(Any).expose_headers([
+        HeaderName::from_static("retry-after"),
+        HeaderName::from_static(SIGNER_HEADER),
+        HeaderName::from_static(SIGNED_AT_HEADER),
+        HeaderName::from_static(SIGNATURE_HEADER),
+    ])
 }
 
 async fn not_found() -> Response {
@@ -319,11 +373,21 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/tasks/{task_id}/abandon", post(routes::abandon))
         .route("/v1/validation/{task_id}/release", post(routes::release))
         .route("/v1/validation/{task_id}/score", post(routes::score))
-        .route("/v1/embed/{task_id}/reference", post(routes::embed_reference))
         .route("/v1/shares", get(routes::shares))
         .route("/v1/room", get(routes::room))
         .route("/v1/admin/enqueue", post(routes::enqueue))
         .route("/v1/key", get(routes::key))
+        .route("/v1/storage/probes", get(routes::storage_probes))
+        .route("/v1/storage/probe-link", post(routes::storage_probe_link))
+        .route("/v1/storage/witness", post(routes::storage_witness))
+        .route("/v1/config", get(routes::config))
+        .route("/v1/attestation", get(routes::attestation))
+        .route("/v1/custody", get(routes::custody))
+        .route(crate::custody::RECEIVE_PATH, post(routes::custody_receive))
+        .route(crate::custody::HANDOVER_PATH, post(routes::handover))
+        .route("/v1/admin/pause", post(routes::pause))
+        .route("/v1/clock", get(routes::clock))
+        .route("/v1/outages", get(routes::outages))
         .route("/v1/rounds", get(routes::round_list))
         .route("/v1/rounds/{round_id}", get(routes::round_view))
         .route("/v1/rounds/{round_id}/log", get(routes::round_log))
@@ -343,7 +407,9 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/tasks", get(logs::tasks))
         .route("/v1/tasks/{task_id}", get(logs::task))
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), sign_reads))
         .layer(middleware::from_fn(method_not_allowed))
+        .layer(middleware::from_fn_with_state(state.clone(), hold_writes))
         .layer(middleware::from_fn_with_state(state.clone(), limit_requests))
         .layer(cors(&state.settings.cors_origins))
         .layer(middleware::from_fn(limit_body))

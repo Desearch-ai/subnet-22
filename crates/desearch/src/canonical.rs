@@ -1,4 +1,4 @@
-//! Page URLs canonicalised and keyed exactly as `app.canonical` does with Python's urllib.
+//! Page URLs canonicalised and keyed exactly as Python's urllib does it, as `task-api/feeder/canonical.py` still does.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -276,7 +276,7 @@ pub fn quote_plus(s: &str, out: &mut String) {
     }
 }
 
-/// The query names `TRACKING` in `app.canonical` matches, with Python's case-insensitive `^` and `$`.
+/// The query names `TRACKING` in `feeder/canonical.py` matches, with Python's case-insensitive `^` and `$`.
 fn tracking(name: &str) -> bool {
     let folded: String = name.chars().map(text::fold).collect();
     if folded.starts_with("utm_") {
@@ -284,4 +284,18 @@ fn tracking(name: &str) -> bool {
     }
     let bare = folded.strip_suffix('\n').unwrap_or(&folded);
     TRACKING.contains(&bare)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urls_are_keyed_as_the_feeder_keys_them() {
+        // The same vector is asserted in task-api/tests/test_feeder.py.
+        let url = "https://WWW.Example.com/a?utm_source=x&b=2&fbclid=y&Ref=z#frag";
+        assert_eq!(canonicalize(url).unwrap(), "https://www.example.com/a?b=2");
+        assert_eq!(url_sha1(url).unwrap(), "4a6a28a07159fc9d362f31d8c17a77de5db6d2ae");
+        assert_eq!(domain_of(url).unwrap(), "example.com");
+    }
 }

@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::py::canonical;
 
 pub const ALGORITHM: &str = "desearch-serve-order-2";
+/// A crawl round committed to its URL set, cut into batches only after its seed.
+pub const SET_ALGORITHM: &str = "desearch-round-3";
 
 pub fn sha256(data: &[u8]) -> String {
     hex(&Sha256::digest(data))
@@ -16,6 +18,18 @@ pub fn manifest_hash(entries: &[Value], seed_block: i64) -> String {
     let mut ordered = entries.to_vec();
     ordered.sort_by(|a, b| a["batch_id"].as_str().cmp(&b["batch_id"].as_str()));
     sha256(&canonical(&json!({"algorithm": ALGORITHM, "seed_block": seed_block, "batches": ordered})))
+}
+
+/// What a crawl round commits to before its seed block exists: the round, the seed block, how many URLs make a task, and the URL set.
+pub fn set_manifest_hash(round_id: &str, seed_block: i64, task_urls: usize, url_count: usize, urls_hash: &str) -> String {
+    sha256(&canonical(&json!({
+        "algorithm": SET_ALGORITHM,
+        "round_id": round_id,
+        "seed_block": seed_block,
+        "task_urls": task_urls,
+        "url_count": url_count,
+        "urls_hash": urls_hash,
+    })))
 }
 
 pub fn position_key(seed: &str, batch_id: &str) -> String {

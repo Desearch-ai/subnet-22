@@ -43,7 +43,11 @@ const REASON_MEANING: Record<string, string> = {
   extra_rows: 'The upload contained pages for URLs that were not part of the task.',
   reported_rows: 'The upload held fewer good pages than the miner reported for it.',
   unreadable: 'The uploaded file could not be read.',
-  upload_changed: 'The miner changed the uploaded file after reporting the task done.',
+  upload_changed:
+    'Storage served another version of the file than the one pinned when the task was done. This does not count against the miner.',
+  below_quorum: 'Validators of only one owner reported a fail on the file. It counts against the miner only once two owners agree.',
+  facts_disputed: 'Validators reported different facts about the same file, so nothing is charged.',
+  finalized_early: 'The reports were taken before the validation deadline, so a fail on them charges nothing.',
   unscorable: 'The validator could not finish its check. This does not count against the miner.',
   no_quorum: 'Not enough validators voted before the deadline.',
   validators_disagree: 'Validators reached different results and no majority formed.',
@@ -85,7 +89,7 @@ export const URL_OUTCOME_LABEL: Record<UrlOutcome, string> = {
 }
 
 export const EXCLUDED_MEANING =
-  'Excluded: disagreed with too many final results, no longer receives work'
+  'Excluded: sent too many reports its tasks could not have produced, refused for a day'
 
 export const TAKE_BACK_MEANING: Record<string, string> = {
   check_failed:

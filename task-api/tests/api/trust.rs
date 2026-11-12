@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use task_api::manifest::REVEAL_AFTER_BLOCKS;
 use task_api::queues::VOPEN;
 use task_api::state::State;
-use task_api::{lifecycle, roundlog, rounds, roundstore, validations};
+use task_api::{lifecycle, roundlog, rounds, roundstore, rules, validations};
 
 use crate::harness::{judged, score, task_id, urls, Client, Harness};
 
@@ -16,11 +16,18 @@ async fn started(task_urls: usize) -> Harness {
 }
 
 async fn standing(h: &Harness) -> Value {
-    json!(h.state.db.run(validations::audit_standing).await.unwrap())
+    json!(h.state.db.run(|conn| validations::audit_standing(conn, 0.0, 5)).await.unwrap())
 }
 
 async fn verdict(h: &Harness, validator: &Client, verdict: &str, task: Option<&str>, overrides: Value) -> Value {
     judged(h, validator, verdict, task, overrides).await.1.expect("the vote is taken")
+}
+
+/// The only validator passes the oldest upload, leaving its round to close in its own time.
+async fn raw_pass(h: &Harness) -> Value {
+    let job = h.opened(Some(&h.validator), None).await;
+    let body = score("pass", job["urls"].as_array().map_or(0, Vec::len) as i64, "ok", None, job["urls"][0].as_str().unwrap_or_default());
+    h.validator.post(&format!("/v1/validation/{}/score", job["task_id"].as_str().unwrap_or_default()), body).await.expect("the vote is taken")
 }
 
 #[tokio::test]
@@ -47,7 +54,7 @@ async fn a_second_active_validator_must_vote_before_a_task_finalizes() {
     let report = h.page(h.view(&second).await["score"]["report_key"].as_str().unwrap()).unwrap();
     assert_eq!(report["votes"].as_array().unwrap().iter().map(|v| v["verdict"].clone()).collect::<Vec<_>>(), [json!("pass"), json!("pass")]);
     for (_, standing) in standing(&h).await.as_object().unwrap() {
-        assert_eq!(standing, &json!({"audits": 1, "disagreements": 0, "excluded": false}));
+        assert_eq!(standing, &json!({"audits": 1, "disagreements": 0, "wrong_reports": 0, "excluded": false}));
     }
 }
 
@@ -102,18 +109,35 @@ async fn a_disputed_task_is_decided_by_the_majority_and_the_minority_is_marked()
 }
 
 #[tokio::test]
-async fn two_validators_that_disagree_void_the_task() {
+async fn two_validators_that_disagree_on_the_live_pages_send_the_task_back_at_no_cost() {
     let h = started(3).await;
     h.mine(&h.miner, 0).await;
     verdict(&h, &h.validator, "pass", None, json!({})).await;
     let task = task_id(&h.mine(&h.rival, 0).await);
     verdict(&h, &h.other_validator, "fail", Some(&task), json!({})).await;
-    let void = verdict(&h, &h.validator, "pass", Some(&task), json!({})).await;
+    let decided = verdict(&h, &h.validator, "pass", Some(&task), json!({})).await;
     let view = h.view(&task).await;
     assert_eq!(
-        (void["verdict"].clone(), view["status"].clone(), view["score"]["reason"].clone()),
-        (json!("void"), json!("queued"), json!("validators_disagree"))
+        (decided["verdict"].clone(), decided["published"].clone(), view["status"].clone(), view["score"]["publish_reason"].clone()),
+        (json!("pass"), json!(false), json!("queued"), json!("validators_disagree")),
+        "the file's facts pass; what the live pages showed is each validator's own business, and nothing is published"
     );
+}
+
+#[tokio::test]
+async fn reports_that_disagree_on_a_fact_of_the_file_charge_nothing() {
+    let h = started(3).await;
+    h.mine(&h.miner, 0).await;
+    verdict(&h, &h.validator, "pass", None, json!({})).await;
+    let task = task_id(&h.mine(&h.rival, 0).await);
+    verdict(&h, &h.other_validator, "fail", Some(&task), json!({"reason": "extra_rows", "duplicates": 2})).await;
+    let disputed = verdict(&h, &h.validator, "pass", Some(&task), json!({})).await;
+    assert_eq!((disputed["verdict"].clone(), disputed["reason"].clone(), disputed["credited"].clone()), (json!("void"), json!("facts_disputed"), json!(0)));
+    let rival = h.rival.ss58();
+    let strikes: i64 =
+        h.state.db.run(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [rival], |row| row.get(0))?)).await.unwrap();
+    assert_eq!(strikes, 0, "one of the two reports is wrong, and anyone can tell which from the public file");
+    assert_eq!(h.status(&task).await, "queued");
 }
 
 #[tokio::test]
@@ -129,6 +153,7 @@ async fn a_task_past_its_deadline_is_decided_on_the_votes_it_has() {
     job["deadline"] = (desearch::time::now() - 1.0).into();
     let _: () = h.redis.clone().set(format!("vjob:{task}"), job.to_string()).await.unwrap();
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap().len(), 1);
+    h.settle().await;
     assert_eq!(h.status(&task).await, "pass", "never voided for a slow validator");
 }
 
@@ -141,6 +166,7 @@ async fn an_upload_no_validator_voted_on_by_its_deadline_passes_on_its_report() 
     job["deadline"] = 0.into();
     let _: () = h.redis.clone().set(format!("vjob:{task}"), job.to_string()).await.unwrap();
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap(), [task.as_str()]);
+    h.settle().await;
     let view = h.view(&task).await;
     assert_eq!((view["status"].clone(), view["score"]["reason"].clone(), view["score"]["credited"].clone()), (json!("pass"), json!("unchecked"), json!(3)));
     assert_eq!(h.state.publish.depth(&h.redis).await.unwrap(), 1);
@@ -163,11 +189,29 @@ async fn a_report_the_task_could_not_have_produced_is_refused() {
     let task = task_id(&h.mine(&h.miner, 0).await);
     assert_eq!(judged(&h, &h.validator, "pass", None, json!({"returned": 0})).await.1.unwrap_err().status, 422);
     assert_eq!(h.status(&task).await, "open", "the refused report changed nothing");
+    assert_eq!(standing(&h).await[h.validator.ss58()]["wrong_reports"], 1, "but it is on the validator's record");
 }
 
+/// Enough reports its tasks could not have produced to be excluded for a day.
 async fn exclude(h: &Harness, validator: &Client) {
-    let hotkey = validator.ss58();
-    h.state.db.run(move |conn| (0..10).try_for_each(|_| validations::record_audit(conn, &[], std::slice::from_ref(&hotkey)))).await.unwrap();
+    let (hotkey, at) = (validator.ss58(), h.state.rule_now().await.unwrap());
+    h.state
+        .db
+        .run(move |conn| (0..5).try_for_each(|i| rules::note_wrong_report(conn, &hotkey, &format!("t{i}"), "a sampled URL is not in the task", at)))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn disagreeing_with_the_other_validators_never_excludes_a_validator() {
+    let h = started(3).await;
+    let task = task_id(&h.mine(&h.miner, 0).await);
+    let hotkey = h.validator.ss58();
+    h.state.db.run(move |conn| (0..50).try_for_each(|_| validations::record_audit(conn, &[], std::slice::from_ref(&hotkey)))).await.unwrap();
+    let job = h.opened(Some(&h.validator), Some(&task)).await;
+    let scored = h.validator.post(&format!("/v1/validation/{task}/score"), score("pass", 3, "ok", None, job["urls"][0].as_str().unwrap())).await;
+    assert_eq!(h.settled_answer(scored.unwrap()).await["verdict"], "pass");
+    assert_eq!(standing(&h).await[h.validator.ss58()]["excluded"], false);
 }
 
 #[tokio::test]
@@ -219,8 +263,10 @@ async fn nothing_compared_is_void_and_confirmed_errors_are_paid_but_not_publishe
     let void = verdict(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("unverifiable"), "")).await;
     h.mine(&h.rival, 3).await;
     let errors = verdict(&h, &h.validator, "pass", None, score("pass", 3, "ok", Some("errors_confirmed"), "")).await;
-    assert_eq!((void["verdict"].clone(), void["credited"].clone()), (json!("void"), json!(0)));
-    assert_eq!((errors["verdict"].clone(), errors["credited"].clone()), (json!("pass"), json!(3)));
+    // Nothing the validator could compare: the task goes back unpublished, but the file it was given is still counted.
+    assert_eq!((void["verdict"].clone(), void["credited"].clone(), void["published"].clone()), (json!("pass"), json!(3), json!(false)));
+    // Error rows are counted at the share of the miner's failures checks reproduced, this check's samples included.
+    assert_eq!((errors["verdict"].clone(), errors["credited"].clone()), (json!("pass"), json!(2)));
     assert_eq!(h.state.publish.depth(&h.redis).await.unwrap(), 0);
 }
 
@@ -247,6 +293,7 @@ async fn two_reports_for_one_task_at_once_leave_one_verdict_and_its_report() {
     let (one, two) = tokio::join!(h.validator.post(&path, body.clone()), h.validator.post(&path, body));
     let outcomes: Vec<u16> = [one, two].into_iter().map(|r| r.map_or_else(|refused| refused.status, |_| 200)).collect();
     assert!(outcomes.contains(&200) && outcomes.iter().all(|s| [200, 409, 503].contains(s)), "{outcomes:?}");
+    h.settle().await;
     assert_eq!(h.page(h.view(&task).await["score"]["report_key"].as_str().unwrap()).unwrap()["verdict"], "pass");
     let health = h.public("/v1/health").await.1;
     assert_eq!((health["verdicts"]["pass"].clone(), health["verdicts"]["fail"].clone()), (json!(1), json!(0)));
@@ -264,6 +311,7 @@ async fn a_final_verdict_recorded_before_redis_closed_the_upload_is_paid_once() 
     let completed: f64 = h.redis.clone().zscore(VOPEN, &task).await.unwrap();
     let _: i64 = h.redis.clone().zrem(VOPEN, &task).await.unwrap();
     assert!(lifecycle::finalize_task(&h.state, &task, &job, f64::MAX).await.unwrap().is_none(), "closed under the verdict, so not finished");
+    h.settle().await;
     let once = h.public(&format!("/v1/miners/{}", h.rival.ss58())).await.1;
     assert_eq!(once["pools"]["crawl"]["verified"], 3, "finalized before Redis lost it");
     let _: i64 = h.redis.clone().zadd(VOPEN, &task, completed).await.unwrap();
@@ -318,7 +366,7 @@ async fn polling_after_a_round_closes_leaves_its_proof_intact() {
     let round_id = enqueued["round_id"].as_str().unwrap().to_string();
     h.revealed().await;
     h.mine(&h.miner, 0).await;
-    verdict(&h, &h.validator, "pass", None, json!({})).await;
+    raw_pass(&h).await;
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     let asked = round_id.clone();
     let anchored = h.state.db.run(move |conn| roundlog::anchored_root(conn, &asked)).await.unwrap();
@@ -346,7 +394,7 @@ async fn rounds_survive_a_restart_and_close_once_every_task_is_decided() {
     assert_eq!(restarted.crawl.depth(&h.redis).await.unwrap(), 1);
     assert!(lifecycle::close_finished(&h.state).await.unwrap().is_empty());
     h.mine(&h.miner, 0).await;
-    verdict(&h, &h.validator, "pass", None, json!({})).await;
+    raw_pass(&h).await;
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     assert!(!h.public(&format!("/v1/rounds/{round_id}")).await.1["closed_at"].is_null());
 }

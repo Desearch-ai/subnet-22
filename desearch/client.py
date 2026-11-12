@@ -5,11 +5,14 @@ import hashlib
 import json
 import secrets
 import time
+from collections.abc import Callable
 
 import aiohttp
 from yarl import URL
 
 from bittensor.wallets import Keypair
+
+from desearch.witness import WITNESS_HEADER, from_header, signing_payload
 
 
 class TaskApiError(Exception):
@@ -21,12 +24,20 @@ class TaskApiError(Exception):
 
 
 class TaskApiClient:
-    def __init__(self, api: str, key: Keypair | str, timeout: float = 30.0):
+    def __init__(
+        self,
+        api: str,
+        key: Keypair | str,
+        timeout: float = 30.0,
+        on_witness: Callable[[dict], None] | None = None,
+    ):
         self.key = Keypair.create_from_uri(key) if isinstance(key, str) else key
         self.hotkey: str = self.key.ss58_address
         self.api = api.rstrip("/")
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
+        # Called with each witness a relaying validator signed for one of our requests.
+        self.on_witness = on_witness
 
     async def post(self, path: str, body: dict | None = None) -> dict:
         raw = json.dumps(body or {}, separators=(",", ":")).encode()
@@ -63,6 +74,10 @@ class TaskApiClient:
                 raw = await response.read()
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise TaskApiError(0, f"{type(exc).__name__}: {exc}") from exc
+        sealed = response.headers.get(WITNESS_HEADER)
+        if sealed and self.on_witness is not None:
+            if (record := from_header(sealed)) is not None:
+                self.on_witness(record)
         if response.status >= 400:
             raise TaskApiError(
                 response.status,
@@ -75,7 +90,7 @@ class TaskApiClient:
         timestamp = str(int(time.time()))
         nonce = secrets.token_hex(16)
         digest = hashlib.sha256(body).hexdigest()
-        payload = f"{method}\n{path}\n{digest}\n{timestamp}\n{nonce}".encode()
+        payload = signing_payload(method, path, digest, timestamp, nonce)
         return {
             "X-Hotkey": self.hotkey,
             "X-Timestamp": timestamp,

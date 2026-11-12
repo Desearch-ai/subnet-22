@@ -12,10 +12,13 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::budgets::{self, hour_of, KEEP_H};
+use crate::clock::Tick;
 use crate::http::ApiError;
 use crate::queues::KINDS;
+use crate::seeds::Seeds;
 use crate::state::State;
-use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::{anchor, canary, checks, hours, journal, lifecycle, logs, outages, roundstore, snapshot, uploadlog, validations};
+use serde_json::{json, Value};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -42,6 +45,8 @@ const SEAL_EVERY: Duration = Duration::from_secs(5);
 /// Held tasks moved to the ready queue in one step at most; a backlog drains over a few steps.
 const RELEASE_AT_ONCE: usize = 2_000;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
+/// Log files published per pass at most, so a backlog drains over a few passes.
+const PUBLISH_AT_ONCE: usize = 10;
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
 const OPEN_LIST_EVERY: Duration = Duration::from_secs(5);
@@ -60,6 +65,8 @@ const ROLL_UP_ENTRIES: i64 = 5000;
 
 #[derive(Clone, Copy, Debug)]
 enum Duty {
+    Journal,
+    Anchor,
     Reclaim,
     Settle,
     Finalize,
@@ -67,15 +74,27 @@ enum Duty {
     Rounds,
     Release,
     Upkeep,
+    /// Its own loop, since a probe of a failing store may take as long as its timeouts.
+    Canary,
 }
 
-const DUTIES: [Duty; 7] = [Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep];
+const DUTIES: [Duty; 10] =
+    [Duty::Journal, Duty::Anchor, Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep, Duty::Canary];
+/// How often a canary that is turned off looks again whether it still is.
+const CANARY_OFF_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Due {
+    anchoring: anchor::Anchoring,
+    journaled_at: Option<Instant>,
+    shared_at: Option<Instant>,
+    snapshot_at: Option<Instant>,
     sealed_at: Option<Instant>,
     logged_at: Option<Instant>,
     kept_block_at: Option<Instant>,
+    probed_at: Option<Instant>,
+    /// The last storage probe that worked: an outage is dated from it.
+    storage_ok: Option<Tick>,
     listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
 }
@@ -85,26 +104,32 @@ fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
 }
 
 impl Duty {
-    fn every(self) -> Duration {
+    fn every(self, state: &State) -> Duration {
         match self {
-            Duty::Rounds => Duration::from_secs(2),
+            Duty::Rounds | Duty::Anchor => Duration::from_secs(2),
+            Duty::Canary if state.settings.canary_every > 0.0 => Duration::from_secs_f64(state.settings.canary_every),
+            Duty::Canary => CANARY_OFF_EVERY,
             _ => Duration::from_secs(1),
         }
     }
 
     async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
         match self {
-            Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
+            Duty::Journal => journal_pass(state, due).await,
+            Duty::Anchor => anchor::pass(state, &mut due.anchoring).await,
+            Duty::Reclaim => lifecycle::reclaim_expired(state, state.rule_now().await?).await.map(drop),
+            // A pause settles no upload and finalizes no verdict, so nobody is paid or penalized while it lasts.
+            Duty::Settle | Duty::Finalize if state.custody.paused().is_some() => Ok(()),
             Duty::Settle => {
                 lifecycle::recheck_malformed(state).await?;
                 lifecycle::settle_seeded(state).await.map(drop)
             }
-            Duty::Finalize => lifecycle::finalize_due(state, now()).await.map(drop),
+            Duty::Finalize => lifecycle::finalize_due(state, state.rule_now().await?).await.map(drop),
             Duty::Publish => {
                 note_publish_rate(state).await?;
                 if elapsed(due.listed_at, OPEN_LIST_EVERY) {
                     due.listed_at = Some(Instant::now());
-                    lifecycle::publish_open(state, now()).await?;
+                    lifecycle::publish_open(state, state.rule_now().await?).await?;
                 }
                 lifecycle::return_expired_publishes(state).await.map(drop)
             }
@@ -130,8 +155,39 @@ impl Duty {
                 Ok(())
             }
             Duty::Upkeep => upkeep(state, due).await,
+            Duty::Canary if state.settings.canary_every > 0.0 => canary::run(state).await.map(drop),
+            Duty::Canary => Ok(()),
         }
     }
+}
+
+/// Writes the request hashes, the shares and the snapshots into the log, and publishes what it holds.
+async fn journal_pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
+    let settings = &state.settings;
+    if !elapsed(due.journaled_at, Duration::from_secs_f64(settings.journal_every)) {
+        return Ok(());
+    }
+    due.journaled_at = Some(Instant::now());
+    journal::log_requests(state).await?;
+    // The first pass of a leader waits a whole interval, so copies taking turns do not each write the shares at once.
+    if due.shared_at.is_none() {
+        due.shared_at = Some(Instant::now());
+    } else if elapsed(due.shared_at, Duration::from_secs_f64(settings.journal_shares_every)) {
+        due.shared_at = Some(Instant::now());
+        journal::log_shares(state).await?;
+    }
+    if due.snapshot_at.is_none() {
+        due.snapshot_at = Some(Instant::now());
+    } else if elapsed(due.snapshot_at, Duration::from_secs_f64(settings.snapshot_every)) {
+        due.snapshot_at = Some(Instant::now());
+        state.db.run(|conn| snapshot::record(conn, now())).await?;
+    }
+    for _ in 0..PUBLISH_AT_ONCE {
+        if journal::publish(state).await?.is_none() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
@@ -160,24 +216,108 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     if elapsed(due.kept_block_at, BEST_BLOCK_EVERY) {
         due.kept_block_at = Some(Instant::now());
         state.keep_best_block().await?;
+        watch_finality(state).await?;
+        watch_clock(state, true).await?;
     }
-    if due.pruned_hour != Some(hour_of(now())) {
+    let probe_every = Duration::from_secs_f64(state.settings.storage_probe_s.max(1.0));
+    if state.probe_storage.swap(false, Ordering::AcqRel) || elapsed(due.probed_at, probe_every) {
+        due.probed_at = Some(Instant::now());
+        probe_storage(state, due).await?;
+    }
+    let at = state.rule_now().await?;
+    if due.pruned_hour != Some(hour_of(at)) {
         state
             .db
-            .run(|conn| {
-                let at = now();
+            .run(move |conn| {
                 budgets::prune(conn, KEEP_H, at)?;
-                validations::prune_hours(conn, at)?;
-                hours::prune(conn, at)?;
-                checks::prune(conn, at)
+                validations::prune_hours(conn, now())?;
+                hours::prune(conn, now())?;
+                canary::prune(conn, now())?;
+                outages::prune(conn, at)?;
+                crate::rules::prune(conn, at - 7.0 * 86_400.0)?;
+                checks::prune(conn, at)?;
+                // In rule time, as a replay prunes its own accounts at this entry.
+                journal::append(conn, journal::Record::new("prune", at, json!({"keep_h": KEEP_H}), Value::Null))?;
+                Ok(())
             })
             .await?;
-        due.pruned_hour = Some(hour_of(now()));
+        due.pruned_hour = Some(hour_of(at));
+        let keep = state.settings.journal_keep;
+        state.db.run(move |conn| journal::prune(conn, now(), keep)).await?;
     }
     Ok(())
 }
 
 /// Takes or renews the lease for `holder`; false while another copy holds it.
+/// Writes and reads back the probe object; a failure opens a storage outage dated from the last probe that worked.
+async fn probe_storage(state: &State, due: &mut Due) -> Result<()> {
+    let tick = state.tick().await?;
+    match outages::probe_storage(state, tick.at).await {
+        Ok(()) => {
+            if state.db.run(move |conn| outages::end_logged(conn, outages::STORAGE, tick.at, tick.block)).await? {
+                eprintln!("storage outage over at block {}", tick.block);
+            }
+            due.storage_ok = Some(tick);
+        }
+        Err(why) => {
+            let start = due.storage_ok.unwrap_or(tick);
+            let detail = why.clone();
+            if state.db.run(move |conn| outages::begin_logged(conn, outages::STORAGE, start.at, start.block, &detail)).await? {
+                eprintln!("storage outage from block {}: {why}; claims alive in it lapse at no cost", start.block);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The host clock against the chain's. Once it is off by more than `TASK_API_CLOCK_SKEW_S`, signed requests are timed by the
+/// chain, and a clock outage dated from the last check that agreed forgives every claim alive in it: a request refused for a
+/// timestamp before the check caught it was refused for no fault of its miner. Every copy times its own requests; the copy that
+/// leads (`log`) records the outage.
+pub async fn watch_clock(state: &State, log: bool) -> Result<()> {
+    let (Seeds::Chain(chain), limit) = (&state.seeds, state.settings.clock_skew_s) else { return Ok(()) };
+    if limit <= 0.0 {
+        return Ok(());
+    }
+    let (tick, best) = (state.tick().await?, chain.best_head().await?);
+    let Some(block_time) = chain.block_time(tick.block).await? else { return Ok(()) };
+    let offset = outages::host_offset(now(), block_time, best, tick.block, state.seeds.block_seconds());
+    if offset.abs() > limit {
+        state.set_clock_offset(offset);
+        if !log {
+            return Ok(());
+        }
+        let start = state.clock_ok.lock().expect("clock check").unwrap_or(tick);
+        let detail = format!("the host clock is {offset:+.0}s off block {}'s time {block_time:.0}", tick.block);
+        if state.db.run(move |conn| outages::begin_logged(conn, outages::CLOCK, start.at, start.block, &detail)).await? {
+            eprintln!("host clock {offset:+.0}s off the chain's at block {}; requests are timed by the chain, claims alive lapse at no cost", tick.block);
+        }
+    } else {
+        state.set_clock_offset(0.0);
+        *state.clock_ok.lock().expect("clock check") = Some(tick);
+        if log && state.db.run(move |conn| outages::end_logged(conn, outages::CLOCK, tick.at, tick.block)).await? {
+            eprintln!("host clock agrees with the chain again at block {}", tick.block);
+        }
+    }
+    Ok(())
+}
+
+/// Finality that falls behind the best block stops every deadline; the claims alive then lapse at no cost once it catches up.
+pub async fn watch_finality(state: &State) -> Result<()> {
+    let (Seeds::Chain(chain), limit) = (&state.seeds, state.settings.finality_stall_blocks) else { return Ok(()) };
+    let (best, tick) = (chain.best_head().await?, state.tick().await?);
+    let lag = best - tick.block;
+    if lag > limit {
+        let detail = format!("finalized block {} is {lag} blocks behind best {best}", tick.block);
+        if state.db.run(move |conn| outages::begin_logged(conn, outages::FINALITY, tick.at, tick.block, &detail)).await? {
+            eprintln!("finality stalled {lag} blocks behind best at block {}; claims alive now lapse at no cost", tick.block);
+        }
+    } else if state.db.run(move |conn| outages::end_logged(conn, outages::FINALITY, tick.at, tick.block)).await? {
+        eprintln!("finality caught up at block {}", tick.block);
+    }
+    Ok(())
+}
+
 pub async fn hold(state: &State, holder: &str) -> Result<bool> {
     let held: i64 = HOLD.key(LEASE_KEY).arg(holder).arg(LEASE_MS).invoke_async(&mut state.redis.clone()).await?;
     Ok(held == 1)
@@ -205,7 +345,11 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
     let warming = tokio::spawn(keep_warm(state.clone(), stop.clone()));
     let mut stopping = stop.clone();
     while !*stopping.borrow() {
-        let held = hold(&state, &holder).await;
+        if let Err(error) = crate::custody::refresh_pause(&state).await {
+            eprintln!("could not read the pause: {error:#}");
+        }
+        // A copy that does not hold the log signs nothing, so it runs none of the passes.
+        let held = if state.custody.signing() { hold(&state, &holder).await } else { Ok(false) };
         leading.store(matches!(held, Ok(true)), Ordering::Release);
         let followed = match held {
             Ok(true) => Ok(()),
@@ -230,6 +374,9 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
 
 async fn keep_warm(state: Arc<State>, mut stop: watch::Receiver<bool>) {
     while !*stop.borrow() {
+        if let Err(error) = watch_clock(&state, false).await {
+            eprintln!("could not check the host clock against the chain's: {error:#}");
+        }
         match logs::warm(&state).await {
             Err(ApiError::Internal(error)) => eprintln!("could not make the log pages: {error:#}"),
             Err(ApiError::Status { status, detail, .. }) => eprintln!("could not make the log pages: {status} {detail}"),
@@ -251,7 +398,7 @@ async fn keep(duty: Duty, state: Arc<State>, leading: Arc<AtomicBool>, mut stop:
             }
         }
         tokio::select! {
-            _ = tokio::time::sleep(duty.every()) => {}
+            _ = tokio::time::sleep(duty.every(&state)) => {}
             _ = stop.changed() => {}
         }
     }

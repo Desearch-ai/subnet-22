@@ -14,7 +14,7 @@ from desearch.extraction.schema import sha256_hex
 from desearch.fetch import ScrapingDog
 from desearch.manifest import OPEN_LIST_KEY
 from neurons.miners.rows import write_parquet
-from neurons.validators import crawl, tasks
+from neurons.validators import crawl, scoring, tasks
 from neurons.validators.crawl import CrawlValidator, DownloadFailed
 from neurons.validators.fetchers import to_page
 from neurons.validators.ledger import Ledger
@@ -61,6 +61,21 @@ def test_completeness_counts_missing_duplicates_and_unassigned_rows():
     assert result["sampled"] == 3
     assert {s["url"] for s in result["samples"]} == set(assigned[:3])
     assert (result["verdict"], result["reason"]) == ("fail", "extra_rows")
+
+
+def test_rows_and_error_rows_are_counted_per_host_for_the_task_api():
+    rows, assigned, fetched = synthetic(4)
+    uploaded = rows[:3] + [error_row(rows[3]["url"])]
+
+    hosts = run(uploaded, assigned, fetched, 10)["hosts"]
+
+    assert hosts == {
+        "site0.example": [1, 0],
+        "site1.example": [1, 0],
+        "site2.example": [1, 0],
+        "site3.example": [1, 1],
+    }
+    assert scoring.host_of("https://WWW.Example.com:8080/a") == "example.com:8080"
 
 
 @pytest.mark.parametrize("extra", ["duplicate", "unassigned"])
@@ -129,9 +144,9 @@ def test_integrity_ignores_a_final_url_on_another_site():
     rows, _, _ = synthetic(1)
     row = dict(rows[0], final_url="https://elsewhere.example/2024/01/story.html")
     assert derived_from_html(row)
-    assert not derived_from_html(dict(row, page_type="article")), (
-        "a borrowed final_url must not choose the page type"
-    )
+    assert not derived_from_html(
+        dict(row, page_type="article")
+    ), "a borrowed final_url must not choose the page type"
 
 
 def test_integrity_skips_error_rows_and_caps_at_fifty():
@@ -611,7 +626,7 @@ def test_a_manifest_without_an_etag_downloads_without_if_match():
     [PRECONDITION_PAGE, to_parquet(CHANGED_ROWS)],
     ids=["error page", "a readable upload"],
 )
-def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
+def test_an_upload_changed_after_its_completion_is_reported_but_neither_pays_nor_costs(
     monkeypatch, status, body
 ):
     async def never(*_):
@@ -619,20 +634,30 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
 
     monkeypatch.setattr(CrawlValidator, "run_check", never)
     ledger = Ledger(":memory:")
+    key = "uploads/dt=2026-10-20/task=t1/m-1.parquet"
+    upload = {"key": key, "task_id": "t1", "miner": "m", "completed_at": 100.0}
+    ledger.add_uploads([{**upload, "assigned": 3, "ok": 3, "errors": 0}])
+    # Another check paid the miner a rate, at which an unchecked upload would be paid.
+    ledger.record_check("other", "m", 90.0, "pass", 10, 10, 10, 10, at=90.0)
 
     ((path, vote),), pins = _checked(
         status, body, ledger=ledger, listed=("t1",), etag=ETAG
     )
 
+    # The task API keeps the report as evidence against storage, and a changed upload is never published.
     assert path == "/v1/validation/t1/score" and pins == [ETAG]
     assert (vote["verdict"], vote["reason"]) == ("fail", tasks.UPLOAD_CHANGED)
     assert (vote["returned"], vote["sampled"], vote["error_rows"]) == (0, 0, 0)
     assert (vote["samples"], vote["rejected"]) == ([], [])
+    assert not {"content_verdict", "assigned_hosts"} & set(vote)
     check = ledger.db.execute(
-        "SELECT kind, verdict, credited, returned, assigned FROM checks"
+        "SELECT kind, verdict, credited, returned, assigned FROM checks WHERE key = ?",
+        (key,),
     ).fetchone()
-    assert check == ("crawl", "fail", 0, 0, len(CHANGED_URLS))
-    assert ledger.crawl_paid(200.0)["m"].amount == -len(CHANGED_URLS)
+    assert check == ("crawl", "neutral", 0, 0, len(CHANGED_URLS))
+    # Not charged, and not paid as an unchecked upload at the miner's rate either.
+    paid = ledger.crawl_paid(200.0)["m"]
+    assert (paid.amount, paid.failed, paid.rate) == (10, 0, 1.0)
 
 
 def test_a_pinned_read_refused_after_its_task_closed_is_missing_not_changed():

@@ -1,23 +1,29 @@
 //! The task API end to end over HTTP, as miners, validators and the bot use it.
 
+mod anchor;
 mod chain;
 mod checks;
+mod custody;
 mod embed;
 mod fakechain;
+mod fakedstack;
 mod harness;
+mod journal;
 mod limits;
 mod load;
 mod logs;
 mod overlap;
 mod punishment;
 mod queueing;
-mod reference;
+mod rules;
 mod staging;
+mod tee;
 mod timing;
 mod trust;
+mod witness;
 
 use desearch::hotkey::{public_of, verify};
-use harness::{first_url, parquet, score, task_id, urls, Harness};
+use harness::{first_url, is_random_upload_key, parquet, score, task_id, urls, Harness};
 use serde_json::{json, Value};
 use task_api::budgets::{self, LOCKOUT_STEPS_H};
 use task_api::lifecycle;
@@ -73,7 +79,7 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(task["round_id"], round_id.as_str());
     assert_eq!(task["urls"].as_array().unwrap().len(), 3);
     let key = upload["key"].as_str().unwrap();
-    assert!(key.starts_with(&format!("uploads/task={id}/{}-", h.miner.ss58())) && key.ends_with(".parquet"), "{key}");
+    assert!(is_random_upload_key(key, ".parquet") && !key.contains(&id) && !key.contains(&h.miner.ss58()), "{key}");
     assert_eq!(upload["content_type"], "application/vnd.apache.parquet");
     assert_eq!(upload["expires_at"], task["expires_at"]);
     let signer = h.public("/v1/key").await.1["signer"].as_str().unwrap().to_string();
@@ -83,14 +89,15 @@ async fn a_crawl_task_goes_round_trip() {
     let complete = format!("/v1/tasks/{id}/complete");
     let report = json!({"key": key, "rows": 3, "ok": 3, "errors": 0, "bytes": 0});
     assert_eq!(h.rival.post(&complete, report.clone()).await.unwrap_err().status, 409);
-    let forged = key.replace(&h.miner.ss58(), &h.rival.ss58());
+    let forged = format!("uploads/{}.parquet", "0".repeat(32));
     assert_eq!(h.miner.post(&complete, json!({"key": forged, "rows": 3, "ok": 3})).await.unwrap_err().status, 400);
     assert_eq!(h.miner.post(&complete, report.clone()).await.unwrap_err().status, 422, "nothing uploaded yet");
 
     let body = parquet(&task);
     h.put(upload["url"].as_str().unwrap(), body.clone()).await;
     let done = h.miner.post(&complete, report.clone()).await.unwrap();
-    assert_eq!(done, json!({"task_id": id, "status": "open_for_validation"}));
+    assert_eq!((done["task_id"].as_str(), done["status"].as_str()), (Some(id.as_str()), Some("open_for_validation")));
+    assert!(receipt_verifies(&done["receipt"], &signer), "the answer carries the completion's signed receipt");
     assert_eq!(h.status(&id).await, "open");
     assert_eq!(h.object(key), Some(body.clone()), "the upload stays where the miner put it");
     let etag = h.state.storage.head(key).await.unwrap().unwrap().etag;
@@ -123,8 +130,8 @@ async fn a_crawl_task_goes_round_trip() {
         {"url": "https://site0.example/page/0", "status": 200, "sampled": true, "miner_snippet": "Story"},
         {"url": "https://site1.example/page/1", "status": 404, "error": "http_4xx"},
     ]);
-    let scored = h.validator.post(&score_path, detailed).await.unwrap();
-    assert_eq!(scored, json!({"task_id": id, "verdict": "pass", "credited": 3, "miner_budget": 2}));
+    let scored = h.settled_answer(h.validator.post(&score_path, detailed).await.unwrap()).await;
+    assert_eq!(scored, json!({"task_id": id, "verdict": "pass", "reason": "ok", "credited": 3, "published": true, "miner_budget": 2}));
     assert_eq!(h.validator.post(&score_path, score("pass", 3, "ok", None, &first_url(&task))).await.unwrap_err().status, 409);
     let view = h.view(&id).await;
     assert_eq!(view["status"], "pass");
@@ -166,17 +173,25 @@ async fn a_crawl_task_goes_round_trip() {
     let opened = h.opened(Some(&h.validator), None).await;
     assert_eq!(opened["task_id"], second_id.as_str());
     let second_score = format!("/v1/validation/{second_id}/score");
-    let failed = h.validator.post(&second_score, score("fail", 3, "content_mismatch", None, &first_url(&second))).await.unwrap();
-    assert_eq!(failed, json!({"task_id": second_id, "verdict": "fail", "credited": 0, "miner_budget": 1}));
+    let mut not_from_html = score("fail", 3, "text_not_from_html", None, &first_url(&second));
+    not_from_html["reextract_mismatch"] = 1.into();
+    not_from_html["integrity_checked"] = 3.into();
+    let failed = h.validator.post(&second_score, not_from_html).await.unwrap();
+    assert_eq!(failed["verdict"], "pending", "a fail on a validator's report waits for the validation deadline");
+    assert_eq!(h.past_deadline().await, [second_id.as_str()]);
+    let miner = h.miner.ss58();
+    let budget = h.state.db.run(move |conn| task_api::budgets::get(conn, &miner, task_api::budgets::CRAWL)).await.unwrap().budget;
+    assert_eq!(budget, 1, "the fail halved the budget");
     let view = h.view(&second_id).await;
     assert_eq!(view["status"], "queued", "a failed task goes back out for someone else");
-    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("content_mismatch")));
+    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("text_not_from_html")));
+    assert_eq!((view["score"]["publish_verdict"].clone(), view["score"]["accounts"]["outcome"].clone()), (json!("fail"), json!("fail")));
     assert!(h.object(view["score"]["upload_key"].as_str().unwrap()).is_none(), "a failed upload is deleted, so the next miner cannot resubmit it");
 
     let again = h.mine(&h.rival, 0).await;
     assert_eq!((task_id(&again), again["urls"].clone()), (second_id.clone(), second["urls"].clone()));
     h.opened(Some(&h.validator), None).await;
-    h.validator.post(&second_score, score("pass", 3, "ok", None, &first_url(&second))).await.unwrap();
+    h.settled_answer(h.validator.post(&second_score, score("pass", 3, "ok", None, &first_url(&second))).await.unwrap()).await;
     let drained = h.miner.claim().await;
     assert_eq!((drained["tasks"].clone(), drained["refusal"]["code"].clone()), (json!([]), json!("QUEUE_EMPTY")));
 
@@ -190,8 +205,10 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!((miner["pools"]["crawl"]["budget"].clone(), miner["pools"]["crawl"]["in_flight"].clone()), (json!(1), json!(0)));
     assert_eq!(miner["coverage"]["returned"], 6);
 
-    assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
+    // The last vote's round closed once its last task was decided, and its uploads' accounts settled then.
+    assert!(lifecycle::close_finished(&h.state).await.unwrap().is_empty());
     let published = h.public(&format!("/v1/rounds/{round_id}")).await.1;
+    assert!(!published["closed_at"].is_null());
     let log = h.public(&format!("/v1/rounds/{round_id}/log")).await.1;
     let leaves: Vec<Vec<u8>> = log["entries"].as_array().unwrap().iter().map(canonical).collect();
     assert_eq!(task_api::proofs::merkle_root(&leaves), log["anchor_root"].as_str().unwrap());
@@ -268,7 +285,8 @@ async fn a_locked_out_miner_is_refused_until_the_lockout_ends() {
     assert_eq!(answer["refusal"]["inputs"]["until"], round_to(until, 3));
     let first = LOCKOUT_STEPS_H[0] * 3600.0;
     let retry = answer["refusal"]["inputs"]["retry_after"].as_f64().unwrap();
-    assert!(first - 60.0 < retry && retry <= first);
+    // Measured on the block finalized now, at most a block behind the wall clock the strikes were dated by.
+    assert!(first - 60.0 < retry && retry <= first + 1.0, "{retry}");
     let view = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
     assert_eq!(view["pools"]["crawl"]["locked_until"], until);
     assert!(view["pools"]["embed"]["locked_until"].is_null());
@@ -301,6 +319,7 @@ async fn races_backlogs_storage_faults_and_voids() {
     assert_eq!(pending["verdict"], "pending", "the vote is kept, the final verdict waits");
     assert_eq!(h.status(&id).await, "voting");
     assert_eq!(lifecycle::finalize_due(&h.state, desearch::time::now()).await.unwrap(), [id.as_str()]);
+    h.settle().await;
     assert_eq!(h.status(&id).await, "pass");
     assert_eq!(h.public("/v1/health").await.1["verdicts"]["pass"], 1);
 

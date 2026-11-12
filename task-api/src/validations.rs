@@ -79,9 +79,9 @@ pub const VOTE_FIELDS: [&str; 20] = [
 ];
 pub const VERDICTS: [&str; 3] = ["pass", "fail", "void"];
 pub const WITHDRAWN: &str = "withdrawn";
-pub const MIN_AUDITS: i64 = 10;
+/// A crawl upload whose accounts wait for its round to close.
+pub const HELD: &str = "held";
 pub const URL_DETAIL_DAYS: f64 = 2.0;
-pub const MAX_DISAGREEMENT: f64 = 0.3;
 const VERDICT_SUMS: &str = "SUM(verdict = 'pass'), SUM(verdict = 'fail'), SUM(verdict = 'void')";
 
 pub fn create(conn: &Connection) -> Result<()> {
@@ -451,8 +451,21 @@ fn reports(conn: &Connection, sql: &str, args: &[&dyn ToSql]) -> Result<Vec<Map<
 }
 
 /// Every finalized upload of a task, newest first.
+/// What a task page shows of each upload's report beyond its columns: what the validators' majority found for publishing, and
+/// the accounts the rules drew from the file.
+pub const ACCOUNT_FIELDS: [&str; 3] = ["publish_verdict", "publish_reason", "accounts"];
+
 pub fn uploads(conn: &Connection, task_id: &str) -> Result<Vec<Map<String, Value>>> {
-    reports(conn, &format!("SELECT {} FROM validations WHERE task_id = ? ORDER BY id DESC", FIELDS.join(", ")), &[&task_id])
+    let mut found = reports(conn, &format!("SELECT {} FROM validations WHERE task_id = ? ORDER BY id DESC", FIELDS.join(", ")), &[&task_id])?;
+    let mut statement = conn.prepare("SELECT report FROM validations WHERE task_id = ? ORDER BY id DESC")?;
+    let kept: Vec<String> = statement.query_map([task_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for (upload, report) in found.iter_mut().zip(kept) {
+        let report: Value = serde_json::from_str(&report).unwrap_or(Value::Null);
+        for name in ACCOUNT_FIELDS {
+            upload.insert(name.into(), report.get(name).cloned().unwrap_or(Value::Null));
+        }
+    }
+    Ok(found)
 }
 
 /// The per-URL detail of the task's last check: compressed, or plain JSON as kept before.
@@ -583,6 +596,7 @@ pub fn judged_since(conn: &Connection, miner: &str, since: f64, kind: &str) -> R
 }
 
 /// A passed upload taken back: its task, the credit it had, and the round it came from.
+#[derive(Clone, Debug)]
 pub struct Taken {
     pub task_id: String,
     pub credited: i64,
@@ -614,6 +628,49 @@ pub fn withdraw(conn: &Connection, miner: &str, kind: &str, since: f64, checked_
         )?;
     }
     Ok(rows.into_iter().map(|(_, task_id, credited, _, round_id)| Taken { task_id, credited, round_id }).collect())
+}
+
+/// A held crawl upload's verdict once its round closed: its row, the miner's totals and its final verdict say what it came to.
+/// Returns the report's key, empty when no row waited.
+pub fn settle(conn: &Connection, task_id: &str, upload_key: &str, verdict: &str, reason: &str, credited: i64, accounts: &Value) -> Result<String> {
+    conn.execute("UPDATE final_verdicts SET verdict = ?, credited = ? WHERE task_id = ? AND upload_key = ?", params![verdict, credited, task_id, upload_key])?;
+    let found = conn
+        .query_row(
+            "SELECT id, miner, kind, scored_at, report, report_key FROM validations WHERE task_id = ? AND upload_key = ? AND verdict = ? ORDER BY id DESC LIMIT 1",
+            params![task_id, upload_key, HELD],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, real(row, 3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)),
+        )
+        .optional()?;
+    let Some((id, miner, kind, scored_at, report, report_key)) = found else { return Ok(String::new()) };
+    let mut report: Map<String, Value> = serde_json::from_str(&report).unwrap_or_default();
+    report.insert("verdict".into(), verdict.into());
+    report.insert("reason".into(), reason.into());
+    report.insert("credited".into(), credited.into());
+    report.insert("accounts".into(), accounts.clone());
+    conn.execute(
+        "UPDATE validations SET verdict = ?, reason = ?, credited = ?, report = ? WHERE id = ?",
+        params![verdict, reason, credited, Value::Object(report).to_string(), id],
+    )?;
+    conn.execute("UPDATE verdict_counts SET n = n - 1 WHERE miner = ? AND verdict = ?", params![miner, HELD])?;
+    conn.execute("DELETE FROM verdict_counts WHERE miner = ? AND verdict = ? AND n <= 0", params![miner, HELD])?;
+    conn.execute("INSERT INTO verdict_counts VALUES (?, ?, 1) ON CONFLICT (miner, verdict) DO UPDATE SET n = n + 1", params![miner, verdict])?;
+    if id <= rolled_through(conn)? {
+        conn.execute(
+            "UPDATE miner_hours SET pass = pass + ?, fail = fail + ?, void = void + ?, credited = credited + ? WHERE miner = ? AND kind = ? AND hour = ?",
+            params![i64::from(verdict == "pass"), i64::from(verdict == "fail"), i64::from(verdict == "void"), credited, miner, kind, hour_of(scored_at)],
+        )?;
+    }
+    Ok(report_key)
+}
+
+/// The report a verdict row keeps, as written to its report key.
+pub fn report_of(conn: &Connection, task_id: &str, report_key: &str) -> Result<Option<Value>> {
+    let found: Option<String> = conn
+        .query_row("SELECT report FROM validations WHERE task_id = ? AND report_key = ? ORDER BY id DESC LIMIT 1", params![task_id, report_key], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(found.and_then(|report| serde_json::from_str(&report).ok()))
 }
 
 /// The last verdict row counted into the hourly totals; at first, the last one before the kept window.
@@ -705,20 +762,31 @@ pub fn record_audit(conn: &Connection, agreed: &[String], disagreed: &[String]) 
     Ok(())
 }
 
-pub fn audit_standing(conn: &Connection) -> Result<BTreeMap<String, Value>> {
+/// Each validator's agreement with the majority, shown for what it is: no validator is held to it. A validator is excluded
+/// only while it has sent `limit` or more reports since `since` that the task could not have produced.
+pub fn audit_standing(conn: &Connection, since: f64, limit: i64) -> Result<BTreeMap<String, Value>> {
+    let mut standing: BTreeMap<String, Value> = BTreeMap::new();
     let mut statement = conn.prepare("SELECT hotkey, audits, disagreements FROM validator_audits")?;
-    let rows = statement.query_map([], |row| {
-        let (audits, disagreements): (i64, i64) = (row.get(1)?, row.get(2)?);
-        let excluded = audits >= MIN_AUDITS && disagreements as f64 / audits as f64 > MAX_DISAGREEMENT;
-        Ok((row.get::<_, String>(0)?, json!({"audits": audits, "disagreements": disagreements, "excluded": excluded})))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)))?;
+    for row in rows {
+        let (hotkey, audits, disagreements) = row?;
+        standing.insert(hotkey, json!({"audits": audits, "disagreements": disagreements, "wrong_reports": 0, "excluded": false}));
+    }
+    let mut statement = conn.prepare("SELECT validator, COUNT(*) FROM wrong_reports WHERE at >= ? GROUP BY validator")?;
+    let rows = statement.query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (hotkey, wrong) = row?;
+        let entry = standing.entry(hotkey).or_insert_with(|| json!({"audits": 0, "disagreements": 0}));
+        entry["wrong_reports"] = wrong.into();
+        entry["excluded"] = (wrong >= limit).into();
+    }
+    Ok(standing)
 }
 
-pub fn is_excluded(conn: &Connection, hotkey: &str) -> Result<bool> {
-    let found: Option<(i64, i64)> =
-        conn.query_row("SELECT audits, disagreements FROM validator_audits WHERE hotkey = ?", [hotkey], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-    Ok(found.is_some_and(|(audits, disagreements)| audits >= MIN_AUDITS && disagreements as f64 / audits as f64 > MAX_DISAGREEMENT))
+/// Excluded only for reports that were objectively wrong: `limit` or more since `since` the task could not have produced.
+/// Disagreeing with other validators costs nothing.
+pub fn is_excluded(conn: &Connection, hotkey: &str, since: f64, limit: i64) -> Result<bool> {
+    Ok(limit > 0 && crate::rules::wrong_reports(conn, hotkey, since)? >= limit)
 }
 
 /// The report of one finalized upload, as written to the pages bucket and the validations table.

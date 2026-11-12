@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use crate::db::{optional_real, real};
 use crate::rounds::{Batch, Round, Url};
 
-const COLUMNS: &str = "round_id, kind, manifest_hash, seed_block, opened_at, seed, serve_order, closed_at, batches";
+const COLUMNS: &str = "round_id, kind, manifest_hash, seed_block, opened_at, seed, serve_order, closed_at, batches, commitment";
 
 pub fn create(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -37,6 +37,15 @@ pub fn create(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
         ",
     )?;
+    // Rounds saved before crawl rounds committed to their URL set have none.
+    let has_commitment: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('rounds') WHERE name = 'commitment'", [], |row| row.get(0))?;
+    if has_commitment == 0 {
+        conn.execute_batch("ALTER TABLE rounds ADD COLUMN commitment TEXT")?;
+    }
+    let has_recommits: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('rounds') WHERE name = 'recommits'", [], |row| row.get(0))?;
+    if has_recommits == 0 {
+        conn.execute_batch("ALTER TABLE rounds ADD COLUMN recommits INTEGER NOT NULL DEFAULT 0")?;
+    }
     Ok(())
 }
 
@@ -71,6 +80,7 @@ fn batch_of(batch_id: &str, entry: &Value) -> Batch {
 fn round_of(row: &Row) -> rusqlite::Result<Round> {
     let order: String = row.get(6)?;
     let batches: String = row.get(8)?;
+    let commitment: Option<String> = row.get(9)?;
     let batches: Map<String, Value> = serde_json::from_str(&batches).unwrap_or_default();
     Ok(Round {
         round_id: row.get(0)?,
@@ -82,13 +92,14 @@ fn round_of(row: &Row) -> rusqlite::Result<Round> {
         order: serde_json::from_str(&order).unwrap_or_default(),
         closed_at: optional_real(row, 7)?,
         batches: batches.iter().map(|(id, entry)| batch_of(id, entry)).collect(),
+        commitment: commitment.and_then(|c| serde_json::from_str(&c).ok()),
     })
 }
 
 pub fn save(conn: &Connection, round: &Round) -> Result<()> {
     conn.execute(
         &format!(
-            "INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (round_id) DO UPDATE SET seed = excluded.seed, serve_order = excluded.serve_order, closed_at = excluded.closed_at"
         ),
         params![
@@ -100,7 +111,8 @@ pub fn save(conn: &Connection, round: &Round) -> Result<()> {
             round.seed,
             serde_json::to_string(&round.order)?,
             round.closed_at,
-            stored_batches(round)
+            stored_batches(round),
+            round.commitment.as_ref().map(Value::to_string)
         ],
     )?;
     Ok(())
@@ -118,14 +130,34 @@ pub fn unrevealed(conn: &Connection, by_block: i64, limit: i64) -> Result<Vec<Ro
 }
 
 pub fn unrevealed_tasks(conn: &Connection, kind: &str) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0) FROM rounds WHERE seed IS NULL AND kind = ?", [kind], |row| {
-        row.get(0)
-    })?)
+    Ok(conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(json_extract(commitment, '$.tasks'), (SELECT COUNT(*) FROM json_each(batches)))), 0) FROM rounds WHERE seed IS NULL AND kind = ?",
+        [kind],
+        |row| row.get(0),
+    )?)
 }
 
+/// Saves the seed and serve order; a round cut by its seed also gets its batches, as SQLite keeps them.
 pub fn mark_revealed(conn: &Connection, round: &Round) -> Result<()> {
     conn.execute("UPDATE rounds SET seed = ?, serve_order = ? WHERE round_id = ?", params![round.seed, serde_json::to_string(&round.order)?, round.round_id])?;
+    if round.commitment.is_some() {
+        conn.execute("UPDATE rounds SET batches = ? WHERE round_id = ?", params![sealed_batches(round), round.round_id])?;
+    }
     Ok(())
+}
+
+/// A round committed again to a later seed block, under the manifest hash that names it.
+pub fn recommit(conn: &Connection, round_id: &str, seed_block: i64, manifest_hash: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE rounds SET seed_block = ?, manifest_hash = ?, recommits = recommits + 1 WHERE round_id = ? AND seed IS NULL",
+        params![seed_block, manifest_hash, round_id],
+    )?;
+    Ok(())
+}
+
+/// How many times a round committed again because no anchor reached the chain before its seed block.
+pub fn recommits(conn: &Connection, round_id: &str) -> Result<i64> {
+    Ok(conn.query_row("SELECT recommits FROM rounds WHERE round_id = ?", [round_id], |row| row.get(0)).optional()?.unwrap_or(0))
 }
 
 /// Revealed rounds whose tasks never reached the queue.
@@ -270,6 +302,7 @@ mod tests {
             seed: seed.map(String::from),
             order: Vec::new(),
             closed_at: None,
+            commitment: None,
         }
     }
 

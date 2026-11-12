@@ -18,11 +18,13 @@ use serde_json::{json, Map, Value};
 
 use crate::auth::{self, client_address, Caller};
 use crate::budgets::{self, CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET};
+use crate::clock::Tick;
 use crate::embedding::{self, VECTORS_SUFFIX, VECTORS_TYPE};
 use crate::http::{json_body, unavailable, Answer, ApiError, Query, CLAIM_PATH};
 use crate::lifecycle::{self, kind_of, signed_manifest, text, EMBED_FIELDS};
 use crate::manifest::REVEAL_AFTER_BLOCKS;
 use crate::models::{self, ClaimBody, CompleteBody, Enqueue};
+use crate::outages;
 use crate::py::round_to;
 use crate::queues::{self, Claim, Refusal, CLAIMS};
 use crate::roundlog::{self, Receipt};
@@ -31,7 +33,7 @@ use crate::state::State;
 use crate::storage::{delete_quietly, is_parquet};
 use crate::validations::{self, TaskFilter};
 use crate::verdicts::{build_embed_vote, build_vote};
-use crate::{roundstore, sampling, uploadlog};
+use crate::{journal, roundstore, rules, sampling, uploadlog};
 
 const COMPLETE_LOCK_S: i64 = 300;
 const CLAIM_DRAWS: usize = 4;
@@ -41,7 +43,7 @@ const COMPLETE_POLL: Duration = Duration::from_millis(250);
 /// R2's clock and ours may differ by this much.
 const CLOCK_SLACK_S: f64 = 2.0;
 const SLOW_S: f64 = 5.0;
-const LINK_SLACK_S: u64 = 60;
+const LINK_SLACK_S: u64 = 300;
 const TASKS_PAGE: i64 = 50;
 const MAX_TASKS_PAGE: i64 = 100;
 const ENQUEUED_TTL_S: u64 = 86_400;
@@ -105,8 +107,13 @@ pub struct Signed<'a> {
 
 impl Signed<'_> {
     pub async fn caller(&self, state: &State) -> Result<Caller, ApiError> {
-        let address = client_address(self.headers, &self.peer.ip().to_string());
+        let address = client_address(self.headers, &self.peer.ip().to_string(), &state.settings.client_address_header);
         auth::caller(state, self.headers, self.method, self.uri.path(), self.body, &address).await
+    }
+
+    /// The request as the log keeps it, so anyone can check the caller signed it.
+    pub fn logged(&self) -> (Value, Vec<journal::Blob>) {
+        journal::signed_request(self.headers, self.method, self.uri.path(), self.body)
     }
 }
 
@@ -137,6 +144,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let body = ClaimBody::parse(&json_body(signed.body)?)?;
     let kind: &'static str = if body.kind == EMBED { EMBED } else { CRAWL };
     let round_id = state.current_round(kind);
+    if let Some(pause) = state.custody.paused() {
+        return refused(state, signed, &round_id, &who, Refusal::new("PAUSED", json!({"reason": pause["reason"], "since": pause["since"]}))).await;
+    }
 
     let rated = state.retry_after(&who.hotkey).await?;
     steps.mark("rate");
@@ -146,18 +156,20 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
     }
     if kind == EMBED && !state.settings.embed_tasks {
-        return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
     }
     if kind == EMBED && !body.models.contains(&state.settings.embed_model) {
-        return refused(state, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
     }
-    let at = now();
+    let tick = state.tick().await?;
+    let at = tick.at;
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
     let locked = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await?;
     steps.mark("lockout");
     if let Some(until) = locked {
-        let inputs = json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)});
-        return refused(state, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
+        let clock = state.clock().await?;
+        let inputs = json!({"until": round_to(until, 3), "until_block": clock.block_of(until), "retry_after": round_to(until - at, 3)});
+        return refused(state, signed, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
     }
     // Stop leasing work whose upload would expire before validation.
     let validating = state.validation.oldest_age(&state.redis, at).await?.max(state.validation.oldest_seeding_age(&state.redis, at).await?);
@@ -167,7 +179,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     if max_backlog != 0.0 && validating.max(publishing) > max_backlog {
         let waiting = state.publish.waiting(&state.redis).await?;
         let inputs = json!({"validation_s": validating, "publish_s": publishing, "limit_s": max_backlog, "publish_waiting": waiting});
-        return refused(state, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
     }
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
     let found = {
@@ -176,8 +188,20 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     };
     let budget = match found {
         Some(miner) => miner.budget,
-        None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
+        None => {
+            let created = state.db.run(move |conn| {
+                let miner = budgets::get_or_create(conn, &hotkey, &pool)?;
+                // A miner's first claim gives it a budget, whether or not the claim gets anything or is logged.
+                if conn.changes() > 0 {
+                    journal::append(conn, journal::Record::new("miner", now(), json!({"hotkey": hotkey, "pool": pool}), json!({"budget": miner.budget})))?;
+                }
+                Ok(miner)
+            });
+            created.await?.budget
+        }
     };
+    // The miner's on-chain incentive caps what the checks earned it: validators' own judgment of its pages reaches it this way.
+    let budget = budget.min(state.budget_cap(&who.hotkey, at).await?);
     steps.mark("budget");
     let tasks = state.tasks(kind);
     let mut issued = Vec::new();
@@ -185,9 +209,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let mut dropped = 0;
     // A draw that was all dropped tasks leaves the miner nothing, so it draws again rather than wait out a refusal.
     for _ in 0..CLAIM_DRAWS {
-        let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
+        let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, at).await? {
             Ok(claims) => claims,
-            Err(refusal) => return refused(state, &round_id, &who, refusal).await,
+            Err(refusal) => return refused(state, signed, &round_id, &who, refusal).await,
         };
         steps.mark("queue");
         let drawn = claims.len();
@@ -201,7 +225,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
                     continue;
                 }
             }
-            if let Some(task) = issue(state, &got, kind, &who).await? {
+            if let Some(task) = issue(state, &got, kind, &who, at).await? {
                 receipts.push(Receipt {
                     round_id: text(&task, "round_id").into(),
                     hotkey: who.hotkey.clone(),
@@ -209,6 +233,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
                     outcome: "issued",
                     seq: got.seq,
                     task_id: Some(got.task_id.clone()),
+                    request: Some(who.request.clone()),
                     ..Receipt::default()
                 });
                 issued.push(task);
@@ -221,55 +246,65 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     if issued.is_empty() && dropped > 0 {
         let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
-        return refused(state, &round_id, &who, refusal).await;
+        return refused(state, signed, &round_id, &who, refusal).await;
     }
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));
     }
     steps.mark("issue");
-    let receipts = state.record(receipts).await?;
+    let (request, blobs) = signed.logged();
+    let input = json!({"request": request, "kind": kind, "budget": budget, "at": at, "block": tick.block});
+    let receipts = state.record_logged(receipts, "claim", input, blobs).await?;
     steps.mark("receipts");
-    // The time spent signing and recording the claims is ours, not the miner's.
+    // The time spent signing and recording the claims is ours, not the miner's: the claim starts at the block finalized now.
     let task_ids: Vec<String> = issued.iter().map(|task| text(task, "task_id").to_string()).collect();
-    let expiry = tasks.start_clocks(&state.redis, &who.hotkey, &task_ids, now()).await?;
+    let (clock, started) = (state.clock().await?, state.tick().await?);
+    let due = clock.deadline(started, tasks.claim_ttl);
+    let expiry = tasks.start_clocks(&state.redis, &who.hotkey, &task_ids, due.at).await?;
     steps.mark("clocks");
     if let Some(slow) = steps.slow() {
         eprintln!("claiming {} tasks for {} took {slow}", task_ids.len(), who.hotkey);
     }
+    // Miners are shown the wall time the deadline falls at if blocks keep coming every block time; the block decides.
+    let expires_at = now() + (expiry - started.at) - UPLOAD_GRACE_S;
     for task in &mut issued {
-        task["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
-        task["upload"]["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
+        task["expires_at"] = expires_at.into();
+        task["expires_block"] = due.block.into();
+        task["upload"]["expires_at"] = expires_at.into();
     }
     Ok(Json(json!({"tasks": issued, "receipts": receipts})))
 }
 
-async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {
+async fn refused(state: &State, signed: &Signed<'_>, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {
     refusal.inputs.entry("retry_after").or_insert_with(|| retry_after_for(refusal.code).into());
     let refusal_value = refusal.as_value();
     if !state.first_refusal(&who.hotkey, refusal.code).await? {
         return Ok(Json(json!({"tasks": [], "refusal": refusal_value, "receipt": null})));
     }
     let seq = state.next_seq().await?;
-    let receipt = state
-        .record_one(Receipt {
-            round_id: round_id.into(),
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "refused",
-            seq,
-            refusal: Some(refusal_value.clone()),
-            ..Receipt::default()
-        })
-        .await?;
+    let (request, blobs) = signed.logged();
+    let receipt = Receipt {
+        round_id: round_id.into(),
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "refused",
+        seq,
+        refusal: Some(refusal_value.clone()),
+        request: Some(who.request.clone()),
+        ..Receipt::default()
+    };
+    let receipt = state.record_logged(vec![receipt], "claim", json!({"request": request}), blobs).await?.remove(0);
     Ok(Json(json!({"tasks": [], "refusal": refusal_value, "receipt": receipt})))
 }
 
 /// The task as the miner receives it, with an upload link only it can use.
-async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<Option<Value>, ApiError> {
+async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller, at: f64) -> Result<Option<Value>, ApiError> {
     let task_id = &got.task_id;
     let (suffix, content_type) = if kind == EMBED { (VECTORS_SUFFIX, VECTORS_TYPE) } else { (".parquet", PARQUET) };
-    let name = format!("task={task_id}/{}-{}{suffix}", who.hotkey, got.seq);
-    // Random task ids lead the key so storage that shards by key range spreads the writes.
+    // A random name says nothing of the miner, the task or the claim, so neither the storage nor the path to it
+    // can tell whose upload a write carries; the key reaches the public log only with the completion. Being
+    // random, it also spreads writes over storage that shards by key range.
+    let name = format!("{}{suffix}", upload_name());
     let upload_key = format!("uploads/{name}");
     let since_epoch = Duration::from_secs_f64(now());
     // It may outlive the claim; a late completion or a file written after it is refused.
@@ -291,9 +326,9 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     } else {
         json!({})
     };
-    let issued = json!({"hotkey": who.hotkey, "key": upload_key, "name": name, "at": now()});
+    let issued = json!({"hotkey": who.hotkey, "key": upload_key, "name": name, "at": at});
     let _: () = state.redis.clone().set(format!("issued:{task_id}"), issued.to_string()).await?;
-    let expires_at = got.expires_at - UPLOAD_GRACE_S;
+    let expires_at = now() + (got.expires_at - at) - UPLOAD_GRACE_S;
     let round_id = got.payload.get("round_id").cloned().unwrap_or_else(|| state.current_round(kind).into());
     let mut task = Map::new();
     task.insert("task_id".into(), task_id.clone().into());
@@ -304,6 +339,11 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     task.extend(inputs.as_object().cloned().unwrap_or_default());
     task.insert("upload".into(), json!({"url": upload_url, "key": upload_key, "content_type": content_type, "expires_at": expires_at}));
     Ok(Some(Value::Object(task)))
+}
+
+/// 128 random bits from the thread's CSPRNG, as 32 hex characters.
+pub fn upload_name() -> String {
+    format!("{:032x}", rand::random::<u128>())
 }
 
 async fn completed_by(state: &State, task_id: &str, hotkey: &str) -> Result<Option<Value>, ApiError> {
@@ -333,19 +373,34 @@ pub async fn complete(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    // The deadline is judged when the request arrived, not after our own work on it.
-    let arrived = now();
+    // The deadline is judged at the block finalized when the request arrived, not after our own work on it.
+    let arrived = Arrival { wall: now(), tick: state.tick().await? };
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = signed.caller(&state).await?;
-    let report = CompleteBody::parse(&json_body(&body)?)?;
+    let logged = signed.logged();
+    let report = match json_body(&body).and_then(|body| Ok(CompleteBody::parse(&body)?)) {
+        Ok(report) => report,
+        Err(error) => return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await,
+    };
     let holds = state.claim_holder(&task_id).await?.as_deref() == Some(who.hotkey.as_str());
     if !holds && completed_by(&state, &task_id, &who.hotkey).await?.is_none() {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        let error = ApiError::status(409, "you do not hold this claim");
+        return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await;
     }
-    let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
+    if let Err(refused) = unpaused(&state) {
+        // Turned away for the pause: the log shows it, and the claim lapses at no cost.
+        return refuse_logged(&state, "complete", logged, &task_id, refused, arrived.tick, &who.hotkey).await;
+    }
+    let lock = match hold_completion(&state, &task_id, &who.hotkey).await {
+        Ok(lock) => lock,
+        Err(error) => return refuse_logged(&state, "complete", logged, &task_id, error, arrived.tick, &who.hotkey).await,
+    };
     // Detached so a miner that times out can't cancel it and leave the lock to block its retries.
     let finishing = detach(&state.clone(), async move {
-        let outcome = finish_completion(&state, &task_id, &report, &who, arrived).await;
+        let outcome = finish_completion(&state, &task_id, &report, &who, arrived, logged.clone()).await;
+        if let Err(ApiError::Status { status, detail, .. }) = &outcome {
+            log_refused(&state, "complete", logged, &task_id, (*status, detail), arrived.tick, None).await?;
+        }
         state.delete(&lock).await?;
         outcome
     });
@@ -355,7 +410,72 @@ pub async fn complete(
     }
 }
 
-async fn finish_completion(state: &State, task_id: &str, report: &CompleteBody, who: &Caller, arrived: f64) -> Result<Value, ApiError> {
+/// A signed request the API turned down, with why, at the rule time it was judged at; a miner holding the claim can then show the
+/// log what it was told. A report its task could not have produced counts against its validator in the same transaction.
+async fn log_refused(
+    state: &State,
+    kind: &'static str,
+    (request, blobs): (Value, Vec<journal::Blob>),
+    task_id: &str,
+    (status, detail): (u16, &Value),
+    tick: Tick,
+    wrong: Option<(String, String)>,
+) -> Result<(), ApiError> {
+    let at = tick.at;
+    let mut input = json!({"request": request, "task_id": task_id, "block": tick.block});
+    if let Some((_, why)) = &wrong {
+        input["wrong_report"] = why.clone().into();
+    }
+    let record = journal::Record::new(kind, at, input, json!({"refused": {"status": status, "detail": detail}})).with_blobs(blobs);
+    let task = task_id.to_string();
+    state
+        .db
+        .run(move |conn| {
+            if let Some((validator, why)) = &wrong {
+                rules::note_wrong_report(conn, validator, &task, why, at)?;
+            }
+            journal::append(conn, record)
+        })
+        .await?;
+    Ok(())
+}
+
+/// Refuses a miner's signed completion or abandon and logs the refusal, so every answer the API gives a request a validator
+/// relayed is in its log, accepted or not, at the block it was judged at. Past `REFUSALS_LOGGED_PER_MINUTE` refusals of one
+/// hotkey in a minute the rest are answered 429 unlogged, so nobody can grow the log at will.
+async fn refuse_logged<T>(
+    state: &State,
+    kind: &'static str,
+    logged: (Value, Vec<journal::Blob>),
+    task_id: &str,
+    error: ApiError,
+    tick: Tick,
+    hotkey: &str,
+) -> Result<T, ApiError> {
+    if let ApiError::Status { status, detail, .. } = &error {
+        if !state.refusal_to_log(hotkey).await? {
+            return Err(ApiError::retry(429, "too many refused requests this minute; they are no longer logged", "60"));
+        }
+        log_refused(state, kind, logged, task_id, (*status, detail), tick, None).await?;
+    }
+    Err(error)
+}
+
+/// When a completion reached the API: its block and rule time decide whether it was in time, the wall time is compared with storage's own clock.
+#[derive(Clone, Copy)]
+struct Arrival {
+    wall: f64,
+    tick: Tick,
+}
+
+async fn finish_completion(
+    state: &State,
+    task_id: &str,
+    report: &CompleteBody,
+    who: &Caller,
+    arrived: Arrival,
+    logged: (Value, Vec<journal::Blob>),
+) -> Result<Value, ApiError> {
     if let Some(done) = completed_by(state, task_id, &who.hotkey).await? {
         return Ok(done);
     }
@@ -363,31 +483,53 @@ async fn finish_completion(state: &State, task_id: &str, report: &CompleteBody, 
         return Err(ApiError::status(409, "you do not hold this claim"));
     }
     match queues::claim_expiry(&state.redis, task_id).await? {
-        Some(expiry) if expiry >= arrived => {}
+        Some(expiry) if expiry >= arrived.tick.at => {}
         _ => return Err(ApiError::status(409, "you do not hold a live claim on this task")),
     }
-    let result = verify_completion(state, task_id, report, who, arrived).await?;
+    let result = verify_completion(state, task_id, report, who, arrived, logged).await?;
     let done = json!({"miner": who.hotkey, "result": result});
     let _: () = state.redis.clone().set_ex(format!("completed:{task_id}"), done.to_string(), COMPLETED_TTL_S).await?;
     Ok(result)
 }
 
-fn storage_down(what: &str, error: StorageError) -> ApiError {
-    eprintln!("{what}: {error}");
+/// Entity tags compared without the quotes some stores and clients drop.
+fn same_etag(a: &str, b: &str) -> bool {
+    a.trim().trim_matches('"') == b.trim().trim_matches('"')
+}
+
+/// Storage failed a miner's completion: the janitor probes it at once, so an outage is on record before claims lapse in it.
+fn storage_down(state: &State, what: &str, error: StorageError) -> ApiError {
+    eprintln!("storage failed a completion, probing it now: {what}: {error}");
+    state.probe_storage.store(true, std::sync::atomic::Ordering::Release);
     ApiError::status(502, "object storage is unavailable, retry")
 }
 
-async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, who: &Caller, arrived: f64) -> Result<Value, ApiError> {
+async fn verify_completion(
+    state: &State,
+    task_id: &str,
+    report: &CompleteBody,
+    who: &Caller,
+    arrived: Arrival,
+    (request, mut blobs): (Value, Vec<journal::Blob>),
+) -> Result<Value, ApiError> {
     let issued: Option<String> = state.redis.clone().get(format!("issued:{task_id}")).await?;
     let issued: Value = issued.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_else(|| json!({}));
     if issued.get("key").and_then(Value::as_str) != Some(report.key.as_str()) {
         return Err(ApiError::status(400, "key is not the one issued with this claim"));
     }
-    let found = state.storage.head(&report.key).await.map_err(|e| storage_down(&format!("HEAD failed for {}", report.key), e))?;
+    // The version the miner's own upload made, when it names one; otherwise whatever the key holds now.
+    let found =
+        state.storage.head_at(&report.key, report.version.as_deref()).await.map_err(|e| storage_down(state, &format!("HEAD failed for {}", report.key), e))?;
     let Some(found) = found.filter(|f| f.size > 0) else {
+        if report.version.is_some() {
+            return Err(ApiError::status(422, "the issued key holds no such version"));
+        }
         return Err(ApiError::status(422, "nothing was uploaded to the issued key"));
     };
-    if found.modified.is_some_and(|modified| modified as f64 > arrived + CLOCK_SLACK_S) {
+    if report.etag.as_deref().is_some_and(|etag| !same_etag(etag, &found.etag)) {
+        return Err(ApiError::status(409, "the issued key holds another object than the one you uploaded; upload again and complete"));
+    }
+    if found.modified.is_some_and(|modified| modified as f64 > arrived.wall + CLOCK_SLACK_S) {
         return Err(ApiError::status(409, "the upload was written after this completion"));
     }
     if found.size > state.settings.max_upload {
@@ -410,22 +552,44 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         let framed = match is_parquet(&state.storage, &report.key, &found).await {
             Ok(framed) => framed,
             Err(StorageError::Changed | StorageError::Missing) => return Err(ApiError::status(409, "the upload changed while completing, retry")),
-            Err(error) => return Err(storage_down(&format!("could not read the ends of {}", report.key), error)),
+            Err(error) => return Err(storage_down(state, &format!("could not read the ends of {}", report.key), error)),
         };
         if !framed {
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
-    state.storage.make_public(&report.key).await.map_err(|e| storage_down(&format!("could not open {} to readers", report.key), e))?;
+    // Locked for the check window, so not even the bucket's owner can delete the version every reader is sent to. A store
+    // that refuses fails the completion closed: nothing unlocked is pinned, the miner completes again, and the refusal opens an
+    // `upload_lock` outage, closed by the next lock that holds, so a claim that lapses meanwhile costs its miner nothing.
+    let mut lock = Value::Null;
+    if let Some(version) = found.version.as_deref().filter(|_| state.settings.upload_lock_s > 0.0) {
+        let until = (arrived.wall + state.settings.upload_lock_s).ceil() as i64;
+        let tick = arrived.tick;
+        if let Err(error) = state.storage.lock_version(&report.key, version, until).await {
+            let detail = format!("could not lock {} version {version}: {error}", report.key);
+            eprintln!("{detail}");
+            state.db.run(move |conn| outages::begin_logged(conn, outages::UPLOAD_LOCK, tick.at, tick.block, &detail)).await?;
+            return Err(ApiError::retry(503, "object storage would not lock your upload; complete again", "10"));
+        }
+        state.db.run(move |conn| outages::end_logged(conn, outages::UPLOAD_LOCK, tick.at, tick.block)).await?;
+        lock = json!({"version": version, "until": until, "locked": true});
+    }
+    state
+        .storage
+        .make_public_at(&report.key, found.version.as_deref())
+        .await
+        .map_err(|e| storage_down(state, &format!("could not open {} to readers", report.key), e))?;
 
-    let mut steps = Steps::since(arrived);
+    let mut steps = Steps::since(arrived.wall);
     steps.mark("checks");
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
     // The sample seed is a block hash nobody knew when the upload was pinned.
     let frozen_block = state.seeds.current_block().await?;
-    let completed_at = arrived;
+    let completed_at = arrived.tick.at;
+    let clock = state.clock().await?;
     let position = payload.get("position").cloned().unwrap_or_else(|| 0.into());
-    // The PUT URL outlives this call, so every reader asks for the version checked here by its entity tag.
+    // The PUT URL outlives this call, so every reader asks for the version checked here: by its version id on a
+    // versioned bucket, where a later write can't take its place, else by its entity tag.
     let mut job = json!({
         "task_id": task_id,
         "kind": kind,
@@ -442,12 +606,16 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         "completed_at": completed_at,
         "frozen_block": frozen_block,
         "seed_block": frozen_block + REVEAL_AFTER_BLOCKS,
-        "deadline": completed_at + state.seeds.wait_s() + state.settings.validation_ttl,
+        "completed_block": arrived.tick.block,
+        "deadline": clock.deadline(arrived.tick, state.seeds.wait_s() + state.settings.validation_ttl).at,
     });
     for name in EMBED_FIELDS {
         if let Some(value) = payload.get(name) {
             job[name] = value.clone();
         }
+    }
+    if let Some(version) = &found.version {
+        job["version"] = version.clone().into();
     }
     // An embed upload's counts come from its input, never from the miner.
     if kind == CRAWL {
@@ -455,31 +623,44 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
     }
     job["manifest"] = signed_manifest(state, &job);
     steps.mark("manifest");
-    let Some(seq) = state.tasks(&kind).complete(&state.redis, task_id, &who.hotkey, &job, &report.key, arrived).await? else {
+    let Some(seq) = state.tasks(&kind).complete(&state.redis, task_id, &who.hotkey, &job, &report.key, arrived.tick.at).await? else {
         return Err(ApiError::status(409, "you do not hold a live claim on this task"));
     };
     steps.mark("queues");
     sampling::note_upload(&state.redis, &kind, &who.hotkey, completed_at).await?;
     uploadlog::note(&state.redis, &job).await?;
     steps.mark("logs");
-    let receipt = state
-        .record_one(Receipt {
-            round_id,
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "completed",
-            seq,
-            task_id: Some(task_id.into()),
-            block: Some(frozen_block),
-            ..Receipt::default()
-        })
-        .await;
+    let (kept, urls) = lifecycle::logged_job(&job);
+    blobs.extend(urls);
+    let receipt = Receipt {
+        round_id,
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "completed",
+        seq,
+        task_id: Some(task_id.into()),
+        block: Some(frozen_block),
+        request: Some(who.request.clone()),
+        ..Receipt::default()
+    };
+    let input = json!({"request": request, "task_id": task_id, "job": kept, "lock": lock, "block": arrived.tick.block});
+    let receipt = state.record_logged(vec![receipt], "complete", input, blobs).await;
     steps.mark("receipt");
     if let Some(slow) = steps.slow() {
         eprintln!("completing {task_id} took {slow}");
     }
-    receipt?;
-    Ok(json!({"task_id": task_id, "status": "open_for_validation"}))
+    // The signed receipt goes back with the answer, so a relay that carried the completion holds the API to it.
+    let receipt = receipt?.into_iter().next().unwrap_or(Value::Null);
+    Ok(json!({"task_id": task_id, "status": "open_for_validation", "receipt": receipt}))
+}
+
+/// While paused nothing changes the accounts: no upload is completed, no claim handed back and no report taken; callers come back
+/// once it is resumed.
+fn unpaused(state: &State) -> Result<(), ApiError> {
+    match state.custody.paused() {
+        Some(pause) => Err(ApiError::retry(503, format!("the task API is paused: {}", pause["reason"].as_str().unwrap_or_default()), "60")),
+        None => Ok(()),
+    }
 }
 
 pub async fn abandon(
@@ -490,45 +671,71 @@ pub async fn abandon(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = signed.caller(&state).await?;
+    let tick = state.tick().await?;
+    let at = tick.at;
     let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
     let kind = kind_of(&payload).to_string();
+    let not_held = || ApiError::status(409, "you do not hold this claim");
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, not_held(), tick, &who.hotkey).await;
     }
-    let forgiven = lifecycle::held_through_restart(&state, state.tasks(&kind).claim_ttl, queues::claim_expiry(&state.redis, &task_id).await?);
+    if let Err(refused) = unpaused(&state) {
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, refused, tick, &who.hotkey).await;
+    }
+    let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
+    let forgiving = lifecycle::forgiving(&state, state.tasks(&kind).claim_ttl).await?;
     // A completion still running decides first; a finished one leaves nothing to abandon.
-    let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
+    let lock = match hold_completion(&state, &task_id, &who.hotkey).await {
+        Ok(lock) => lock,
+        Err(error) => return refuse_logged(&state, "abandon", signed.logged(), &task_id, error, tick, &who.hotkey).await,
+    };
     let seq = state.tasks(&kind).abandon(&state.redis, &task_id, &who.hotkey).await;
     state.delete(&lock).await?;
     let Some(seq) = seq? else {
-        return Err(ApiError::status(409, "you do not hold this claim"));
+        return refuse_logged(&state, "abandon", signed.logged(), &task_id, not_held(), tick, &who.hotkey).await;
     };
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-    state
-        .record_one(Receipt {
-            round_id,
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "reclaimed",
-            seq,
-            task_id: Some(task_id.clone()),
-            cause: Some(if forgiven { "restart" } else { "abandoned" }.into()),
-            ..Receipt::default()
-        })
-        .await?;
-    let (hotkey, task, lapsed) = (who.hotkey.clone(), task_id.clone(), payload);
-    let budget = state
+    let receipt = Receipt {
+        round_id,
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "reclaimed",
+        seq,
+        task_id: Some(task_id.clone()),
+        request: Some(who.request.clone()),
+        ..Receipt::default()
+    };
+    let (request, blobs) = signed.logged();
+    let (hotkey, task, lapsed, key) = (who.hotkey.clone(), task_id.clone(), payload, state.key.clone());
+    let (budget, receipts) = state
         .db
         .run(move |conn| {
-            if forgiven {
-                Ok(budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget)
+            // Decided here, on the outages the log holds up to this entry, so a replay decides it alike.
+            let forgiven = lifecycle::forgiven_in(conn, &forgiving, expiry)?;
+            let receipt = Receipt { cause: Some(forgiven.clone().unwrap_or_else(|| "abandoned".into())), ..receipt };
+            let receipts = crate::state::record_receipts(conn, &key, vec![receipt], at)?;
+            let budget = if forgiven.is_some() {
+                budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget
             } else {
-                lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", now())
-            }
+                lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", at)?
+            };
+            let input = json!({
+                "request": request,
+                "task_id": task,
+                "kind": kind_of(&lapsed),
+                "assigned": lifecycle::assigned(&lapsed),
+                "expiry": expiry,
+                "forgiving": forgiving.logged(),
+                "forgiven": forgiven,
+                "block": tick.block,
+            });
+            journal::append(conn, journal::Record::new("abandon", at, input, json!({"receipts": receipts.clone(), "budget": budget})).with_blobs(blobs))?;
+            Ok((budget, receipts))
         })
         .await?;
-    Ok(Json(json!({"task_id": task_id, "budget": budget})))
+    Ok(Json(json!({"task_id": task_id, "budget": budget, "receipts": receipts})))
 }
 
 /// An upload storage lost is void; nothing else is anyone's to hand back.
@@ -540,13 +747,15 @@ pub async fn release(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
     models::release(&json_body(&body)?)?;
     let job = state.validation.job(&state.redis, &task_id).await?;
     let Some(job) = job.filter(|job| job.get("picked").is_some_and(|p| !p.is_null() && p != false && p != "")) else {
         return Err(ApiError::status(409, "no such open upload"));
     };
-    let gone = state.storage.head(text(&job, "key")).await.map_err(|_| ApiError::status(502, "object storage is unavailable, retry"))?.is_none();
+    let pinned = job.get("version").and_then(Value::as_str);
+    let gone = state.storage.head_at(text(&job, "key"), pinned).await.map_err(|_| ApiError::status(502, "object storage is unavailable, retry"))?.is_none();
     if !gone {
         return Ok(Json(json!({"task_id": task_id, "status": "open"})));
     }
@@ -554,43 +763,11 @@ pub async fn release(
         return Err(ApiError::status(409, "the upload was finalized"));
     };
     lifecycle::void_task(&state, &task_id, lapsed, &who.hotkey, "upload_missing").await?;
+    let (request, blobs) = signed.logged();
+    let record = journal::Record::new("release", now(), json!({"request": request, "task_id": task_id}), json!({"status": "void", "reason": "upload_missing"}));
+    let record = record.with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
     Ok(Json(json!({"task_id": task_id, "status": "void"})))
-}
-
-/// Reference vectors for the texts a validator sampled from an open embed upload, for validators without a model server of their own.
-pub async fn embed_reference(
-    Shared(state): Shared<Arc<State>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Path(task_id): Path<String>,
-    headers: HeaderMap,
-    uri: Uri,
-    body: Bytes,
-) -> Answer {
-    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
-    let text_ids = models::reference_body(&json_body(&body)?)?;
-    if state.reference.is_none() {
-        return Err(ApiError::status(503, "this task API has no reference model server"));
-    }
-    let Some(job) = state.validation.job(&state.redis, &task_id).await? else {
-        return Err(ApiError::status(409, "no such open upload"));
-    };
-    if kind_of(&job) != EMBED {
-        return Err(ApiError::status(422, "not an embed upload"));
-    }
-    // Detached so a validator that times out can't cancel it, leaving its lock and losing the vectors.
-    let (asked, ids, model) = (task_id.clone(), text_ids.clone(), job["model"].clone());
-    let computing = detach(&state.clone(), async move {
-        let Some(reference) = state.reference.as_ref() else {
-            return Err(ApiError::status(503, "this task API has no reference model server"));
-        };
-        reference.vectors(&state, &asked, &job, &who.hotkey, &ids).await
-    });
-    let vectors = match computing.await {
-        Ok(vectors) => vectors?,
-        Err(error) => return Err(anyhow::anyhow!("reference task failed: {error}").into()),
-    };
-    let rows: Vec<Value> = text_ids.iter().zip(vectors).map(|(text_id, embedding)| json!({"text_id": text_id, "embedding": embedding})).collect();
-    Ok(Json(json!({"task_id": task_id, "model": model, "vectors": rows})))
 }
 
 pub async fn score(
@@ -601,7 +778,9 @@ pub async fn score(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
+    unpaused(&state)?;
     let result = match json_body(&body)? {
         Value::Object(result) => result,
         Value::Null => return Err(models::Invalid::single("missing", &["body"], "Field required").into()),
@@ -611,31 +790,55 @@ pub async fn score(
     if !state.set_once(&lock, &who.hotkey, lifecycle::FINALIZE_LOCK_S).await? {
         return Err(ApiError::retry(503, "a verdict for this upload is already being recorded", "2"));
     }
-    let outcome = record_verdict(&state, &task_id, result, &who).await;
+    let tick = state.tick().await?;
+    let at = tick.at;
+    let mut wrong = None;
+    let outcome = record_verdict(&state, &task_id, result, &who, signed.logged(), at, &mut wrong).await;
+    if let Err(ApiError::Status { status, detail, .. }) = &outcome {
+        log_refused(&state, "report", signed.logged(), &task_id, (*status, detail), tick, wrong).await?;
+    }
     state.delete(&lock).await?;
     outcome.map(Json)
 }
 
-async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>, who: &Caller) -> Result<Value, ApiError> {
-    let hotkey = who.hotkey.clone();
-    if state.lookups.read(move |conn| validations::is_excluded(conn, &hotkey)).await? {
+async fn record_verdict(
+    state: &State,
+    task_id: &str,
+    result: Map<String, Value>,
+    who: &Caller,
+    (request, blobs): (Value, Vec<journal::Blob>),
+    at: f64,
+    wrong: &mut Option<(String, String)>,
+) -> Result<Value, ApiError> {
+    let (hotkey, since, limit) = (who.hotkey.clone(), at - state.settings.wrong_reports_window_s, state.settings.wrong_reports);
+    if state.lookups.read(move |conn| validations::is_excluded(conn, &hotkey, since, limit)).await? {
         state.validation.leave(&state.redis, &who.hotkey).await?;
-        return Err(ApiError::status(403, "this validator disagreed with too many audits"));
+        return Err(ApiError::status(403, format!("this validator sent {limit} or more reports its tasks could not have produced in the last day")));
     }
-    state.validation.present(&state.redis, &who.hotkey, now()).await?;
+    state.validation.present(&state.redis, &who.hotkey, at).await?;
     let Some(job) = state.validation.job(&state.redis, task_id).await? else {
         return Err(ApiError::status(409, "no such open upload"));
     };
     let kind = kind_of(&job).to_string();
-    state.validation.present_for(&state.redis, &kind, &who.hotkey, now()).await?;
+    state.validation.present_for(&state.redis, &kind, &who.hotkey, at).await?;
     let built =
         if kind == EMBED { build_embed_vote(&job, &who.hotkey, models::embed_score(&result)?) } else { build_vote(&job, &who.hotkey, models::score(&result)?) };
-    let mut vote = built.map_err(|why| ApiError::status(422, why.0))?;
-    vote["at"] = now().into();
-    if state.validation.vote(&state.redis, task_id, &who.hotkey, &vote, now()).await? == 0 {
+    let mut vote = match built {
+        Ok(vote) => vote,
+        Err(why) => {
+            // A report the task could not have produced is objectively wrong, whoever else agrees with it; it is counted with
+            // the refusal's log entry.
+            *wrong = Some((who.hotkey.clone(), why.0.clone()));
+            return Err(ApiError::status(422, why.0));
+        }
+    };
+    vote["at"] = at.into();
+    if state.validation.vote(&state.redis, task_id, &who.hotkey, &vote, at).await? == 0 {
         return Err(ApiError::status(409, "this validator already voted on this upload"));
     }
-    if let Some(finalized) = lifecycle::finalize_task(state, task_id, &job, now()).await? {
+    let record = journal::Record::new("report", at, json!({"request": request, "task_id": task_id}), json!({"vote": vote})).with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
+    if let Some(finalized) = lifecycle::finalize_task(state, task_id, &job, at).await? {
         return Ok(finalized);
     }
     let (miner, pool) = (text(&job, "miner").to_string(), kind.clone());
@@ -644,7 +847,7 @@ async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>
 }
 
 pub async fn shares(Shared(state): Shared<Arc<State>>) -> Answer {
-    let as_of = now() - state.settings.ledger_delay;
+    let as_of = state.rule_now().await? - state.settings.ledger_delay;
     let pools = state.lookups.read(move |conn| budgets::shares(conn, SHARE_WINDOW_H, as_of)).await?;
     Ok(Json(json!({"window_hours": SHARE_WINDOW_H, "as_of": as_of, "pools": pools})))
 }
@@ -707,7 +910,8 @@ async fn embed_room(state: &State) -> Answer {
 
 /// A batch sent twice, after a timeout, is queued once.
 pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
-    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = signed.caller(&state).await?;
     if !who.is_admin {
         return Err(ApiError::status(403, "only admins may do this"));
     }
@@ -726,16 +930,182 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
             return Ok(Json(earlier));
         }
     }
-    let round = lifecycle::open_round(&state, request.urls).await?.map_err(|invalid| ApiError::status(422, invalid.to_string()))?;
-    let found = json!({"round_id": round.round_id, "batches": round.batches.len(), "seed_block": round.seed_block, "manifest_hash": round.manifest_hash});
+    let round = lifecycle::open_round(&state, request.urls, signed.logged()).await?.map_err(|invalid| ApiError::status(422, invalid.to_string()))?;
+    let found = json!({"round_id": round.round_id, "batches": round.tasks(), "seed_block": round.seed_block, "manifest_hash": round.manifest_hash});
     if let Some(seen) = &seen {
         let _: () = state.redis.clone().set_ex(seen, found.to_string(), ENQUEUED_TTL_S).await?;
     }
     Ok(Json(found))
 }
 
+/// The finalized height every deadline is measured on, and how it turns into the rule times the API stores and shows.
+pub async fn clock(Shared(state): Shared<Arc<State>>) -> Answer {
+    let tick = state.tick().await?;
+    Ok(Json(state.clock().await?.view(tick, now())))
+}
+
 pub async fn key(Shared(state): Shared<Arc<State>>) -> Answer {
     Ok(Json(json!({"signer": state.signer()})))
+}
+
+/// The storage canary's probes since `since` (the last hour unless asked), newest first, and the outages they show.
+pub async fn storage_probes(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let since = crate::logs::float_param(&query, "since")?.unwrap_or_else(|| now() - 3600.0);
+    let limit = crate::logs::int_param(&query, "limit", 100, 1, 1000)?;
+    let every = state.settings.canary_every;
+    let mut report = state.lookups.read(move |conn| crate::canary::report(conn, since, limit)).await?;
+    report["every_s"] = every.into();
+    Ok(Json(report))
+}
+
+/// Seconds a validator's storage probe link lasts, and links one validator gets a minute.
+const PROBE_LINK_S: u64 = 120;
+const PROBE_LINKS_PER_MINUTE: i64 = 4;
+/// Storage witnesses one validator may log a minute; one is enough for the rules, the rest are answered 429.
+const WITNESSES_PER_MINUTE: i64 = 2;
+
+/// A presigned PUT, GET and DELETE of a fresh key named and shaped like a miner's upload, so a validator probes storage the
+/// way miners use it, from where it stands; storage can't tell the probe from an upload.
+pub async fn storage_probe_link(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
+    if !state.per_minute("probe_links", &who.hotkey, PROBE_LINKS_PER_MINUTE).await? {
+        return Err(ApiError::retry(429, "too many probe links this minute", "60"));
+    }
+    let key = format!("uploads/{}.parquet", upload_name());
+    let at = now();
+    let since = Duration::from_secs_f64(at);
+    Ok(Json(json!({
+        "key": key,
+        "content_type": PARQUET,
+        "put_url": state.storage.presign("PUT", &key, PROBE_LINK_S, Some(PARQUET), since),
+        "get_url": state.storage.presign("GET", &key, PROBE_LINK_S, None, since),
+        "delete_url": state.storage.presign("DELETE", &key, PROBE_LINK_S, None, since),
+        "expires_at": at + PROBE_LINK_S as f64,
+    })))
+}
+
+/// What a validator's witness says failed, or None when it reports storage working: its own probe (`probe`, `ok` false) or its
+/// look at a completed upload (`storage`) that storage did not answer or answered with a server error.
+fn witnessed_failure(record: &Value) -> Option<String> {
+    let failed = match record["kind"].as_str() {
+        Some("probe") => record["ok"] == false,
+        Some("storage") => record["status"].as_i64().is_none_or(|status| status >= 500),
+        _ => false,
+    };
+    if !failed {
+        return None;
+    }
+    let what = match record["kind"].as_str() {
+        Some("probe") => format!("probe {}: {}", text(record, "step"), text(record, "detail")),
+        _ => format!("HEAD {}: {}", text(record, "key"), record["status"].as_i64().map_or_else(|| text(record, "error").to_string(), |s| format!("HTTP {s}"))),
+    };
+    Some(what.chars().take(200).collect())
+}
+
+/// A validator's signed report that storage failed it, logged at the block it arrived at. Wherever enough validators report
+/// failures close together, a claim alive then lapses at no cost, whatever the API's own probes saw (`outages::witnessed`).
+/// A refused report is logged too, so the validator's own record of sending it finds an answer in the log.
+pub async fn storage_witness(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
+    let tick = state.tick().await?;
+    let record = json_body(&body)?.get("record").cloned().unwrap_or(Value::Null);
+    let failure = witnessed_failure(&record).filter(|_| record["witness"] == who.hotkey.as_str());
+    let Some(detail) = failure else {
+        let error = ApiError::status(422, "a storage witness must be the caller's own and report a failure");
+        return refuse_logged(&state, "witness", signed.logged(), "", error, tick, &who.hotkey).await;
+    };
+    if !state.per_minute("witnesses", &who.hotkey, WITNESSES_PER_MINUTE).await? {
+        return Err(ApiError::retry(429, "too many storage witnesses this minute", "60"));
+    }
+    let (request, blobs) = signed.logged();
+    let validator = who.hotkey.clone();
+    let input = json!({"request": request, "witness": validator, "kind": record["kind"], "detail": detail, "at": tick.at, "block": tick.block});
+    let seq = state
+        .db
+        .run(move |conn| {
+            outages::note_witness(conn, &validator, tick.at, tick.block, &detail)?;
+            let (seq, _) = journal::append(conn, journal::Record::new("witness", tick.at, input, Value::Null).with_blobs(blobs))?;
+            Ok(seq)
+        })
+        .await?;
+    Ok(Json(json!({"accepted": true, "seq": seq, "block": tick.block})))
+}
+
+/// Every setting this copy runs with, secrets left out; the attestation binds its hash.
+/// Every setting, and the pause beside them: the settings are what the attestation binds, the pause is state.
+pub async fn config(Shared(state): Shared<Arc<State>>) -> Answer {
+    let mut config = state.settings.public();
+    config["paused"] = state.custody.paused().unwrap_or(Value::Null);
+    Ok(Json(config))
+}
+
+/// Which key signs the log, every custody record this copy knows, and the pause.
+pub async fn custody(Shared(state): Shared<Arc<State>>) -> Answer {
+    Ok(Json(crate::custody::view(&state).await?))
+}
+
+/// A predecessor's state, sealed to this CVM's attested handover key.
+pub async fn custody_receive(Shared(state): Shared<Arc<State>>, body: Bytes) -> Answer {
+    Ok(Json(crate::custody::receive(&state, body).await?))
+}
+
+async fn admin(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiError> {
+    let who = signed.caller(state).await?;
+    if !who.is_admin {
+        return Err(ApiError::status(403, "only an admin hotkey may do this"));
+    }
+    Ok(who)
+}
+
+/// Hands the log to the CVM at `successor`, once its attestation holds and validators' stake approved its version.
+pub async fn handover(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
+    admin(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let request = json_body(&body)?;
+    let successor =
+        request["successor"].as_str().filter(|s| s.starts_with("http")).ok_or_else(|| ApiError::status(422, "successor must be the successor's URL"))?;
+    Ok(Json(crate::custody::hand_over(&state, successor).await?))
+}
+
+/// Pauses or resumes the accounts, the only emergency power.
+pub async fn pause(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = admin(&state, &signed).await?;
+    let request = json_body(&body)?;
+    let paused = request["paused"].as_bool().ok_or_else(|| ApiError::status(422, "paused must be true or false"))?;
+    let reason = request["reason"].as_str().unwrap_or_default();
+    if paused && reason.trim().is_empty() {
+        return Err(ApiError::status(422, "a pause needs a reason"));
+    }
+    // The log says when and why, with the admin's signed request.
+    let (logged, blobs) = signed.logged();
+    Ok(Json(crate::custody::pause(&state, paused, reason, &who.hotkey, logged, blobs).await?))
+}
+
+/// The CVM's TDX quote and what it binds: the signer, the handover key, the settings and the TLS key.
+pub async fn attestation(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let Some(tee) = &state.tee else {
+        return Err(ApiError::status(404, "this copy does not run in a TEE"));
+    };
+    let nonce = query.get("nonce").map(|text| crate::attestation::nonce(text)).transpose().map_err(|error| ApiError::status(422, error.to_string()))?;
+    let answer = tee.attestation(&state.signer(), &state.settings.public(), nonce.as_deref()).await.map_err(|error| {
+        eprintln!("attesting failed: {error:#}");
+        ApiError::retry(503, "the attestation could not be made now, retry", "5")
+    })?;
+    Ok(Json(answer))
 }
 
 pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
@@ -745,12 +1115,43 @@ pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): Q
 }
 
 pub async fn round_view(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {
-    let Some(found) = state.lookups.read(move |conn| roundstore::get(conn, &round_id)).await? else {
+    let params = state.settings.rules();
+    let Some((found, loads)) = state
+        .lookups
+        .read(move |conn| {
+            let Some(found) = roundstore::get(conn, &round_id)? else { return Ok(None) };
+            let loads = rules::round_view(conn, &round_id, &params)?;
+            Ok(Some((found, loads)))
+        })
+        .await?
+    else {
         return Err(ApiError::status(404, "no such round"));
     };
     let mut view = found.public_view();
     view.insert("signer".into(), state.signer().into());
+    // How much of the round validators could load, and the hosts most miners could not, as its checks so far showed.
+    if found.kind == CRAWL {
+        view.insert("loadability".into(), loads.view());
+    }
     Ok(Json(Value::Object(view)))
+}
+
+/// Storage outages and finality stalls the API saw in the last week: claims alive in them lapsed at no cost.
+pub async fn outages(Shared(state): Shared<Arc<State>>) -> Answer {
+    let at = state.rule_now().await?;
+    let since = at - crate::outages::KEEP_DAYS * 86_400.0;
+    let (window, quorum) = (state.settings.storage_witness_window, state.settings.storage_witness_quorum);
+    let (found, witnessed) =
+        state.lookups.read(move |conn| Ok((crate::outages::recent(conn, since, 200)?, crate::outages::witnessed(conn, since, at, window, quorum)?))).await?;
+    // Storage outages validators' witnesses make, beside the ones the API's own probes opened.
+    let witnessed: Vec<Value> = witnessed
+        .iter()
+        .map(|span| {
+            json!({"cause": crate::outages::WITNESSED, "start": span.start, "end": span.end, "start_block": span.start_block,
+                   "end_block": span.end_block, "validators": span.validators})
+        })
+        .collect();
+    Ok(Json(json!({"outages": found, "witnessed": witnessed, "witness_quorum": quorum, "witness_window_s": window})))
 }
 
 pub async fn round_log(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {
@@ -794,14 +1195,16 @@ pub async fn health(Shared(state): Shared<Arc<State>>) -> Answer {
     let at = now();
     let redis = &state.redis;
     let outcomes: Option<i64> = redis.clone().get(desearch::feeds::OUTCOMES.counter()).await?;
-    let mut active = state.validation.active(redis, at).await?;
+    let rule_now = state.rule_now().await?;
+    let mut active = state.validation.active(redis, rule_now).await?;
     active.sort();
+    let wrong = (rule_now - state.settings.wrong_reports_window_s, state.settings.wrong_reports);
     let accounts = state
         .lookups
         .read(move |conn| {
             Ok(json!({
                 "verdicts": validations::verdicts(conn, None)?,
-                "validators": validations::audit_standing(conn)?,
+                "validators": validations::audit_standing(conn, wrong.0, wrong.1)?,
                 "pools": budgets::shares(conn, SHARE_WINDOW_H, at)?,
                 "coverage": budgets::coverage_report(conn, SHARE_WINDOW_H, at)?,
             }))

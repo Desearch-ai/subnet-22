@@ -16,6 +16,7 @@ bs58 = "0.5"
 bytes = "1"
 futures = "0.3"
 hmac = "0.12"
+md-5 = "0.10"
 parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
 redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

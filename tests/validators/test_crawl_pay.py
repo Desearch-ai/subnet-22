@@ -158,7 +158,7 @@ def test_the_upload_log_is_read_from_storage_in_order_and_unsigned_files_hold_no
 
 
 @pytest.mark.parametrize("missing", [404, 403], ids=["not found", "access denied"])
-def test_a_log_file_lost_below_the_latest_is_skipped(missing):
+def test_a_log_file_lost_below_the_latest_is_waited_for_then_read_past(missing):
     files = {
         upload_log_key(3): signed(3, [logged("c", "m", time.time())], time.time()),
         UPLOAD_LOG_LATEST: {"seq": 3},
@@ -172,7 +172,61 @@ def test_a_log_file_lost_below_the_latest_is_skipped(missing):
         ledger = Ledger(":memory:")
         ledger.set_state(NEXT_SEQ, "2")
         async with serving(handle) as base, aiohttp.ClientSession() as http:
-            added = await UploadLog(http, base, API_KEY.ss58_address, ledger).poll()
-            return added, ledger.state(NEXT_SEQ)
+            reader = UploadLog(http, base, API_KEY.ss58_address, ledger, grace_s=0.0)
+            waited = await reader.poll()
+            added = await reader.poll()
+            return waited, added, ledger.state(NEXT_SEQ), reader.problems
 
-    assert asyncio.run(scenario()) == (1, "4")
+    waited, added, cursor, problems = asyncio.run(scenario())
+    assert waited == 0, "a missing file is given time to appear"
+    assert (added, cursor) == (1, "4")
+    # File 3 names no link, so nothing shows how old file 2 was: suspect, not fraud.
+    assert [p["severity"] for p in problems] == ["suspect"]
+
+
+def test_a_host_most_checked_uploads_of_a_round_could_not_load_pays_nobody():
+    """Half of every task of round r1 is on owner.example, which three checked uploads of four could not load."""
+    ledger = Ledger(":memory:")
+    entries = [dict(logged(f"u{n}", "m", NOW - 3600 + 60 * n), round_id="r1") for n in range(5)]
+    ledger.add_uploads(entries)
+    for n in range(4):
+        failed_owner = n < 3
+        ledger.record_check(
+            f"u{n}",
+            "m",
+            NOW - 3600 + 60 * n,
+            "pass",
+            100,
+            100,
+            100,
+            100,
+            at=NOW - 10 + n / 100,
+            round_id="r1",
+            hosts={"owner.example": [50, 50 if failed_owner else 0], "fine.example": [50, 0]},
+        )
+
+    found = ledger.crawl_paid(NOW)["m"]
+
+    # Each check is paid for its 50 rows outside the neutral host, and the unchecked upload for its 50 at the checks' rate:
+    # half of what the round would pay without the rule.
+    assert found.amount == pytest.approx(4 * 50 + 50)
+    assert found.rate == 1.0
+
+
+def test_a_host_too_few_checks_failed_on_is_paid_as_usual():
+    ledger = Ledger(":memory:")
+    ledger.add_uploads([dict(logged("u0", "m", NOW - 3600), round_id="r1")])
+    ledger.record_check(
+        "u0",
+        "m",
+        NOW - 3600,
+        "pass",
+        100,
+        100,
+        100,
+        100,
+        at=NOW - 10,
+        round_id="r1",
+        hosts={"owner.example": [50, 50], "fine.example": [50, 0]},
+    )
+    assert ledger.crawl_paid(NOW)["m"].amount == 100

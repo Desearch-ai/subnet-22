@@ -6,7 +6,7 @@ use task_api::budgets::{self, HOSTILE_LOCKOUT_H, HOUR, LOCKOUT_STEPS_H};
 use task_api::lifecycle;
 use task_api::queues::{CLAIMS, PPENDING};
 
-use crate::harness::{judged, parquet, task_id, urls, Harness, MINER, RIVAL};
+use crate::harness::{judged, objective_fail, parquet, task_id, urls, Harness, MINER, RIVAL};
 
 async fn started(task_urls: usize) -> Harness {
     let h = Harness::with(|s| s.task_urls = task_urls).await;
@@ -106,8 +106,23 @@ async fn abandoning_a_claim_held_through_a_restart_costs_nothing() {
 async fn a_failed_task_takes_its_urls_back_from_the_day() {
     let h = started(3).await;
     h.mine(&h.miner, 0).await;
-    judged(&h, &h.validator, "fail", None, json!({})).await.1.unwrap();
+    judged(&h, &h.validator, "fail", None, objective_fail()).await.1.unwrap();
+    h.past_deadline().await;
     assert_eq!(credit_of(&h, h.miner.ss58()).await, -3);
+}
+
+#[tokio::test]
+async fn a_fail_on_the_live_pages_alone_charges_nothing_and_is_not_published() {
+    let h = started(3).await;
+    let task = task_id(&h.mine(&h.miner, 0).await);
+    let verdict = judged(&h, &h.validator, "fail", Some(&task), json!({})).await.1.unwrap();
+    assert_eq!((verdict["verdict"].clone(), verdict["published"].clone()), (json!("pass"), json!(false)), "content_mismatch is the validator's own judgment");
+    assert_eq!(credit_of(&h, h.miner.ss58()).await, 3, "its rows count, as the file shows them");
+    let strikes: i64 = sql(&h, "SELECT COUNT(*) FROM strikes WHERE hotkey = ?", h.miner.ss58()).await;
+    assert_eq!(strikes, 0);
+    let view = h.view(&task).await;
+    assert_eq!((view["status"].clone(), view["score"]["publish_verdict"].clone()), (json!("queued"), json!("fail")), "the task goes to another miner");
+    assert_eq!(h.state.publish.depth(&h.redis).await.unwrap(), 0);
 }
 
 #[tokio::test]

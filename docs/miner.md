@@ -33,14 +33,26 @@ pulls its tasks and uploads its files, so it needs no open port.
   - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
     checks.
   - A checked task pays at the rate its sample matched; the others are paid on the counts your miner
-    reports.
-  - A failed check takes back what you were paid since your last passed one.
+    reports. A site most miners of a round could not load pays and costs nobody that round.
+  - A failed check takes back what you were paid since your last passed one. Your budget, strikes and
+    lockouts change only on facts of your file (duplicate or foreign rows, text not from its HTML, too
+    few rows, an overstated report), found alike by validators of two different owners and decided at
+    the upload's validation deadline; the task API counts your file's rows itself and throws out a
+    report they contradict. A validator's live-page comparison reaches you through its weights and
+    your on-chain incentive, which caps your budget.
+  - Your crawl uploads' budget, credit and strikes are settled when their round closes, on the round's
+    final gate and neutral sites; until then a verdict shows as `held`.
+  - Each task holds the round's mix of sites, cut by a block hash after the round was committed, and
+    every deadline counts chain blocks; a claim held through a task API restart, a storage outage, a
+    finality stall or a task API host clock off the chain's costs nothing. While its host clock is off,
+    the task API times your signed requests by the chain's clock, so keep your own clock right (NTP).
 - **Embedding:**
   - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
     checks.
   - A passing task, and every task not checked, is paid by the characters of the texts it embedded.
   - A failed check earns nothing, is a strike, and takes back what you were paid since your last
-    passed one.
+    passed one. Vectors that only one validator's model rejects cost you nothing; two of different
+    owners must agree.
 
 Crawling and embedding keep separate budgets and lockouts. [Emission](./emission.md) explains the rules
 and what raises your share.
@@ -91,6 +103,9 @@ apply to both:
 | `TASK_API_URL` | `https://api-22.desearch.ai` | the task API |
 | `MAX_TASKS` | 4 | most tasks held at once; a miner also claims only what its measured pace can finish in time, within its budget |
 | `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
+| `RELAY_URLS` | none | validators' relays to reach the task API through; each request takes one path at random and moves on when one does not answer ([witness relays](./witness-relays.md)) |
+| `DIRECT_PATH` | 1 | 0 sends every request through the relays, never straight to the task API |
+| `WITNESSES_FILE` | none | file each witness a relay signs for your requests is appended to; `task-api/tools/check_witnesses.py` turns any the task API's log lacks into a censorship proof |
 
 ### 4. Crawling
 
@@ -198,3 +213,20 @@ curl -s "https://api-22.desearch.ai/v1/tasks?miner=<hotkey>"
   for a verdict, coverage and pass/fail counts.
 - `/v1/tasks?miner=<hotkey>` lists your checked tasks.
 - `/v1/tasks/<task_id>` shows what validators found for each of a task's URLs or texts.
+
+**Checking the task API.** Everything the API decides about you is in its public, hash-chained log
+(`log/journal/` in the uploads bucket): your signed claims, completions and abandons, every validator's
+report on your uploads, the block hash that drew each check, every verdict, budget change, strike and
+take-back. The log's head is anchored on chain, and validators replay it with the API's own rules, so a
+budget, verdict or take-back the rules do not give is reported as a fraud proof. To check a round
+yourself, with the seed block read from your own node:
+
+```bash
+python3 task-api/tools/verify_round.py --round <round_id> --node finney --receipts <your receipts file>
+```
+
+It checks every signature against the key this release pins (`desearch/trust.py`) and the anchor against
+the pinned anchoring hotkey; pass `--signer` after a custody handover to name the current holder.
+
+Every page the API serves is signed (`X-Desearch-Signature`), so a screenshot of one can be checked
+against its signature. See [Verifiable log](../task-api/README.md#verifiable-log).

@@ -5,16 +5,19 @@ import contextlib
 import logging
 import time
 from collections import deque
+from urllib.parse import quote
 
 import aiohttp
 from aiohttp import hdrs
 from yarl import URL
 
 from desearch.client import TaskApiError
-from desearch.credit import crawl_credit, embed_credit
+from desearch.credit import LOADED_OUTCOMES, crawl_credit, embed_credit
 from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import verify as verify_manifest
+from neurons.validators.custody import as_signers
+from neurons.validators.ledger import NEUTRAL
 
 LIST_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 LIST_CACHE_S = 2.0
@@ -47,7 +50,10 @@ class UploadMissing(Exception):
 
 
 class UploadChanged(Exception):
-    """Storage holds another version than the one the completion pinned: the miner rewrote it."""
+    """Storage holds another version than the one the completion pinned: the miner rewrote it.
+
+    Never raised for an upload pinned by version: a read by version id gets that version or nothing, so a later
+    write by anyone can't make it fail."""
 
 
 class TaskChecker:
@@ -71,7 +77,7 @@ class TaskChecker:
         self.ledger = ledger
         self.storage_url = storage_url.rstrip("/")
         self.seeds = seeds
-        self.signer = signer
+        self.signers = as_signers(signer)
         self.paused_until = 0.0
         self.pause = PAUSE_S
         self.provider_failures = 0
@@ -192,9 +198,12 @@ class TaskChecker:
             task_id = manifest["task_id"]
             if task_id in self.in_flight:
                 continue
-            if not verify_manifest(manifest, self.signer):
+            allowed = self.signers.for_manifest(manifest)
+            if not any(verify_manifest(manifest, signer) for signer in allowed):
                 log.warning(
-                    "task=%s is not signed by %s, skipped", task_id, self.signer
+                    "task=%s is not signed by %s, skipped",
+                    task_id,
+                    " or ".join(allowed) or "a followed signer",
                 )
                 continue
             # Taken before the seed lookup, so loops waiting on it never pick the same upload.
@@ -217,7 +226,7 @@ class TaskChecker:
         job = {
             **manifest,
             "seed": seed,
-            "download_url": f"{self.storage_url}/{manifest['key']}",
+            "download_url": upload_url(self.storage_url, manifest),
         }
         if manifest.get("input_key"):
             job["input"] = {
@@ -241,35 +250,50 @@ class TaskChecker:
             return
         credited, assigned = crawl_credit(result), len(set(job["urls"]))
         returned = result.get("returned", 0)
+        # Storage serving another version is evidence against storage, not the miner: neither paid nor charged.
+        changed = result.get("reason") == UPLOAD_CHANGED
         self.ledger.record(
             job["task_id"],
             CRAWL,
             job["miner"],
-            result["verdict"],
-            credited,
+            NEUTRAL if changed else result["verdict"],
+            0 if changed else credited,
             assigned,
             returned,
         )
+        content = result.get("content_verdict", result["verdict"])
+        samples = result.get("samples", [])
+        # Coverage is judged again when weights are set, on the round's gate then, so the check keeps its verdict without
+        # coverage and what it pays if coverage holds.
         self.ledger.record_check(
             job["key"],
             job["miner"],
             job["completed_at"],
-            result["verdict"],
-            credited,
+            NEUTRAL if changed else content,
+            0 if changed else crawl_credit({**result, "verdict": content}),
             returned,
             returned - result.get("error_rows", 0),
             assigned,
+            round_id=job.get("round_id", ""),
+            hosts=result.get("hosts"),
+            content_verdict=None if changed else content,
+            assigned_hosts=result.get("assigned_hosts"),
+            sampled=len(samples),
+            loaded=sum(1 for s in samples if s.get("outcome") in LOADED_OUTCOMES),
         )
 
     def note_embed_verdict(self, job: dict, result: dict) -> None:
-        """Counted in characters: every one on a pass, none on a fail."""
+        """Counted in characters: every one on a pass, none on a fail, nothing either way when storage changed the file."""
         credited, chars = embed_credit(job, result), int(job.get("chars", 0))
         texts = job.get("texts", 0)
+        verdict = (
+            NEUTRAL if result.get("reason") == UPLOAD_CHANGED else result["verdict"]
+        )
         self.ledger.record(
             job["task_id"],
             EMBED,
             job["miner"],
-            result["verdict"],
+            verdict,
             credited,
             texts,
             texts,
@@ -278,7 +302,7 @@ class TaskChecker:
             job["key"],
             job["miner"],
             job["completed_at"],
-            result["verdict"],
+            verdict,
             credited,
             chars,
             chars,
@@ -302,6 +326,8 @@ class TaskChecker:
     async def download(
         self, url: str, task_id: str, etag: str | None = None
     ) -> bytes | None:
+        # A URL that names the version reads exactly it; an entity tag on top would only add a way to fail.
+        etag = None if by_version(url) else etag
         problem = ""
         for attempt in range(DOWNLOAD_ATTEMPTS):
             if attempt:
@@ -328,12 +354,14 @@ class TaskChecker:
             problem = f"HTTP {status}"
             if status < 500:
                 break
+        # A 403 to a read by version is the bucket refusing versioned reads, never the miner's doing.
         raise DownloadFailed(f"task={task_id} download failed: {problem}")
 
     async def read_range(
         self, url: str, start: int, size: int, task_id: str, etag: str | None = None
     ) -> tuple[bytes, int]:
         """Bytes start to start + size - 1 of an object and its total size; no bytes when it ends before start."""
+        etag = None if by_version(url) else etag
         headers = {
             hdrs.RANGE: f"bytes={start}-{start + size - 1}",
             hdrs.ACCEPT_ENCODING: "identity",
@@ -421,6 +449,17 @@ class TaskChecker:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
         return False
+
+
+def upload_url(storage_url: str, manifest: dict) -> str:
+    """Where an upload is read: the version its completion pinned, on a versioned bucket."""
+    url = f"{storage_url}/{manifest['key']}"
+    version = manifest.get("version")
+    return f"{url}?versionId={quote(str(version), safe='')}" if version else url
+
+
+def by_version(url: str) -> bool:
+    return "versionId=" in URL(url, encoded=True).query_string
 
 
 def pinned(etag: str | None) -> dict[str, str]:
