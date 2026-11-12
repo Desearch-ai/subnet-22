@@ -59,7 +59,7 @@ fn run_matches_the_python_run() {
     let spawn = || Worker::spawn(&python, &root, PAGE_WORKER, &worker_args);
     let as_of = bulk_core::rows::parse_as_of("2026-11-01T00:00:00Z").unwrap();
     let mut batches = Batches::new(&out, bulk_wikipedia::SOURCE, "fixture", as_of).unwrap();
-    let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 0, 1, &spawn).unwrap();
+    let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 0, 1, 3, &spawn).unwrap();
     let summary = batches.close(&counts).unwrap();
     let line = bulk_core::run::summary_line(&expected, &summary, &counts);
     let python_line = std::fs::read_to_string(fixtures().join("stdout.txt")).unwrap();
@@ -84,7 +84,7 @@ fn limit_stops_at_the_python_page() {
         (1, [("other_namespace", 1), ("pages", 33), ("disambiguation", 1), ("deleted", 1), ("older_copy", 1), ("no_html", 1)]),
     ] {
         let mut batches = Batches::new(&dir.path().join(format!("rust-{workers}")), bulk_wikipedia::SOURCE, "fixture", as_of).unwrap();
-        let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 33, workers, &spawn).unwrap();
+        let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 33, workers, 2, &spawn).unwrap();
         assert_eq!(counts.iter().collect::<Vec<_>>(), want, "--workers {workers}");
         assert_eq!(batches.rows(), 33);
     }

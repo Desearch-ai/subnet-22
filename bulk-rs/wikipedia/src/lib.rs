@@ -50,9 +50,12 @@ pub struct Args {
     /// Hidden category names, one per line, from `hidden-categories`.
     #[arg(long)]
     pub hidden: PathBuf,
-    /// Processes that extract articles; the CPU count by default.
+    /// The Python run's `--workers`, whose window sets the order of the counts; the CPU count by default.
     #[arg(long)]
     pub workers: Option<usize>,
+    /// Processes that extract articles; `--workers` by default.
+    #[arg(long = "page-workers")]
+    pub page_workers: Option<usize>,
     #[command(flatten)]
     pub python: PythonArgs,
 }
@@ -375,19 +378,21 @@ impl Filter {
     }
 }
 
-/// `wikipedia.run`: the pages of `paths` in reading order, with `workers` page workers; `--workers` of the Python run
-/// it must match, since its window sets the order of the counts.
+/// `wikipedia.run`: the pages of `paths` in reading order, in the count order of a Python run with `--workers` set to
+/// `window_workers`, read by `workers` page workers.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     paths: &[PathBuf],
     batches: &mut Batches,
     as_of_us: i64,
     hidden: &HashSet<String>,
     limit: u64,
+    window_workers: usize,
     workers: usize,
     spawn: &(dyn Fn() -> Result<Worker> + Sync),
 ) -> Result<Counts> {
     let workers = workers.max(1);
-    let window = workers * WINDOW_PER_WORKER;
+    let window = window_workers.max(1) * WINDOW_PER_WORKER;
     let ahead = workers as u64 * AHEAD_PER_WORKER;
     let state = State { shared: Mutex::new(Shared::default()), changed: Condvar::new() };
     let (lines_tx, lines_rx) = sync_channel::<Vec<u8>>(1024);
@@ -588,6 +593,6 @@ pub fn main(args: Args) -> Result<()> {
     let worker_args: Vec<OsString> = vec!["--hidden".into(), args.hidden.clone().into_os_string()];
     let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &worker_args);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, SOURCE)?;
-    let counts = run(&args.files, &mut batches, as_of_us, &hidden, args.run.limit, workers, &spawn)?;
+    let counts = run(&args.files, &mut batches, as_of_us, &hidden, args.run.limit, workers, args.page_workers.unwrap_or(workers), &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)
 }
