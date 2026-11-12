@@ -130,6 +130,35 @@ impl Resolve for PublicResolver {
     }
 }
 
+#[derive(Debug)]
+struct NotResolved(String);
+
+impl fmt::Display for NotResolved {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} did not resolve", self.0)
+    }
+}
+
+impl Error for NotResolved {}
+
+/// The system's resolver, which aiohttp asks by default, with answers that point into a private network dropped.
+#[derive(Clone, Copy, Default)]
+pub struct SystemResolver;
+
+impl Resolve for SystemResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let found = tokio::net::lookup_host((host.as_str(), 0)).await.map_err(|e| Box::new(NotResolved(format!("{host} ({e})"))) as Box<dyn Error + Send + Sync>)?;
+            let public: Vec<SocketAddr> = found.filter(|a| is_global(a.ip())).collect();
+            if public.is_empty() {
+                return Err(Box::new(NotPublic(host)) as Box<dyn Error + Send + Sync>);
+            }
+            Ok(Box::new(public.into_iter()) as Addrs)
+        })
+    }
+}
+
 /// One client for the whole process; the local resolver caches DNS, and redirects are followed by hand.
 pub fn client(resolver: PublicResolver, read_timeout: Duration) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -175,7 +204,7 @@ pub fn connect_failed(error: &reqwest::Error) -> bool {
         if current.downcast_ref::<std::io::Error>().is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut)) {
             return true;
         }
-        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<rustls::Error>() {
+        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<NotResolved>() || current.is::<rustls::Error>() {
             return false;
         }
         cause = current.source();
@@ -199,7 +228,7 @@ pub fn failure(error: &reqwest::Error, elapsed: Duration, connecting: Option<Dur
     }
     let mut cause = error.source();
     while let Some(current) = cause {
-        if current.is::<ResolveError>() || current.is::<NotPublic>() {
+        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<NotResolved>() {
             return "ClientConnectorDNSError";
         }
         let mut inner: &(dyn Error + 'static) = current;
@@ -248,6 +277,16 @@ mod tests {
         let error = client.get(format!("http://{addr}/")).send().await.unwrap_err();
         assert_eq!(failure(&error, started.elapsed(), Some(Duration::from_millis(200))), "ConnectionTimeoutError", "named as aiohttp names it");
         assert!(!connect_failed(&error), "connected, then no answer: {error:?}");
+    }
+
+    #[tokio::test]
+    async fn the_system_resolver_keeps_private_answers_out() {
+        let client = reqwest::Client::builder().dns_resolver(Arc::new(SystemResolver)).build().unwrap();
+        let started = std::time::Instant::now();
+        let error = client.get("http://localhost:9/").send().await.unwrap_err();
+        assert_eq!(failure(&error, started.elapsed(), None), "ClientConnectorDNSError");
+        let error = client.get("http://no-such-host.invalid/").send().await.unwrap_err();
+        assert_eq!(failure(&error, started.elapsed(), None), "ClientConnectorDNSError");
     }
 
     #[test]

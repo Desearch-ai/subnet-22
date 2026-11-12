@@ -12,7 +12,7 @@ use regex::Regex;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use super::cookies::Jar;
-use crate::net::{self, PublicResolver};
+use crate::net::{self, SystemResolver};
 use crate::signing::USER_AGENT;
 use crate::urls;
 
@@ -191,7 +191,7 @@ impl Resolve for Fixed {
     }
 }
 
-/// Where requests go: the public-only local resolver, or one address for every name in a test.
+/// Where requests go: the system resolver with private answers dropped, or one address for every name in a test.
 #[derive(Clone, Default)]
 pub struct Connect {
     pub resolve_all: Option<SocketAddr>,
@@ -214,9 +214,19 @@ pub struct Http {
 
 impl Http {
     pub fn new(connect: &Connect) -> Result<Self> {
+        Self::with_headers(connect, &[])
+    }
+
+    /// A session whose headers replace ours, as `net.session(headers)` makes one.
+    pub fn with_headers(connect: &Connect, headers: &[(&str, &str)]) -> Result<Self> {
+        let mut session = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            session.insert(reqwest::header::HeaderName::from_bytes(name.as_bytes())?, reqwest::header::HeaderValue::from_str(value)?);
+        }
         let build = |timeout: Duration, connect_timeout: Duration| -> Result<reqwest::Client> {
             let mut builder = reqwest::Client::builder()
                 .user_agent(USER_AGENT)
+                .default_headers(session.clone())
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
                 .timeout(timeout)
@@ -226,7 +236,7 @@ impl Http {
                 .tcp_nodelay(true);
             builder = match connect.resolve_all {
                 Some(addr) => builder.dns_resolver(Arc::new(Fixed(addr))),
-                None => builder.dns_resolver(Arc::new(PublicResolver::local())),
+                None => builder.dns_resolver(Arc::new(SystemResolver)),
             };
             if let Some(pem) = &connect.root_certificate {
                 builder = builder.add_root_certificate(reqwest::Certificate::from_pem(pem)?);
