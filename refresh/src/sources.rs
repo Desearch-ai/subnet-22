@@ -39,19 +39,19 @@ pub const SOURCES: &[Source] = &[
         builds: &[
             Build {
                 name: "subnets",
-                argv: &["{python}", "-m", "bulk", "subnets", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/subnets-chain.json"],
+                argv: &[BULK, "subnets", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/subnets-chain.json"],
                 full_list: true,
                 volatile: true,
             },
             Build {
                 name: "subnet-sites",
-                argv: &["{python}", "-m", "bulk", "subnet-sites", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/sites"],
+                argv: &[BULK, "subnet-sites", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--workers", "4", "--python", "{python}", "{work}/src/sites"],
                 full_list: true,
                 volatile: false,
             },
             Build {
                 name: "subnet-github",
-                argv: &["{python}", "-m", "bulk", "subnet-github", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/github"],
+                argv: &[BULK, "subnet-github", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--workers", "4", "--python", "{python}", "{work}/src/github"],
                 full_list: true,
                 volatile: false,
             },
