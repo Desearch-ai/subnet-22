@@ -777,6 +777,24 @@ async fn an_outlet_with_hubs_lists_its_homepage_and_the_pages_it_links_to_beside
     std::fs::remove_dir_all(&root).ok();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_request_reaches_a_host_in_the_abuse_blocklist_listed_or_redirected_to() {
+    let web: Shared = Arc::default();
+    {
+        let mut w = web.lock().unwrap();
+        w.redirect("hops.test", "/robots.txt", "http://www.shfg.com/robots.txt", None);
+        w.add("shfg.com", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add("www.shfg.com", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+    }
+    let hosts = ["hops.test", "shfg.com"];
+    let buckets = visit_resolving(web.clone(), &hosts, &["hops.test", "shfg.com", "www.shfg.com"], &[], "blocklist").await;
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(hits.iter().any(|(h, path, _)| h == "hops.test" && path == "/robots.txt"), "{hits:?}");
+    assert!(!hits.iter().any(|(h, _, _)| h.ends_with("shfg.com")), "{hits:?}");
+    let record = buckets.store("shfg.com").domain("shfg.com").unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("excluded"));
+}
+
 async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
     visit_resolving(web, hosts, hosts, answered, name).await
 }

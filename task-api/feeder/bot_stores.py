@@ -7,6 +7,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from feeder import blocklist
+
 BUCKETS = 256
 BUCKETS_DIR = "/mnt/desearch-bot/buckets"
 SECONDARY_DIR = "/var/lib/desearch-bot/tmp/task-api-feeder"
@@ -91,14 +93,18 @@ def collect_pages(
     for host in hosts:
         by_bucket[store_index(host)].append(host)
 
+    blocked = blocklist.load()
     rows = []
     for bucket, owned in sorted(by_bucket.items()):
         store = open_store(root, bucket, secondary)
         try:
             for host in owned:
+                if blocked.host(host):
+                    continue
                 rows += [
                     {"host": host, "url": page.url, "lastmod": page.lastmod}
                     for page in newest_pages(store, host, per_domain)
+                    if not blocked.url(page.url)
                 ]
         finally:
             store.close()

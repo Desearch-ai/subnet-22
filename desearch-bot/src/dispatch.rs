@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::allowed::{Allowed, Terms};
+use crate::blocklist;
 use crate::buckets::{bucket_of, Buckets, Json};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader, ResentPages};
 use crate::ready::{Entry, Joined, Order, Pick, Reason, SentPage, Stock, Yield, CHANGED, FRESH, LANES, REQUEUED};
@@ -952,10 +953,11 @@ impl Dispatcher {
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
             on_readers(asks, |(domain, quotas)| {
-                let Some(store) = buckets.store_for(&domain) else {
+                let Some(store) = buckets.store_for(&domain).filter(|_| !blocklist::blocked_host(&domain)) else {
                     return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
                 };
-                let picks = store.take_ready(&domain, quotas)?;
+                let mut picks = store.take_ready(&domain, quotas)?;
+                picks.retain(|pick| !blocklist::blocked_url(&pick.url));
                 let left = store.ready_count(&domain)?;
                 Ok(Taken { domain, quotas, picks, left })
             })
@@ -1162,10 +1164,12 @@ impl Dispatcher {
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || {
             on_readers(asks, |(domain, want)| {
-                let Some(store) = buckets.store_for(&domain) else {
+                let Some(store) = buckets.store_for(&domain).filter(|_| !blocklist::blocked_host(&domain)) else {
                     return Ok((domain, Stock::default()));
                 };
-                Ok((domain.clone(), store.take_stock(&domain, want, now, FILL_FLOOR)?))
+                let mut stock = store.take_stock(&domain, want, now, FILL_FLOOR)?;
+                stock.picks.retain(|pick| !blocklist::blocked_url(&pick.url));
+                Ok((domain.clone(), stock))
             })
         })
         .await??;

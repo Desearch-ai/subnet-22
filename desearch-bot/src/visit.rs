@@ -27,7 +27,7 @@ use crate::sitemaps::{self, Entry};
 use crate::states::{Outcome, State, JITTER};
 use crate::suffixes::PublicSuffixList;
 use crate::urls::{self, Listing, Normaliser};
-use crate::{homepage, isodate, net, records};
+use crate::{blocklist, homepage, isodate, net, records};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
 /// The longest a visit waits in place for its next request; a longer Crawl-delay ends the visit, and the domain is due again once the delay has passed.
@@ -1710,6 +1710,9 @@ impl Run<'_> {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
                 return Err("OSError".into());
+            }
+            if blocklist::blocked_host(&host) {
+                return Err(net::BLOCKED.into());
             }
             let booked = self.pacer.next;
             if hop == 0 && !self.pacer.wait().await {

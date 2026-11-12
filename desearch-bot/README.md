@@ -72,6 +72,35 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `FEEDER_KEY_URI` | the task API admin hotkey, as a Substrate secret URI, needed with `--task-api` |
 | `MALLOC_ARENA_MAX=2` | stops glibc from holding on to memory RocksDB has freed |
 
+## Abuse blocklist
+
+`data/blocklist.json` names who asked us to stop. Nothing on the bot box sends them a request, and
+no miner is handed their pages.
+
+| Field | Blocks |
+| --- | --- |
+| `operators` | any host with the name in one of its labels other than the TLD (`shinhan` covers `www.shinhangroup.com`) |
+| `not_blocked` | hosts, and the hosts under them, the `operators` rule must leave alone |
+| `domains` | each domain and every host under it |
+| `networks` | IPv4 and IPv6 ranges in CIDR form; an address literal or a DNS answer inside one |
+
+Every path checks it before it sends anything:
+
+- **Visits, news polls and link work:** a listed domain that matches is excluded without a visit. Each
+  redirect hop is checked before it is followed, so a site that redirects into the list stops there.
+- **DNS:** both resolvers refuse a name with any answer in a blocked network. A host with an
+  unrelated name on a blocked address is never connected to, and the failure is named `Blocked`.
+- **`crawl-sites`, `refresh` and `sitemap-check`:** every request and redirect hop is checked.
+- **Dispatch:** a matching domain, or a page on a matching host, is never sent to the task API.
+- **The Python feeder** (`task-api/feeder`) reads the same file and drops matching hosts and pages.
+
+To add an entry, edit the file, rebuild, and restart the bot. The feeder reads the file when it
+starts.
+
+Every crawl path reads a host's robots.txt before its other pages and keeps to its rules and
+`Crawl-delay`. Visits space one host's requests at least a second apart. `crawl-sites`
+waits a second between requests to a host, and `sitemap-check` makes at most one request a second.
+
 ## Visits
 
 Visits share their slots between re-checks of known sites, sitemap backlogs and domains never

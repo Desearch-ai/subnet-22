@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use crate::net;
+use crate::{blocklist, net};
 use crate::robots::{self, Paths};
 use crate::sitemaps;
 use crate::urls;
@@ -25,6 +25,7 @@ struct Host {
     client: reqwest::Client,
     host: String,
     last: Option<Instant>,
+    pace: Duration,
     fetches: usize,
 }
 
@@ -32,8 +33,11 @@ impl Host {
     async fn get(&mut self, url: &str, limit: usize) -> Result<(u16, String, Vec<u8>), String> {
         let mut url = url.to_string();
         for _ in 0..=MAX_HOPS {
+            if blocklist::blocked_url(&url) {
+                return Err(net::BLOCKED.into());
+            }
             if let Some(last) = self.last {
-                let wait = PACE.saturating_sub(last.elapsed());
+                let wait = self.pace.saturating_sub(last.elapsed());
                 tokio::time::sleep(wait).await;
             }
             self.last = Some(Instant::now());
@@ -71,13 +75,14 @@ fn target(url: &str) -> String {
 
 /// One host's verdict: `refused`, `sitemap` (at least ENOUGH pages listed), `thin` (some), `none`, or `unreachable`.
 pub async fn check(client: reqwest::Client, host: String) -> Value {
-    let mut h = Host { client, host: host.clone(), last: None, fetches: 0 };
+    let mut h = Host { client, host: host.clone(), last: None, pace: PACE, fetches: 0 };
     let base = format!("https://{host}/");
     let (paths, named, robots_status) = match h.get(&format!("{base}robots.txt"), 1 << 20).await {
         Err(e) => return json!({"host": host, "class": "unreachable", "robots": e}),
         Ok((200, _, body)) => {
             let text = String::from_utf8_lossy(&body).into_owned();
-            let (paths, _) = robots::rules(&text, TOKEN);
+            let (paths, delay) = robots::rules(&text, TOKEN);
+            h.pace = h.pace.max(Duration::from_secs_f64(delay.unwrap_or(0.0).clamp(0.0, 60.0)));
             (paths, robots::sitemaps(&text), 200)
         }
         Ok((404 | 410, _, _)) => (Paths::default(), Vec::new(), 404),

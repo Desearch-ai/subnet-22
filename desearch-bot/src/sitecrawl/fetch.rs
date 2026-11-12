@@ -12,6 +12,7 @@ use regex::Regex;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use super::cookies::Jar;
+use crate::blocklist;
 use crate::net::{self, SystemResolver};
 use crate::signing::USER_AGENT;
 use crate::urls;
@@ -256,6 +257,9 @@ impl Http {
         let Some(host) = parts.hostname() else {
             return Response::failed(url, "InvalidUrlClientError");
         };
+        if blocklist::blocked_host(&host) {
+            return Response::failed(url, net::BLOCKED);
+        }
         let path = if parts.path.is_empty() { "/".to_string() } else { parts.path.clone() };
         let client = if patient { &self.patient } else { &self.normal };
         let connecting = if patient { RETRY_CONNECT_TIMEOUT } else { CONNECT_TIMEOUT };
