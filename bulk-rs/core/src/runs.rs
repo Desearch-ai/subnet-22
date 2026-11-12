@@ -358,8 +358,17 @@ fn rows_by_url(run: &Run, ignore: &[String], side: &str, differences: &mut Vec<S
 pub fn diff_by_url(a: &Path, b: &Path, ignore: &[String], show: usize) -> Result<Diff> {
     let (run_a, run_b) = (open_run(a)?, open_run(b)?);
     let mut out = Diff::default();
+    // Counts are compared as a set: their order follows the rows', which these runs do not fix.
+    let unordered = |value: &Value| match value.as_object() {
+        Some(map) => pyjson::dumps(&Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>().into_iter().collect()), None),
+        None => pyjson::dumps(value, None),
+    };
     for field in ["source", "removed", "rows", "counts"] {
-        let (x, y) = (pyjson::dumps(&run_a.manifest[field], None), pyjson::dumps(&run_b.manifest[field], None));
+        let (x, y) = if field == "counts" {
+            (unordered(&run_a.manifest[field]), unordered(&run_b.manifest[field]))
+        } else {
+            (pyjson::dumps(&run_a.manifest[field], None), pyjson::dumps(&run_b.manifest[field], None))
+        };
         if x != y {
             out.manifest_differences.push(format!("{field}: {} != {}", desearch::text::head(&x, 200), desearch::text::head(&y, 200)));
         }

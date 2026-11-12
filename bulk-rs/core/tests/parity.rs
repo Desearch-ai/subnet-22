@@ -385,4 +385,20 @@ fn diff_by_url_ignores_order_and_the_named_columns() {
     assert_eq!(found.rows_differing, 2);
     assert!(found.examples.iter().any(|e| e.starts_with("https://x/1: text (+1 columns)")), "{:?}", found.examples);
     assert!(found.examples.iter().any(|e| e == "https://x/3: only in a"), "{:?}", found.examples);
+    let counted = |name: &str, keys: &[(&str, u64)]| {
+        let out = dir.path().join(name);
+        let mut batches = Batches::with_rows_per_file(&out, "edgar", name, 0, 2).unwrap();
+        batches.add(upload_row("https://x/0", Page::default(), 0, "text/html")).unwrap();
+        let mut counts = Counts::default();
+        for (key, n) in keys {
+            counts.add(key, *n);
+        }
+        batches.close(&counts).unwrap();
+        out
+    };
+    let x = counted("x", &[("page_edgar_item", 2), ("page_edgar", 1)]);
+    let y = counted("y", &[("page_edgar", 1), ("page_edgar_item", 2)]);
+    let z = counted("z", &[("page_edgar", 1), ("page_edgar_item", 3)]);
+    assert!(bulk_core::runs::diff_by_url(&x, &y, &ignore, 5).unwrap().same());
+    assert!(!bulk_core::runs::diff_by_url(&x, &z, &ignore, 5).unwrap().same());
 }
