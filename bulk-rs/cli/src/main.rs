@@ -27,6 +27,10 @@ enum Command {
     PmcOrder(bulk_pmc::OrderArgs),
     /// PMIDs of the PMC versions taken, from metadata alone.
     PmcPmids(bulk_pmc::PmidsArgs),
+    /// Wikimedia Enterprise snapshots of English Wikipedia and its sister projects.
+    Wikipedia(bulk_wikipedia::Args),
+    /// Print the hidden categories of a category-namespace snapshot.
+    HiddenCategories(bulk_wikipedia::HiddenArgs),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -41,6 +45,8 @@ fn main() -> anyhow::Result<()> {
         Command::PmcInventory(args) => bulk_pmc::inventory_main(args),
         Command::PmcOrder(args) => bulk_pmc::order_main(args),
         Command::PmcPmids(args) => bulk_pmc::pmids_main(args),
+        Command::Wikipedia(args) => bulk_wikipedia::main(args),
+        Command::HiddenCategories(args) => bulk_wikipedia::hidden_main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }

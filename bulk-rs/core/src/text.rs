@@ -258,6 +258,11 @@ pub fn text_headings(text: &str) -> Vec<String> {
 
 /// JSON text with lone surrogate escapes dropped, as Python's json.loads then `without_surrogates` leave the strings.
 pub fn drop_lone_surrogates(json: &str) -> Cow<'_, str> {
+    replace_lone_surrogates(json, "")
+}
+
+/// JSON text with each lone surrogate escape replaced, as `str.encode("utf-8", "replace")` turns one into `?`.
+pub fn replace_lone_surrogates<'a>(json: &'a str, with: &str) -> Cow<'a, str> {
     let bytes = json.as_bytes();
     let escape_at = |i: usize| -> Option<u16> {
         let hex = bytes.get(i..i + 6)?;
@@ -285,6 +290,7 @@ pub fn drop_lone_surrogates(json: &str) -> Cow<'_, str> {
         if (0xD800..0xE000).contains(&unit) {
             let kept = out.get_or_insert_with(|| String::with_capacity(json.len()));
             kept.push_str(&json[copied..i]);
+            kept.push_str(with);
             copied = i + 6;
         }
         i += 6;

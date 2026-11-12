@@ -1,4 +1,4 @@
-//! JSON text exactly as Python's `json.dumps` writes it: `", "` and `": "` separators, or `indent`, and ASCII-only strings.
+//! JSON text exactly as Python's `json.dumps` writes it: `", "` and `": "` separators, or `indent`, and ASCII-only strings unless asked.
 
 use std::fmt::Write;
 
@@ -7,18 +7,25 @@ use serde_json::Value;
 /// `json.dumps(value)`, or `json.dumps(value, indent=n)`.
 pub fn dumps(value: &Value, indent: Option<usize>) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, indent, 0);
+    write_value(&mut out, value, indent, 0, true);
+    out
+}
+
+/// `json.dumps(value, ensure_ascii=False)`.
+pub fn dumps_unicode(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, None, 0, false);
     out
 }
 
 /// A string as `json.dumps` quotes it, with `ensure_ascii`.
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    write_str(&mut out, s);
+    write_str(&mut out, s, true);
     out
 }
 
-fn write_str(out: &mut String, s: &str) {
+fn write_str(out: &mut String, s: &str, ascii: bool) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -30,6 +37,7 @@ fn write_str(out: &mut String, s: &str) {
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
             ' '..='~' => out.push(c),
+            _ if !ascii && c >= ' ' => out.push(c),
             _ => {
                 let mut units = [0u16; 2];
                 for unit in c.encode_utf16(&mut units) {
@@ -46,7 +54,7 @@ fn newline(out: &mut String, indent: usize, level: usize) {
     out.extend(std::iter::repeat_n(' ', indent * level));
 }
 
-fn write_value(out: &mut String, value: &Value, indent: Option<usize>, level: usize) {
+fn write_value(out: &mut String, value: &Value, indent: Option<usize>, level: usize, ascii: bool) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -60,7 +68,7 @@ fn write_value(out: &mut String, value: &Value, indent: Option<usize>, level: us
             (_, _, Some(f)) => out.push_str(&float_repr(f)),
             _ => out.push_str(&n.to_string()),
         },
-        Value::String(s) => write_str(out, s),
+        Value::String(s) => write_str(out, s, ascii),
         Value::Array(items) => {
             if items.is_empty() {
                 out.push_str("[]");
@@ -69,7 +77,7 @@ fn write_value(out: &mut String, value: &Value, indent: Option<usize>, level: us
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 separate(out, i, indent, level + 1);
-                write_value(out, item, indent, level + 1);
+                write_value(out, item, indent, level + 1, ascii);
             }
             close(out, indent, level, ']');
         }
@@ -81,9 +89,9 @@ fn write_value(out: &mut String, value: &Value, indent: Option<usize>, level: us
             out.push('{');
             for (i, (key, item)) in map.iter().enumerate() {
                 separate(out, i, indent, level + 1);
-                write_str(out, key);
+                write_str(out, key, ascii);
                 out.push_str(": ");
-                write_value(out, item, indent, level + 1);
+                write_value(out, item, indent, level + 1, ascii);
             }
             close(out, indent, level, '}');
         }

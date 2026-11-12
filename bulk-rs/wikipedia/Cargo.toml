@@ -1,0 +1,20 @@
+[package]
+name = "bulk-wikipedia"
+description = "Wikimedia Enterprise snapshots of English Wikipedia and its sister projects, read by the shared extraction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+desearch.workspace = true
+flate2.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+tar = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true

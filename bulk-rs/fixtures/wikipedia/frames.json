@@ -1,0 +1,795 @@
+[
+ {
+  "article": {
+   "name": "Ada Lovelace",
+   "identifier": 1001,
+   "url": "https://en.wikipedia.org/wiki/Ada_Lovelace",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5001
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Ada is a test article with enough words to be a page of its own.</p></section><link rel=\"mw:PageProp/Category\" href=\"./Category:Living_people\" about=\"#mwt1\" id=\"mwAg\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Articles_with_short_description\" id=\"mwAw\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Caf%C3%A9s_%26_bars#S\" id=\"mwBA\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Black_&amp;_white_films\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Living_people\"/><!-- <link rel=\"mw:PageProp/Category\" href=\"./Category:In_a_comment\"/> --><style>.x{} <link rel=\"mw:PageProp/Category\" href=\"./Category:In_style\"/></style><link rel=\"mw:PageProp/Other\" href=\"./Category:Not_a_category_link\"/></body></html>"
+   },
+   "main_entity": {
+    "identifier": "Q7259"
+   },
+   "description": "English mathematician (1815–1852)",
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/a/a4/Ada_Lovelace_portrait.jpg",
+    "width": 800,
+    "height": 1000
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Ada Lovelace - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://upload.wikimedia.org/wikipedia/commons/a/a4/Ada_Lovelace_portrait.jpg?utm_source=en.wikipedia.org&amp;utm_campaign=index&amp;utm_content=thumbnail_unscaled\"><meta property=\"og:title\" content=\"Ada Lovelace - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Ada_Lovelace\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Ada Lovelace\", \"url\": \"https://en.wikipedia.org/wiki/Ada_Lovelace\", \"sameAs\": \"http://www.wikidata.org/entity/Q7259\", \"mainEntity\": \"http://www.wikidata.org/entity/Q7259\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/a/a4/Ada_Lovelace_portrait.jpg?utm_source=en.wikipedia.org&utm_campaign=index&utm_content=original\", \"headline\": \"English mathematician (1815–1852)\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul><li><a href=\"/wiki/Category:Living people\">Living people</a></li><li><a href=\"/wiki/Category:Cafés &amp; bars\">Cafés &amp; bars</a></li><li><a href=\"/wiki/Category:Black &amp; white films\">Black &amp; white films</a></li></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Svg & \"Quotes\" 'here'",
+   "identifier": 1002,
+   "url": "https://en.wikivoyage.org/wiki/Svg",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 7,
+    "noindex": true
+   },
+   "is_part_of": {
+    "identifier": "enwikivoyage"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Svg is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Flag_of_X.SVG",
+    "width": 512,
+    "height": 256
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Svg &amp; &quot;Quotes&quot; &#x27;here&#x27; - Wikivoyage</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"noindex,nofollow,max-image-preview:standard\"><meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1a/Flag_of_X.SVG/1280px-Flag_of_X.SVG.png?utm_source=en.wikivoyage.org&amp;utm_campaign=index&amp;utm_content=thumbnail\"><meta property=\"og:title\" content=\"Svg &amp; &quot;Quotes&quot; &#x27;here&#x27; - Wikivoyage\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikivoyage.org/wiki/Svg\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Svg & \\\"Quotes\\\" 'here'\", \"url\": \"https://en.wikivoyage.org/wiki/Svg\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/1/1a/Flag_of_X.SVG?utm_source=en.wikivoyage.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Big image",
+   "identifier": 1003,
+   "url": "https://en.wikipedia.org/wiki/Big_image",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5003
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Big is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/en/b/b2/Huge.jpg",
+    "width": 2000,
+    "height": 3000
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Big image - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/en/thumb/b/b2/Huge.jpg/960px-Huge.jpg?utm_source=en.wikipedia.org&amp;utm_campaign=index&amp;utm_content=thumbnail\"><meta property=\"og:title\" content=\"Big image - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Big_image\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Big image\", \"url\": \"https://en.wikipedia.org/wiki/Big_image\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/en/b/b2/Huge.jpg?utm_source=en.wikipedia.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Rounding",
+   "identifier": 1004,
+   "url": "https://en.wikipedia.org/wiki/Rounding",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5004
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Rounding is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/c/cc/R.png",
+    "width": 2501,
+    "height": 2400
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Rounding - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/c/cc/R.png/1280px-R.png?utm_source=en.wikipedia.org&amp;utm_campaign=index&amp;utm_content=thumbnail\"><meta property=\"og:title\" content=\"Rounding - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Rounding\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Rounding\", \"url\": \"https://en.wikipedia.org/wiki/Rounding\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/c/cc/R.png?utm_source=en.wikipedia.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Not wikipedia image",
+   "identifier": 1005,
+   "url": "https://en.wikipedia.org/wiki/Not_wikipedia_image",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5005
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Other is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "image": {
+    "content_url": "https://example.org/x.jpg",
+    "width": 10,
+    "height": 10
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Not wikipedia image - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://example.org/x.jpg\"><meta property=\"og:title\" content=\"Not wikipedia image - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Not_wikipedia_image\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Not wikipedia image\", \"url\": \"https://en.wikipedia.org/wiki/Not_wikipedia_image\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://example.org/x.jpg?utm_source=en.wikipedia.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "No size",
+   "identifier": 1006,
+   "url": "https://en.wikipedia.org/wiki/No_size",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5006
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Size is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/d/dd/N.jpg",
+    "width": 0
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>No size - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://upload.wikimedia.org/wikipedia/commons/d/dd/N.jpg\"><meta property=\"og:title\" content=\"No size - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/No_size\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"No size\", \"url\": \"https://en.wikipedia.org/wiki/No_size\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/d/dd/N.jpg?utm_source=en.wikipedia.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Mercury (disambiguation)",
+   "identifier": 1007,
+   "url": "https://en.wikipedia.org/wiki/Mercury_(disambiguation)",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5007
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><meta property=\"mw:PageProp/disambiguation\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Mercury is a test article with enough words to be a page of its own.</p></section></body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Mercury (disambiguation) - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Mercury (disambiguation) - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Mercury_(disambiguation)\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Mercury (disambiguation)\", \"url\": \"https://en.wikipedia.org/wiki/Mercury_(disambiguation)\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": true
+ },
+ {
+  "article": {
+   "name": "No language",
+   "identifier": 1008,
+   "url": "https://en.wikipedia.org/wiki/No_language",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5008
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Lang is a test article with enough words to be a page of its own.</p></section></body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>No language - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"No language - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/No_language\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"No language\", \"url\": \"https://en.wikipedia.org/wiki/No_language\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Null language",
+   "identifier": 1009,
+   "url": "https://en.wikipedia.org/wiki/Null_language",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5009
+   },
+   "is_part_of": {
+    "identifier": "elsewhere"
+   },
+   "in_language": {
+    "identifier": null
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Null is a test article with enough words to be a page of its own.</p></section></body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"None\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Null language - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Null language - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Null_language\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Null language\", \"url\": \"https://en.wikipedia.org/wiki/Null_language\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"None\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Leading text",
+   "identifier": 1010,
+   "url": "https://en.wikipedia.org/wiki/Leading_text",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5010
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\">\n  \n<!-- c --><section><p>Leading text and a comment before the first section, which lxml keeps.</p></section>\n</body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Leading text - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Leading text - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Leading_text\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Leading text\", \"url\": \"https://en.wikipedia.org/wiki/Leading_text\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Emoji 🎉 Ünïcödé",
+   "identifier": 1011,
+   "url": "https://en.wikipedia.org/wiki/Emoji_🎉_Ünïcödé",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5011
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section data-mw-section-id=\"0\"><p>Emoji is a test article with enough words to be a page of its own.</p></section></body></html>"
+   },
+   "description": "Ünïcödé — “quotes” 🎉",
+   "date_created": "2001-01-15T00:00:00Z"
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Emoji 🎉 Ünïcödé - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Emoji 🎉 Ünïcödé - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Emoji_🎉_Ünïcödé\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Emoji 🎉 Ünïcödé\", \"url\": \"https://en.wikipedia.org/wiki/Emoji_🎉_Ünïcödé\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"datePublished\": \"2001-01-15T00:00:00Z\", \"dateModified\": \"2026-10-30T12:00:00Z\", \"headline\": \"Ünïcödé — “quotes” 🎉\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Empty body",
+   "identifier": 1012,
+   "url": "https://en.wikipedia.org/wiki/Empty_body",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5012
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section></section></body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Empty body - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Empty body - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Empty_body\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Empty body\", \"url\": \"https://en.wikipedia.org/wiki/Empty_body\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Airplane crashes in Nigeria",
+   "identifier": 27659,
+   "abstract": "Saturday, December 10, 2005 A DC-9, operated by privately owned, Sosoliso Airlines, crashed in Port Harcourt, Nigeria, reportedly killing at least 103 people. Seven people are reported to have survived the crash. Landing during an electrical storm, the plane overshot the runway and burst into flames. The aircraft broke into three main pieces, scattering passengers and wreckage. Some 75 children returning home for the holidays are among the victims.",
+   "date_modified": "2024-12-18T03:12:36Z",
+   "protection": [
+    {
+     "type": "edit",
+     "level": "sysop",
+     "expiry": "infinity"
+    },
+    {
+     "type": "move",
+     "level": "sysop",
+     "expiry": "infinity"
+    }
+   ],
+   "version": {
+    "identifier": 4813069,
+    "comment": "/* Sources */ part 2 per [[Wikinews:Admin_action_alerts#Deploy_new_archive_templates_to_old_articles]] using [[Project:AWB|AWB]]",
+    "scores": {},
+    "editor": {
+     "identifier": 2882487,
+     "name": "Leaderbot"
+    },
+    "number_of_characters": 1596,
+    "size": {
+     "value": 1642,
+     "unit_text": "B"
+    }
+   },
+   "url": "https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria",
+   "namespace": {
+    "identifier": 0
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "main_entity": {
+    "identifier": "Q2025205",
+    "url": "https://www.wikidata.org/entity/Q2025205"
+   },
+   "additional_entities": [
+    {
+     "identifier": "Q2025205",
+     "url": "https://www.wikidata.org/entity/Q2025205",
+     "aspects": [
+      "S"
+     ]
+    }
+   ],
+   "categories": [
+    {
+     "name": "Category:Articles not disputed",
+     "url": "https://en.wikinews.org/wiki/Category:Articles_not_disputed"
+    },
+    {
+     "name": "Category:Archived",
+     "url": "https://en.wikinews.org/wiki/Category:Archived"
+    },
+    {
+     "name": "Category:Africa",
+     "url": "https://en.wikinews.org/wiki/Category:Africa"
+    },
+    {
+     "name": "Category:Nigeria",
+     "url": "https://en.wikinews.org/wiki/Category:Nigeria"
+    },
+    {
+     "name": "Category:Disasters and accidents",
+     "url": "https://en.wikinews.org/wiki/Category:Disasters_and_accidents"
+    },
+    {
+     "name": "Category:December 10, 2005",
+     "url": "https://en.wikinews.org/wiki/Category:December_10,_2005"
+    },
+    {
+     "name": "Category:Published",
+     "url": "https://en.wikinews.org/wiki/Category:Published"
+    }
+   ],
+   "templates": [
+    {
+     "name": "Template:Date",
+     "url": "https://en.wikinews.org/wiki/Template:Date"
+    },
+    {
+     "name": "Template:Source",
+     "url": "https://en.wikinews.org/wiki/Template:Source"
+    },
+    {
+     "name": "Template:Publish",
+     "url": "https://en.wikinews.org/wiki/Template:Publish"
+    },
+    {
+     "name": "Template:Archived-cc-2.5",
+     "url": "https://en.wikinews.org/wiki/Template:Archived-cc-2.5"
+    }
+   ],
+   "is_part_of": {
+    "identifier": "enwikinews",
+    "url": "https://en.wikinews.org"
+   },
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/ mw: http://mediawiki.org/rdf/\" about=\"https://en.wikinews.org/wiki/Special:Redirect/revision/4813069\"><head prefix=\"mwr: https://en.wikinews.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><meta property=\"mw:pageId\" content=\"27659\"/><meta property=\"mw:pageNamespace\" content=\"0\"/><link rel=\"dc:replaces\" resource=\"mwr:revision/1108704\"/><meta property=\"mw:revisionSHA1\" content=\"d152b77a923bd685f1fd35e535298be358bbbca5\"/><meta property=\"dc:modified\" content=\"2024-12-18T03:12:36.000Z\"/><meta property=\"mw:htmlVersion\" content=\"2.8.0\"/><meta property=\"mw:html:version\" content=\"2.8.0\"/><link rel=\"dc:isVersionOf\" href=\"//en.wikinews.org/wiki/Airplane_crashes_in_Nigeria\"/><base href=\"//en.wikinews.org/wiki/\"/><title>Airplane crashes in Nigeria</title><meta property=\"mw:generalModules\" content=\"mediawiki.page.media\"/><link rel=\"stylesheet\" href=\"/w/load.php?lang=en&amp;modules=mediawiki.skinning.content.parsoid%7Cmediawiki.skinning.interface%7Csite.styles&amp;only=styles&amp;skin=vector\"/><meta http-equiv=\"content-language\" content=\"en\"/><meta http-equiv=\"vary\" content=\"Accept\"/></head><body lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\" data-mw-parsoid-version=\"0.21.0.0-alpha18\" data-mw-html-version=\"2.8.0\" id=\"mwAA\"><section data-mw-section-id=\"0\" id=\"mwAQ\"><p id=\"mwAg\"><link rel=\"mw:PageProp/Category\" href=\"./Category:December_10,_2005\" about=\"#mwt1\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"date\",\"href\":\"./Template:Date\"},\"params\":{\"1\":{\"wt\":\"December 10, 2005\"}},\"i\":0}}]}' id=\"mwAw\"/><strong class=\"published\" about=\"#mwt1\"><span id=\"publishDate\" class=\"value-title\" title=\"2005-12-10\"></span>Saturday, December 10, 2005</strong><span class=\"Z3988\" style=\"display:none\" title=\"ctx_ver=Z39.88-2004&amp;rft_val_fmt=info%3Aofi%2Ffmt%3Akev%3Amtx%3Ajournal&amp;rfr_id=rfr_id=info:sid/en.wikinews.org:User%3ADendodge&amp;rft_id=info:sid/en.wikinews.org:Airplane_crashes_in_Nigeria&amp;rft.atitle=Airplane+crashes+in+Nigeria&amp;rft.jtitle=Wikinews&amp;rft.date=2005-12-10&amp;rft.aucorp=Wikinews+contributors&amp;rft.genre=article&amp;rft.rights=CC-BY+2.5&amp;rft.identifier=%2F%2Fen.wikinews.org%2Fwiki%2FAirplane_crashes_in_Nigeria&amp;rft.artnum=-\" about=\"#mwt1\" id=\"mwBA\"><span typeof=\"mw:Entity\"> </span></span></p>\n<figure class=\"mw-halign-right\" typeof=\"mw:File/Thumb\" id=\"mwBQ\"><a href=\"./File:DC-9_UR-CBY.JPG\" class=\"mw-file-description\" id=\"mwBg\"><img resource=\"./File:DC-9_UR-CBY.JPG\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/e/e1/DC-9_UR-CBY.JPG/200px-DC-9_UR-CBY.JPG\" decoding=\"async\" data-file-width=\"1024\" data-file-height=\"768\" data-file-type=\"bitmap\" height=\"150\" width=\"200\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/e/e1/DC-9_UR-CBY.JPG/300px-DC-9_UR-CBY.JPG 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/e/e1/DC-9_UR-CBY.JPG/400px-DC-9_UR-CBY.JPG 2x\" class=\"mw-file-element\" id=\"mwBw\"/></a><figcaption id=\"mwCA\">A DC-9, such as the one pictured here, crashed in Nigeria.</figcaption></figure>\n<p id=\"mwCQ\">A <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/McDonnell%20Douglas%20DC-9\" title=\"w:McDonnell Douglas DC-9\" class=\"extiw\" id=\"mwCg\">DC-9</a>, operated by privately owned, <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Sosoliso%20Airlines\" title=\"w:Sosoliso Airlines\" class=\"extiw\" id=\"mwCw\">Sosoliso Airlines</a>, crashed in <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Port%20Harcourt\" title=\"w:Port Harcourt\" class=\"extiw\" id=\"mwDA\">Port Harcourt</a>, <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Nigeria\" title=\"w:Nigeria\" class=\"extiw\" id=\"mwDQ\">Nigeria</a>, reportedly killing at least 103 people. Seven people are reported to have survived the crash.</p>\n\n<p id=\"mwDg\">Landing during an electrical storm, the plane overshot the runway and burst into flames. The aircraft broke into three main pieces, scattering passengers and wreckage.</p>\n\n<p id=\"mwDw\">Some 75 children returning home for the holidays are among the victims.</p>\n\n</section><section data-mw-section-id=\"1\" id=\"mwEA\"><h2 id=\"Sources\">Sources</h2>\n<ul id=\"mwEQ\"><li id=\"mwEg\"><span class=\"sourceTemplate\" about=\"#mwt2\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://news.bbc.co.uk/2/hi/africa/4517024.stm\"},\"title\":{\"wt\":\"Nigeria jet crash leaves 103 dead\"},\"author\":{\"wt\":\"\"},\"pub\":{\"wt\":\"BBC News\"},\"date\":{\"wt\":\"December 10, 2005\"}},\"i\":0}}]}' id=\"mwEw\"> \"<a rel=\"mw:ExtLink nofollow\" href=\"http://news.bbc.co.uk/2/hi/africa/4517024.stm\" class=\"external text\">Nigeria jet crash leaves 103 dead</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./BBC_News\" title=\"BBC News\" class=\"mw-redirect\">BBC News</a></span></i>, December 10, 2005</span></li></ul>\n\n<ul id=\"mwFA\"><li id=\"mwFQ\"><span class=\"sourceTemplate\" about=\"#mwt5\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://today.reuters.com/news/NewsArticle.aspx?type=worldNews&amp;storyID=2005-12-10T171139Z_01_MOL056160_RTRUKOC_0_US-CRASH-NIGERIA.xml\"},\"title\":{\"wt\":\"Plane crashes in Nigeria, at least 60 dead: official\"},\"author\":{\"wt\":\"Austin Ekeinde\"},\"pub\":{\"wt\":\"Reuters\"},\"date\":{\"wt\":\"December 10, 2005\"}},\"i\":0}}]}' id=\"mwFg\">Austin Ekeinde. \"<a rel=\"mw:ExtLink nofollow\" href=\"http://today.reuters.com/news/NewsArticle.aspx?type=worldNews&amp;storyID=2005-12-10T171139Z_01_MOL056160_RTRUKOC_0_US-CRASH-NIGERIA.xml\" class=\"external text\">Plane crashes in Nigeria, at least 60 dead: official</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./Reuters\" title=\"Reuters\" class=\"mw-redirect\">Reuters</a></span></i>, December 10, 2005</span></li></ul>\n\n<ul about=\"#mwt11\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[\"*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://www.signonsandiego.com/news/world/20051210-0935-nigeria-planecrash.html\"},\"title\":{\"wt\":\"Passenger jet crashes in southern Nigerian city\"},\"author\":{\"wt\":\"Daniel Balint-Kurti\"},\"pub\":{\"wt\":\"Associated Press\"},\"date\":{\"wt\":\"December 10, 2005\"}},\"i\":0}},\"\\n\\n  \\n\",{\"template\":{\"target\":{\"wt\":\"publish\",\"href\":\"./Template:Publish\"},\"params\":{},\"i\":1}}]}' id=\"mwFw\"><li><span class=\"sourceTemplate\">Daniel Balint-Kurti. \"<a rel=\"mw:ExtLink nofollow\" href=\"http://www.signonsandiego.com/news/world/20051210-0935-nigeria-planecrash.html\" class=\"external text\">Passenger jet crashes in southern Nigerian city</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./Associated_Press\" title=\"Associated Press\" class=\"mw-redirect\">Associated Press</a></span></i>, December 10, 2005</span>\n\n  \n<link rel=\"mw:PageProp/Category\" href=\"./Category:Published\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Articles_not_disputed\"/><br style=\"clear:both\"/></li></ul><span about=\"#mwt11\">\n</span><table align=\"center\" style=\"width:30%; background-color:#FFFFFF; border:1px solid #a7d7f9; -moz-border-radius: 9px;-webkit-border-radius: 9px; border-radius: 9px; padding:1px;\" id=\"social_bookmarks\" class=\"noprint\" about=\"#mwt11\">\n<tbody><tr>\n<td><figure class=\"mw-halign-left\" typeof=\"mw:File\"><a href=\"http://en.wikinews.org/wiki/Wikinews:Social_bookmarks\"><img resource=\"./File:Bookmark-new.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/25px-Bookmark-new.svg.png\" decoding=\"async\" data-file-width=\"48\" data-file-height=\"48\" data-file-type=\"drawing\" height=\"25\" width=\"25\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/38px-Bookmark-new.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/50px-Bookmark-new.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption></figcaption></figure>\n<div class=\"plainlinks\" align=\"center\">\n<p><b>Share this:</b><span typeof=\"mw:Entity\"> </span>\n<span title=\"Share via e-mail\" class=\"plainlinks\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"E-mail this story\"}'><a href=\"mailto:?subject=Airplane_crashes_in_Nigeria%20–%20Wikinews&amp;body=Airplane_crashes_in_Nigeria:%0Ahttps://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria%0A%0AFrom%20Wikinews,%20the%20free%20news%20source%20you%20can%20write!\" rel=\"nofollow\" title=\"E-mail this story\"><img alt=\"E-mail this story\" resource=\"./File:Email.png\" src=\"//upload.wikimedia.org/wikipedia/commons/5/5c/Email.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Facebook\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on Facebook\"}'><a href=\"http://www.facebook.com/sharer.php?u=https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria&amp;t=Airplane+crashes+in+Nigeria+-+Wikinews\" rel=\"nofollow\" title=\"Share on Facebook\"><img alt=\"Share on Facebook\" resource=\"./File:Facebook.png\" src=\"//upload.wikimedia.org/wikinews/en/5/55/Facebook.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on reddit\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on reddit.com\"}'><a href=\"http://reddit.com/submit?url=https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria&amp;title=Airplane+crashes+in+Nigeria+-+Wikinews\" rel=\"nofollow\" title=\"Share on reddit.com\"><img alt=\"Share on reddit.com\" resource=\"./File:Reddit.png\" src=\"//upload.wikimedia.org/wikinews/en/1/10/Reddit.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on LinkedIn\"><span typeof=\"mw:File\" data-mw='{\"caption\":\"Share on LinkedIn.com\"}'><a href=\"http://www.linkedin.com/shareArticle?mini=true&amp;url=https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria&amp;title=Airplane+crashes+in+Nigeria+-+Wikinews\" rel=\"nofollow\" title=\"Share on LinkedIn.com\"><img alt=\"Share on LinkedIn.com\" resource=\"./File:Linkedin.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/16px-Linkedin.svg.png\" decoding=\"async\" data-file-width=\"200\" data-file-height=\"200\" data-file-type=\"drawing\" height=\"16\" width=\"16\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/24px-Linkedin.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/32px-Linkedin.svg.png 2x\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Twitter\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on twitter.com\"}'><a href=\"https://twitter.com/intent/tweet?url=Look%20what%20I%20found%20on%20Wikinews:%20https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria\" rel=\"nofollow\" title=\"Share on twitter.com\"><img alt=\"Share on twitter.com\" resource=\"./File:Twitter.png\" src=\"//upload.wikimedia.org/wikinews/en/f/f7/Twitter.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span></p>\n</div></td></tr>\n</tbody></table><span about=\"#mwt11\">\n</span>\n\n<p about=\"#mwt12\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"Archived-cc-2.5\",\"href\":\"./Template:Archived-cc-2.5\"},\"params\":{},\"i\":0}}]}' id=\"mwGA\"><br style=\"clear:both;\"/></p><span about=\"#mwt12\">\n</span><div class=\"desktop-only\" about=\"#mwt12\"><table class=\"plainlinks noprint xambox xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td>\n<p><b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b></p>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crashes_in_Nigeria?action=edit&amp;redlink=1\" title=\"Talk:Airplane crashes in Nigeria\" class=\"new\" typeof=\"mw:LocalizedAttrs\" data-mw-i18n='{\"title\":{\"lang\":\"x-page\",\"key\":\"red-link-title\",\"params\":[\"Talk:Airplane crashes in Nigeria\"]}}'>talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<p><small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small></p>\n</td>\n\n</tr></tbody></table></div><div class=\"mobile-only\" about=\"#mwt12\"><table class=\"plainlinks noprint xambox-mobile xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td> <b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crashes_in_Nigeria?action=edit&amp;redlink=1\" title=\"Talk:Airplane crashes in Nigeria\" class=\"new\" typeof=\"mw:LocalizedAttrs\" data-mw-i18n='{\"title\":{\"lang\":\"x-page\",\"key\":\"red-link-title\",\"params\":[\"Talk:Airplane crashes in Nigeria\"]}}'>talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small> </td>\n\n</tr></tbody></table></div><span about=\"#mwt12\">\n</span><link rel=\"mw:PageProp/Category\" href=\"./Category:Archived\" about=\"#mwt12\"/><span about=\"#mwt12\">\n\n</span>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Africa\" id=\"mwGQ\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Nigeria\" id=\"mwGg\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Disasters_and_accidents\" id=\"mwGw\"/>\n\n<link rel=\"mw:PageProp/Language\" href=\"https://de.wikinews.org/wiki/Über%20100%20Tote%20bei%20Flugzeugabsturz%20in%20Nigeria\" id=\"mwHA\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://es.wikinews.org/wiki/Avión%20de%20pasajeros%20se%20estrella%20en%20Nigeria\" id=\"mwHQ\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://ja.wikinews.org/wiki/ナイジェリアでソソリソ航空機が墜落、106名死亡\" id=\"mwHg\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://pt.wikinews.org/wiki/Avião%20de%20passageiros%20cai%20na%20Nigéria\" id=\"mwHw\"/></section></body></html>",
+    "wikitext": "{{date|December 10, 2005}}\n[[Image:DC-9 UR-CBY.JPG|200px|right|thumb|A DC-9, such as the one pictured here, crashed in Nigeria.]]\nA [[w:McDonnell Douglas DC-9|DC-9]], operated by privately owned, [[w:Sosoliso Airlines|Sosoliso Airlines]], crashed in [[w:Port Harcourt|Port Harcourt]], [[w:Nigeria|Nigeria]], reportedly killing at least 103 people. Seven people are reported to have survived the crash.\n\nLanding during an electrical storm, the plane overshot the runway and burst into flames. The aircraft broke into three main pieces, scattering passengers and wreckage.\n\nSome 75 children returning home for the holidays are among the victims.\n\n== Sources ==\n*{{source|url=http://news.bbc.co.uk/2/hi/africa/4517024.stm\n|title=Nigeria jet crash leaves 103 dead\n|author=\n|pub=BBC News\n|date=December 10, 2005}}\n\n*{{source|url=http://today.reuters.com/news/NewsArticle.aspx?type=worldNews&storyID=2005-12-10T171139Z_01_MOL056160_RTRUKOC_0_US-CRASH-NIGERIA.xml\n|title=Plane crashes in Nigeria, at least 60 dead: official\n|author=Austin Ekeinde\n|pub=Reuters\n|date=December 10, 2005}}\n\n*{{source|url=http://www.signonsandiego.com/news/world/20051210-0935-nigeria-planecrash.html\n|title=Passenger jet crashes in southern Nigerian city \n|author=Daniel Balint-Kurti\n|pub=Associated Press\n|date=December 10, 2005}}\n\n  \n{{publish}}\n\n{{Archived-cc-2.5}}\n[[Category:Africa]]\n[[Category:Nigeria]]\n[[Category:Disasters and accidents]]\n\n[[de:Über 100 Tote bei Flugzeugabsturz in Nigeria]]\n[[es:Avión de pasajeros se estrella en Nigeria]]\n[[ja:ナイジェリアでソソリソ航空機が墜落、106名死亡]]\n[[pt:Avião de passageiros cai na Nigéria]]"
+   },
+   "license": [
+    {
+     "name": "Creative Commons Attribution-ShareAlike License 4.0",
+     "identifier": "CC-BY-SA-4.0",
+     "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+    }
+   ],
+   "event": {
+    "identifier": "8ee8f430-ae89-4696-a88b-1f85a69e08be",
+    "type": "update",
+    "date_created": "2025-03-17T23:31:02.35225Z",
+    "date_published": "2025-03-17T23:31:02.35225Z"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/e/e1/DC-9_UR-CBY.JPG",
+    "width": 1024,
+    "height": 768
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Airplane crashes in Nigeria - Wikinews</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://upload.wikimedia.org/wikipedia/commons/e/e1/DC-9_UR-CBY.JPG?utm_source=en.wikinews.org&amp;utm_campaign=index&amp;utm_content=thumbnail_unscaled\"><meta property=\"og:title\" content=\"Airplane crashes in Nigeria - Wikinews\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Airplane crashes in Nigeria\", \"url\": \"https://en.wikinews.org/wiki/Airplane_crashes_in_Nigeria\", \"sameAs\": \"http://www.wikidata.org/entity/Q2025205\", \"mainEntity\": \"http://www.wikidata.org/entity/Q2025205\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2024-12-18T03:12:36Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/e/e1/DC-9_UR-CBY.JPG?utm_source=en.wikinews.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul><li><a href=\"/wiki/Category:December 10, 2005\">December 10, 2005</a></li><li><a href=\"/wiki/Category:Published\">Published</a></li><li><a href=\"/wiki/Category:Articles not disputed\">Articles not disputed</a></li><li><a href=\"/wiki/Category:Archived\">Archived</a></li><li><a href=\"/wiki/Category:Africa\">Africa</a></li><li><a href=\"/wiki/Category:Nigeria\">Nigeria</a></li><li><a href=\"/wiki/Category:Disasters and accidents\">Disasters and accidents</a></li></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Airplane crash in Indonesia kills 100",
+   "identifier": 126517,
+   "abstract": "Wednesday, May 20, 2009 At least 98 people have been confirmed dead and a further fifteen wounded after an Indonesian Air Force Hercules C-130 airplane crashed in a housing area in the city of Magetan, East Java in Indonesia early Wednesday. The plane had taken off from the country's capital of Jakarta and was preparing to land at a military base nearby the crash site. \"As such the total number of people dead or injured so far is 113, including the two people on the ground. Meanwhile, reports of another person who died but has not been found cannot be verified as yet,\" said Banbang Sulistyo, the air force's chief of information. He added that investigations are currently ongoing to determine what caused the accident. The cause of the incident is as of yet uncertain, as the plane was reported to have been in good condition, and the weather was suitable for landing. Indonesian president Susilo Bambang Yudhoyono called an emergency meeting at his presidential palace with the Armed Forces and Air Force chief and defence minister. \"From the explanation I received from them [...] it cannot be determined yet if the crash was because of weather conditions, mechanical failure or human error. It's better not to speculate what caused the crash,\" he told reporters after the meeting,\" the president said. Witness reports say there was an explosion shortly before the plane crashed. \"I heard at least two big explosions and saw flashes of fire inside the plane,\" said an eyewitness, a man working in a rice field near where the aircraft crashed. \"The wing snapped off and fell to the ground.\" The accident is the deadliest in the Indonesian Air Force's history since an airplane crash in 1991 in Condet, East Java, which killed 135 people.",
+   "date_modified": "2024-12-18T03:12:32Z",
+   "protection": [
+    {
+     "type": "edit",
+     "level": "sysop",
+     "expiry": "infinity"
+    },
+    {
+     "type": "move",
+     "level": "sysop",
+     "expiry": "infinity"
+    }
+   ],
+   "version": {
+    "identifier": 4813067,
+    "comment": "/* Sources */ part 2 per [[Wikinews:Admin_action_alerts#Deploy_new_archive_templates_to_old_articles]] using [[Project:AWB|AWB]]",
+    "is_flagged_stable": true,
+    "scores": {},
+    "editor": {
+     "identifier": 2882487,
+     "name": "Leaderbot"
+    },
+    "number_of_characters": 2797,
+    "size": {
+     "value": 2833,
+     "unit_text": "B"
+    }
+   },
+   "url": "https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100",
+   "namespace": {
+    "identifier": 0
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "main_entity": {
+    "identifier": "Q17601539",
+    "url": "https://www.wikidata.org/entity/Q17601539"
+   },
+   "additional_entities": [
+    {
+     "identifier": "Q17601539",
+     "url": "https://www.wikidata.org/entity/Q17601539",
+     "aspects": [
+      "S"
+     ]
+    }
+   ],
+   "categories": [
+    {
+     "name": "Category:Archived",
+     "url": "https://en.wikinews.org/wiki/Category:Archived"
+    },
+    {
+     "name": "Category:Disasters and accidents",
+     "url": "https://en.wikinews.org/wiki/Category:Disasters_and_accidents"
+    },
+    {
+     "name": "Category:Aviation",
+     "url": "https://en.wikinews.org/wiki/Category:Aviation"
+    },
+    {
+     "name": "Category:May 20, 2009",
+     "url": "https://en.wikinews.org/wiki/Category:May_20,_2009"
+    },
+    {
+     "name": "Category:Articles not disputed",
+     "url": "https://en.wikinews.org/wiki/Category:Articles_not_disputed"
+    },
+    {
+     "name": "Category:Asia",
+     "url": "https://en.wikinews.org/wiki/Category:Asia"
+    },
+    {
+     "name": "Category:Indonesia",
+     "url": "https://en.wikinews.org/wiki/Category:Indonesia"
+    },
+    {
+     "name": "Category:Transport",
+     "url": "https://en.wikinews.org/wiki/Category:Transport"
+    },
+    {
+     "name": "Category:Java",
+     "url": "https://en.wikinews.org/wiki/Category:Java"
+    },
+    {
+     "name": "Category:Aviation accidents and incidents",
+     "url": "https://en.wikinews.org/wiki/Category:Aviation_accidents_and_incidents"
+    },
+    {
+     "name": "Category:Published",
+     "url": "https://en.wikinews.org/wiki/Category:Published"
+    }
+   ],
+   "templates": [
+    {
+     "name": "Template:Archived-cc-2.5",
+     "url": "https://en.wikinews.org/wiki/Template:Archived-cc-2.5"
+    },
+    {
+     "name": "Template:Date",
+     "url": "https://en.wikinews.org/wiki/Template:Date"
+    },
+    {
+     "name": "Template:Disasters and accidents",
+     "url": "https://en.wikinews.org/wiki/Template:Disasters_and_accidents"
+    },
+    {
+     "name": "Template:Haveyoursay",
+     "url": "https://en.wikinews.org/wiki/Template:Haveyoursay"
+    },
+    {
+     "name": "Template:Wikipediapar",
+     "url": "https://en.wikinews.org/wiki/Template:Wikipediapar"
+    },
+    {
+     "name": "Template:Source",
+     "url": "https://en.wikinews.org/wiki/Template:Source"
+    },
+    {
+     "name": "Template:Publish",
+     "url": "https://en.wikinews.org/wiki/Template:Publish"
+    }
+   ],
+   "redirects": [
+    {
+     "name": "Airplane crash in Indonesia kill almost 100",
+     "url": "https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kill_almost_100"
+    },
+    {
+     "name": "Airplane crash in Indonesia kills almost 100",
+     "url": "https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_almost_100"
+    }
+   ],
+   "is_part_of": {
+    "identifier": "enwikinews",
+    "url": "https://en.wikinews.org"
+   },
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/ mw: http://mediawiki.org/rdf/\" about=\"https://en.wikinews.org/wiki/Special:Redirect/revision/4813067\"><head prefix=\"mwr: https://en.wikinews.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><meta property=\"mw:pageId\" content=\"126517\"/><meta property=\"mw:pageNamespace\" content=\"0\"/><link rel=\"dc:replaces\" resource=\"mwr:revision/4273193\"/><meta property=\"mw:revisionSHA1\" content=\"3c641ef4a30595a489c0897cc22dc4b419bf50f4\"/><meta property=\"dc:modified\" content=\"2024-12-18T03:12:32.000Z\"/><meta property=\"mw:htmlVersion\" content=\"2.8.0\"/><meta property=\"mw:html:version\" content=\"2.8.0\"/><link rel=\"dc:isVersionOf\" href=\"//en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100\"/><base href=\"//en.wikinews.org/wiki/\"/><title>Airplane crash in Indonesia kills 100</title><meta property=\"mw:generalModules\" content=\"mediawiki.page.media\"/><link rel=\"stylesheet\" href=\"/w/load.php?lang=en&amp;modules=mediawiki.skinning.content.parsoid%7Cmediawiki.skinning.interface%7Csite.styles&amp;only=styles&amp;skin=vector\"/><meta http-equiv=\"content-language\" content=\"en\"/><meta http-equiv=\"vary\" content=\"Accept\"/></head><body lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\" data-mw-parsoid-version=\"0.21.0.0-alpha15\" data-mw-html-version=\"2.8.0\" id=\"mwAA\"><section data-mw-section-id=\"0\" id=\"mwAQ\"><p id=\"mwAg\"><link rel=\"mw:PageProp/Category\" href=\"./Category:May_20,_2009\" about=\"#mwt1\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"date\",\"href\":\"./Template:Date\"},\"params\":{\"1\":{\"wt\":\"May 20, 2009\"}},\"i\":0}}]}' id=\"mwAw\"/><strong class=\"published\" about=\"#mwt1\"><span id=\"publishDate\" class=\"value-title\" title=\"2009-05-20\"></span>Wednesday, May 20, 2009</strong><span class=\"Z3988\" style=\"display:none\" title=\"ctx_ver=Z39.88-2004&amp;rft_val_fmt=info%3Aofi%2Ffmt%3Akev%3Amtx%3Ajournal&amp;rfr_id=rfr_id=info:sid/en.wikinews.org:User%3ADendodge&amp;rft_id=info:sid/en.wikinews.org:Airplane_crash_in_Indonesia_kills_100&amp;rft.atitle=Airplane+crash+in+Indonesia+kills+100&amp;rft.jtitle=Wikinews&amp;rft.date=2009-05-20&amp;rft.aucorp=Wikinews+contributors&amp;rft.genre=article&amp;rft.rights=CC-BY+2.5&amp;rft.identifier=%2F%2Fen.wikinews.org%2Fwiki%2FAirplane_crash_in_Indonesia_kills_100&amp;rft.artnum=-\" about=\"#mwt1\" id=\"mwBA\"><span typeof=\"mw:Entity\"> </span></span></p>\n<div class=\"infobox noprint desktop-only\" style=\"margin-left: 5px; float: right; width: 200px; background: #edf7ff; border: solid #666666 1px; padding: 0px; font-size: x-small; clear:right;\" about=\"#mwt2\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"Disasters and accidents\",\"href\":\"./Template:Disasters_and_accidents\"},\"params\":{},\"i\":0}}]}' id=\"mwBQ\">\n<div style=\"text-decoration:none; background: #7ec9fd; padding: 2px; text-align: center; style; font-size: 140%; border-bottom: solid 1px #666666;\"><b><a rel=\"mw:WikiLink\" href=\"./Disasters_and_accidents\" title=\"Disasters and accidents\" class=\"mw-redirect\">Disasters and accidents</a></b></div>\n<figure class=\"mw-halign-center\" typeof=\"mw:File\"><a href=\"./File:Blue_lightbar_(fire_and_rescue).jpg\" class=\"mw-file-description\"><img resource=\"./File:Blue_lightbar_(fire_and_rescue).jpg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg/200px-Blue_lightbar_%28fire_and_rescue%29.jpg\" decoding=\"async\" data-file-width=\"1630\" data-file-height=\"1086\" data-file-type=\"bitmap\" height=\"133\" width=\"200\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg/300px-Blue_lightbar_%28fire_and_rescue%29.jpg 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg/400px-Blue_lightbar_%28fire_and_rescue%29.jpg 2x\" class=\"mw-file-element\"/></a><figcaption></figcaption></figure>\n<div style=\"background: #bce1ff; color: #202122; padding: 2px; text-align: center; style; font-size: normal;\">Related articles</div>\n<div style=\"padding: 2px;\">\n\n<ul typeof=\"mw:Extension/dynamicpagelist\" about=\"#mwt4\" data-mw='{\"name\":\"dynamicpagelist\",\"attrs\":{},\"body\":{\"extsrc\":\"\\ncategory=published\\ncategory=Disasters and accidents\\nnotcategory=disputed\\nnotcategory=no publish\\nnamespace=Main\\naddfirstcategorydate=true\\ncount=5\\n\"}}'>\n<li>17 February 2025: <a href=\"/wiki/Passenger_plane_collides_with_military_helicopter_near_Washington,_D.C.\" title=\"Passenger plane collides with military helicopter near Washington, D.C.\">Passenger plane collides with military helicopter near Washington, D.C.</a></li> \n<li>17 February 2025: <a href=\"/wiki/Air_ambulance_crashes_into_infrastructure_in_Philadelphia,_Pennsylvania_while_transporting_pediatric_patient,_no_survivors\" title=\"Air ambulance crashes into infrastructure in Philadelphia, Pennsylvania while transporting pediatric patient, no survivors\">Air ambulance crashes into infrastructure in Philadelphia, Pennsylvania while transporting pediatric patient, no survivors</a></li> \n<li>17 February 2025: <a href=\"/wiki/Cargo_ship_collides_with_Francis_Scott_Key_Bridge_in_Baltimore,_Maryland\" title=\"Cargo ship collides with Francis Scott Key Bridge in Baltimore, Maryland\">Cargo ship collides with Francis Scott Key Bridge in Baltimore, Maryland</a></li> \n<li>17 February 2025: <a href=\"/wiki/Bargi_plant_in_central_Italy_felt_with_explosion\" title=\"Bargi plant in central Italy felt with explosion\">Bargi plant in central Italy felt with explosion</a></li> \n<li>17 February 2025: <a href=\"/wiki/NASA_says_object_that_hit_Florida_home_is_from_International_Space_Station\" title=\"NASA says object that hit Florida home is from International Space Station\">NASA says object that hit Florida home is from International Space Station</a></li></ul><span about=\"#mwt4\">\n</span>\n</div>\n\n<div style=\"background: #bce1ff; padding: 2px; text-align: center; style; font-size: normal; {{{style}}}\">Collaborate!</div>\n<div style=\"padding: 2px;\">\n<ul><li><a rel=\"mw:WikiLink\" href=\"./Wikinews:PILLARS\" title=\"Wikinews:PILLARS\" class=\"mw-redirect\">Pillars of Wikinews writing</a></li>\n<li><a rel=\"mw:WikiLink\" href=\"./Wikinews:WRITE\" title=\"Wikinews:WRITE\" class=\"mw-redirect\">Writing an article</a></li></ul>\n</div>\n</div>\n<figure class=\"mw-halign-left\" typeof=\"mw:File/Thumb\" id=\"mwBg\"><a href=\"./File:C130H.JPG\" class=\"mw-file-description\" id=\"mwBw\"><img resource=\"./File:C130H.JPG\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/7/74/C130H.JPG/230px-C130H.JPG\" decoding=\"async\" data-file-width=\"2300\" data-file-height=\"900\" data-file-type=\"bitmap\" height=\"90\" width=\"230\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/7/74/C130H.JPG/345px-C130H.JPG 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/7/74/C130H.JPG/460px-C130H.JPG 2x\" class=\"mw-file-element\" id=\"mwCA\"/></a><figcaption id=\"mwCQ\">Drawing of a C-130H</figcaption></figure>\n<p id=\"mwCg\">At least 98 people have been confirmed dead and a further fifteen wounded after an <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Indonesian%20Air%20Force\" title=\"w:Indonesian Air Force\" class=\"extiw\" id=\"mwCw\">Indonesian Air Force</a> <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Hercules%20C-130\" title=\"w:Hercules C-130\" class=\"extiw\" id=\"mwDA\">Hercules C-130</a> airplane crashed in a housing area in the city of <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Magetan\" title=\"w:Magetan\" class=\"extiw\" id=\"mwDQ\">Magetan</a>, <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/East%20Java\" title=\"w:East Java\" class=\"extiw\" id=\"mwDg\">East Java</a> in <a rel=\"mw:WikiLink\" href=\"./Indonesia\" title=\"Indonesia\" class=\"mw-redirect\" id=\"mwDw\">Indonesia</a> early Wednesday.</p>\n\n<p id=\"mwEA\">The plane had taken off from the country's capital of <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Jakarta\" title=\"w:Jakarta\" class=\"extiw\" id=\"mwEQ\">Jakarta</a> and was preparing to land at a military base nearby the crash site.</p>\n\n<p id=\"mwEg\">\"As such the total number of people dead or injured so far is 113, including the two people on the ground. Meanwhile, reports of another person who died but has not been found cannot be verified as yet,\" said Banbang Sulistyo, the air force's chief of information. He added that investigations are currently ongoing to determine what caused the accident.</p>\n\n<p id=\"mwEw\">The cause of the incident is as of yet uncertain, as the plane was reported to have been in good condition, and the weather was suitable for landing.</p>\n\n<p id=\"mwFA\">Indonesian president <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Susilo%20Bambang%20Yudhoyono\" title=\"w:Susilo Bambang Yudhoyono\" class=\"extiw\" id=\"mwFQ\">Susilo Bambang Yudhoyono</a> called an emergency meeting at his presidential palace with the Armed Forces and Air Force chief and defence minister.</p>\n\n<p id=\"mwFg\">\"From the explanation I received from them [...] it cannot be determined yet if the crash was because of weather conditions, mechanical failure or human error. It's better not to speculate what caused the crash,\" he told reporters after the meeting,\" the president said.</p>\n\n<p id=\"mwFw\">Witness reports say there was an explosion shortly before the plane crashed. \"I heard at least two big explosions and saw flashes of fire inside the plane,\" said an eyewitness, a man working in a rice field near where the aircraft crashed. \"The wing snapped off and fell to the ground.\"</p>\n\n<p id=\"mwGA\">The accident is the deadliest in the Indonesian Air Force's history since an airplane crash in 1991 in Condet, East Java, which killed 135 people.</p>\n\n<p about=\"#mwt5\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"haveyoursay\",\"href\":\"./Template:Haveyoursay\"},\"params\":{},\"i\":0}}]}' id=\"mwGQ\"><br style=\"clear:none;\"/></p><span about=\"#mwt5\">\n</span><div align=\"center\" about=\"#mwt5\" id=\"mwGg\">\n<div class=\"noprint messagebox boilerplate plainlinks\" id=\"commentrequest\" style=\"border:1px solid #CCCCCC; padding:2px;width:50%; text-size:smallest;\">\n<p>Have an opinion on this story? <span class=\"plainlinks\"><span style=\"color:#002bb8\"><a rel=\"mw:ExtLink\" href=\"//en.wikinews.org/w/index.php?title=Comments:Airplane_crash_in_Indonesia_kills_100&amp;action=edit&amp;preload=Wikinews:Commentary_pages_on_news_events/body&amp;editintro=Template:Editintro_comments&amp;summary=create\" class=\"external text\">Share it!</a></span></span></p>\n</div></div>\n</section><section data-mw-section-id=\"1\" id=\"mwGw\"><h2 id=\"Sources\">Sources</h2>\n<div class=\"noprint\" style=\"clear: right; border: solid #aaa 1px; margin: 1em 0 1em 1em; font-size: 90%; background: #f9f9f9; width: 250px; padding: 4px; spacing: 0px; text-align: left; float: right;\" about=\"#mwt6\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"wikipediapar\",\"href\":\"./Template:Wikipediapar\"},\"params\":{\"1\":{\"wt\":\"2009 Indonesia C-130H Hercules crash\"}},\"i\":0}}]}' id=\"mwHA\">\n<div style=\"float: left;\"><figure class=\"mw-halign-none\" typeof=\"mw:File\"><a href=\"./File:Wikipedia-logo-v2.svg\" class=\"mw-file-description\" title=\"Wikipedia\"><img alt=\"Wikipedia\" resource=\"./File:Wikipedia-logo-v2.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/50px-Wikipedia-logo-v2.svg.png\" decoding=\"async\" data-file-width=\"103\" data-file-height=\"94\" data-file-type=\"drawing\" height=\"46\" width=\"50\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/75px-Wikipedia-logo-v2.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/8/80/Wikipedia-logo-v2.svg/100px-Wikipedia-logo-v2.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption>Wikipedia</figcaption></figure></div>\n<div style=\"margin-left: 60px;\"><a rel=\"mw:WikiLink/Interwiki\" href=\"https://meta.wikimedia.org/wiki/Wikipedia\" title=\"m:Wikipedia\" class=\"extiw\">Wikipedia</a> has more about this subject:\n<div style=\"margin-left: 10px;\"><i><b><a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/2009%20Indonesia%20C-130H%20Hercules%20crash\" title=\"w:2009 Indonesia C-130H Hercules crash\" class=\"extiw\">2009 Indonesia C-130H Hercules crash</a></b></i></div>\n</div>\n</div>\n<ul about=\"#mwt13\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[\"*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://news.bbc.co.uk/2/hi/asia-pacific/8058721.stm\"},\"title\":{\"wt\":\"Indonesia air crash kills scores\"},\"author\":{\"wt\":\"\"},\"pub\":{\"wt\":\"BBC News Online\"},\"date\":{\"wt\":\"Ma y20, 2009\"}},\"i\":0}},\"\\n*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://www.bernama.com/bernama/v5/newsgeneral.php?id=412579\"},\"title\":{\"wt\":\"98 Dead, 15 Injured In Hercules Tragedy\"},\"author\":{\"wt\":\"Mohd Nasir Ysoff\"},\"pub\":{\"wt\":\"Bernama.com\"},\"date\":{\"wt\":\"May 20, 2009\"}},\"i\":1}},\"\\n\",{\"template\":{\"target\":{\"wt\":\"publish\",\"href\":\"./Template:Publish\"},\"params\":{},\"i\":2}}]}' id=\"mwHQ\"><li><span class=\"sourceTemplate\"> \"<a rel=\"mw:ExtLink nofollow\" href=\"http://news.bbc.co.uk/2/hi/asia-pacific/8058721.stm\" class=\"external text\">Indonesia air crash kills scores</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./BBC_News_Online\" title=\"BBC News Online\" class=\"mw-redirect\">BBC News Online</a></span></i>, Ma y20, 2009</span></li>\n<li><span class=\"sourceTemplate\">Mohd Nasir Ysoff. \"<a rel=\"mw:ExtLink nofollow\" href=\"http://www.bernama.com/bernama/v5/newsgeneral.php?id=412579\" class=\"external text\">98 Dead, 15 Injured In Hercules Tragedy</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-foreign\"><a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Bernama.com\" title=\"w:Bernama.com\" class=\"extiw\">Bernama.com</a></span></i>, May 20, 2009</span>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Published\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Articles_not_disputed\"/><br style=\"clear:both\"/></li></ul><span about=\"#mwt13\">\n</span><table align=\"center\" style=\"width:30%; background-color:#FFFFFF; border:1px solid #a7d7f9; -moz-border-radius: 9px;-webkit-border-radius: 9px; border-radius: 9px; padding:1px;\" id=\"social_bookmarks\" class=\"noprint\" about=\"#mwt13\">\n<tbody><tr>\n<td><figure class=\"mw-halign-left\" typeof=\"mw:File\"><a href=\"http://en.wikinews.org/wiki/Wikinews:Social_bookmarks\"><img resource=\"./File:Bookmark-new.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/25px-Bookmark-new.svg.png\" decoding=\"async\" data-file-width=\"48\" data-file-height=\"48\" data-file-type=\"drawing\" height=\"25\" width=\"25\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/38px-Bookmark-new.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/50px-Bookmark-new.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption></figcaption></figure>\n<div class=\"plainlinks\" align=\"center\">\n<p><b>Share this:</b><span typeof=\"mw:Entity\"> </span>\n<span title=\"Share via e-mail\" class=\"plainlinks\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"E-mail this story\"}'><a href=\"mailto:?subject=Airplane_crash_in_Indonesia_kills_100%20–%20Wikinews&amp;body=Airplane_crash_in_Indonesia_kills_100:%0Ahttps://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100%0A%0AFrom%20Wikinews,%20the%20free%20news%20source%20you%20can%20write!\" rel=\"nofollow\" title=\"E-mail this story\"><img alt=\"E-mail this story\" resource=\"./File:Email.png\" src=\"//upload.wikimedia.org/wikipedia/commons/5/5c/Email.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Facebook\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on Facebook\"}'><a href=\"http://www.facebook.com/sharer.php?u=https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100&amp;t=Airplane+crash+in+Indonesia+kills+100+-+Wikinews\" rel=\"nofollow\" title=\"Share on Facebook\"><img alt=\"Share on Facebook\" resource=\"./File:Facebook.png\" src=\"//upload.wikimedia.org/wikinews/en/5/55/Facebook.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on reddit\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on reddit.com\"}'><a href=\"http://reddit.com/submit?url=https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100&amp;title=Airplane+crash+in+Indonesia+kills+100+-+Wikinews\" rel=\"nofollow\" title=\"Share on reddit.com\"><img alt=\"Share on reddit.com\" resource=\"./File:Reddit.png\" src=\"//upload.wikimedia.org/wikinews/en/1/10/Reddit.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on LinkedIn\"><span typeof=\"mw:File\" data-mw='{\"caption\":\"Share on LinkedIn.com\"}'><a href=\"http://www.linkedin.com/shareArticle?mini=true&amp;url=https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100&amp;title=Airplane+crash+in+Indonesia+kills+100+-+Wikinews\" rel=\"nofollow\" title=\"Share on LinkedIn.com\"><img alt=\"Share on LinkedIn.com\" resource=\"./File:Linkedin.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/16px-Linkedin.svg.png\" decoding=\"async\" data-file-width=\"200\" data-file-height=\"200\" data-file-type=\"drawing\" height=\"16\" width=\"16\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/24px-Linkedin.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/32px-Linkedin.svg.png 2x\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Twitter\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on twitter.com\"}'><a href=\"https://twitter.com/intent/tweet?url=Look%20what%20I%20found%20on%20Wikinews:%20https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100\" rel=\"nofollow\" title=\"Share on twitter.com\"><img alt=\"Share on twitter.com\" resource=\"./File:Twitter.png\" src=\"//upload.wikimedia.org/wikinews/en/f/f7/Twitter.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span></p>\n</div></td></tr>\n</tbody></table><span about=\"#mwt13\">\n</span>\n<p about=\"#mwt14\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"Archived-cc-2.5\",\"href\":\"./Template:Archived-cc-2.5\"},\"params\":{},\"i\":0}}]}' id=\"mwHg\"><br style=\"clear:both;\"/></p><span about=\"#mwt14\">\n</span><div class=\"desktop-only\" about=\"#mwt14\"><table class=\"plainlinks noprint xambox xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td>\n<p><b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b></p>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crash_in_Indonesia_kills_100\" title=\"Talk:Airplane crash in Indonesia kills 100\">talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<p><small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small></p>\n</td>\n\n</tr></tbody></table></div><div class=\"mobile-only\" about=\"#mwt14\"><table class=\"plainlinks noprint xambox-mobile xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td> <b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crash_in_Indonesia_kills_100\" title=\"Talk:Airplane crash in Indonesia kills 100\">talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small> </td>\n\n</tr></tbody></table></div><span about=\"#mwt14\">\n</span><link rel=\"mw:PageProp/Category\" href=\"./Category:Archived\" about=\"#mwt14\"/><span about=\"#mwt14\">\n\n</span>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Asia\" id=\"mwHw\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Indonesia\" id=\"mwIA\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Disasters_and_accidents\" id=\"mwIQ\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Transport\" id=\"mwIg\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Aviation\" id=\"mwIw\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Java\" id=\"mwJA\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Aviation_accidents_and_incidents\" id=\"mwJQ\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://ar.wikinews.org/wiki/مصرع%2099%20شخصا%20بتحطم%20طائرة%20عسكرية%20أندونيسية\" id=\"mwJg\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://de.wikinews.org/wiki/Flugzeug%20stürzte%20in%20Java%20in%20ein%20Wohngebiet\" id=\"mwJw\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://pl.wikinews.org/wiki/Indonezja:%20katastrofa%20samolotu%20wojskowego%20-%20prawie%20100%20ofiar\" id=\"mwKA\"/>\n<link rel=\"mw:PageProp/Language\" href=\"https://pt.wikinews.org/wiki/Avião%20cai%20na%20Indonésia\" id=\"mwKQ\"/></section></body></html>",
+    "wikitext": "{{date|May 20, 2009}}\n{{Disasters and accidents}}\n[[Image:C130H.JPG|thumb|left|230px|Drawing of a C-130H]]\nAt least 98 people have been confirmed dead and a further fifteen wounded after an [[w:Indonesian Air Force|Indonesian Air Force]] [[w:Hercules C-130|Hercules C-130]] airplane crashed in a housing area in the city of [[w:Magetan|Magetan]], [[w:East Java|East Java]] in [[Indonesia]] early Wednesday.\n\nThe plane had taken off from the country's capital of [[w:Jakarta|Jakarta]] and was preparing to land at a military base nearby the crash site.\n\n\"As such the total number of people dead or injured so far is 113, including the two people on the ground. Meanwhile, reports of another person who died but has not been found cannot be verified as yet,\" said Banbang Sulistyo, the air force's chief of information. He added that investigations are currently ongoing to determine what caused the accident.\n\nThe cause of the incident is as of yet uncertain, as the plane was reported to have been in good condition, and the weather was suitable for landing.\n\nIndonesian president [[w:Susilo Bambang Yudhoyono|Susilo Bambang Yudhoyono]] called an emergency meeting at his presidential palace with the Armed Forces and Air Force chief and defence minister.\n\n\"From the explanation I received from them [...] it cannot be determined yet if the crash was because of weather conditions, mechanical failure or human error. It's better not to speculate what caused the crash,\" he told reporters after the meeting,\" the president said.\n\nWitness reports say there was an explosion shortly before the plane crashed. \"I heard at least two big explosions and saw flashes of fire inside the plane,\" said an eyewitness, a man working in a rice field near where the aircraft crashed. \"The wing snapped off and fell to the ground.\"\n\nThe accident is the deadliest in the Indonesian Air Force's history since an airplane crash in 1991 in Condet, East Java, which killed 135 people.\n\n{{haveyoursay}}\n== Sources ==\n{{wikipediapar|2009 Indonesia C-130H Hercules crash}}\n*{{source|url=http://news.bbc.co.uk/2/hi/asia-pacific/8058721.stm|title=Indonesia air crash kills scores|author=|pub=BBC News Online|date=Ma y20, 2009}}\n*{{source|url=http://www.bernama.com/bernama/v5/newsgeneral.php?id=412579|title=98 Dead, 15 Injured In Hercules Tragedy|author=Mohd Nasir Ysoff|pub=Bernama.com|date=May 20, 2009}}\n{{publish}}\n{{Archived-cc-2.5}}\n[[Category:Asia]]\n[[Category:Indonesia]]\n[[Category:Disasters and accidents]]\n[[Category:Transport]]\n[[Category:Aviation]]\n[[Category:Java]]\n[[Category:Aviation accidents and incidents]]\n[[ar:مصرع 99 شخصا بتحطم طائرة عسكرية أندونيسية]]\n[[de:Flugzeug stürzte in Java in ein Wohngebiet]]\n[[pl:Indonezja: katastrofa samolotu wojskowego - prawie 100 ofiar]]\n[[pt:Avião cai na Indonésia]]"
+   },
+   "license": [
+    {
+     "name": "Creative Commons Attribution-ShareAlike License 4.0",
+     "identifier": "CC-BY-SA-4.0",
+     "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+    }
+   ],
+   "event": {
+    "identifier": "4b6fdccc-4238-427a-b56f-131c7cfdc8dc",
+    "type": "update",
+    "date_created": "2025-03-17T23:31:02.3536Z",
+    "date_published": "2025-03-17T23:31:02.3536Z"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg",
+    "width": 1630,
+    "height": 1086
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Airplane crash in Indonesia kills 100 - Wikinews</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg/1280px-Blue_lightbar_%28fire_and_rescue%29.jpg?utm_source=en.wikinews.org&amp;utm_campaign=index&amp;utm_content=thumbnail\"><meta property=\"og:title\" content=\"Airplane crash in Indonesia kills 100 - Wikinews\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Airplane crash in Indonesia kills 100\", \"url\": \"https://en.wikinews.org/wiki/Airplane_crash_in_Indonesia_kills_100\", \"sameAs\": \"http://www.wikidata.org/entity/Q17601539\", \"mainEntity\": \"http://www.wikidata.org/entity/Q17601539\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2024-12-18T03:12:32Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/9/9c/Blue_lightbar_%28fire_and_rescue%29.jpg?utm_source=en.wikinews.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul><li><a href=\"/wiki/Category:May 20, 2009\">May 20, 2009</a></li><li><a href=\"/wiki/Category:Published\">Published</a></li><li><a href=\"/wiki/Category:Articles not disputed\">Articles not disputed</a></li><li><a href=\"/wiki/Category:Archived\">Archived</a></li><li><a href=\"/wiki/Category:Asia\">Asia</a></li><li><a href=\"/wiki/Category:Indonesia\">Indonesia</a></li><li><a href=\"/wiki/Category:Disasters and accidents\">Disasters and accidents</a></li><li><a href=\"/wiki/Category:Transport\">Transport</a></li><li><a href=\"/wiki/Category:Aviation\">Aviation</a></li><li><a href=\"/wiki/Category:Java\">Java</a></li><li><a href=\"/wiki/Category:Aviation accidents and incidents\">Aviation accidents and incidents</a></li></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
+   "name": "Airplane crash in Brazil kills 24",
+   "identifier": 120792,
+   "abstract": "Monday, February 9, 2009 Twenty-four people, among them seven children, were killed on Sunday after their airplane crashed in a river in Brazil. Four people survived the crash, including a 9-year-old boy. The aircraft, which was a twin-engine Embraer turboprop chartered by Manaus Aerotaxis, was carrying 26 passengers and two crew members when it crashed. The pilots of the plane, which had departed from Coari, had supposedly contacted the air traffic control near their destination of Manaus to announce that they were turning back. The plane, however, then disappeared from radar. The plane made an emergency landing in the river Manacapuru, a branch the Amazon river in the Brazilian state of Amazonas, 50 miles from Manaus. Rescue teams were dispatched immediately, and four passengers from the accident were recovered alive and in reportedly good condition. The rest of the passengers were found inside the plane. The rescue effort was made more difficult by nightfall and heavy rains. According to passenger reports, one of the plane's engines stopped shortly before the crash. Some survivors also said that they managed to jump out of a door in the back of the aircraft before impact. The authorities, who are still investigating the cause of the accident, suspect that the plane tried to make an emergency landing at the Panamacapuru airport nearby, but ditched in the river instead after falling short by half a kilometer. Heavy rain was reported when the plane went down and bad weather is hampering the investigation. Operations to recover the wreckage have been suspended until the weather improves.",
+   "date_modified": "2024-12-18T03:12:30Z",
+   "protection": [
+    {
+     "type": "edit",
+     "level": "sysop",
+     "expiry": "infinity"
+    },
+    {
+     "type": "move",
+     "level": "sysop",
+     "expiry": "infinity"
+    }
+   ],
+   "version": {
+    "identifier": 4813066,
+    "comment": "/* Sources */ part 2 per [[Wikinews:Admin_action_alerts#Deploy_new_archive_templates_to_old_articles]] using [[Project:AWB|AWB]]",
+    "is_flagged_stable": true,
+    "scores": {},
+    "editor": {
+     "identifier": 2882487,
+     "name": "Leaderbot"
+    },
+    "number_of_characters": 2912,
+    "size": {
+     "value": 2912,
+     "unit_text": "B"
+    }
+   },
+   "url": "https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24",
+   "namespace": {
+    "identifier": 0
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "main_entity": {
+    "identifier": "Q17654337",
+    "url": "https://www.wikidata.org/entity/Q17654337"
+   },
+   "additional_entities": [
+    {
+     "identifier": "Q17654337",
+     "url": "https://www.wikidata.org/entity/Q17654337",
+     "aspects": [
+      "S"
+     ]
+    }
+   ],
+   "categories": [
+    {
+     "name": "Category:Disasters and accidents",
+     "url": "https://en.wikinews.org/wiki/Category:Disasters_and_accidents"
+    },
+    {
+     "name": "Category:Transport",
+     "url": "https://en.wikinews.org/wiki/Category:Transport"
+    },
+    {
+     "name": "Category:Weather",
+     "url": "https://en.wikinews.org/wiki/Category:Weather"
+    },
+    {
+     "name": "Category:Aviation accidents and incidents",
+     "url": "https://en.wikinews.org/wiki/Category:Aviation_accidents_and_incidents"
+    },
+    {
+     "name": "Category:Published",
+     "url": "https://en.wikinews.org/wiki/Category:Published"
+    },
+    {
+     "name": "Category:Archived",
+     "url": "https://en.wikinews.org/wiki/Category:Archived"
+    },
+    {
+     "name": "Category:South America",
+     "url": "https://en.wikinews.org/wiki/Category:South_America"
+    },
+    {
+     "name": "Category:Aviation",
+     "url": "https://en.wikinews.org/wiki/Category:Aviation"
+    },
+    {
+     "name": "Category:Brazil",
+     "url": "https://en.wikinews.org/wiki/Category:Brazil"
+    },
+    {
+     "name": "Category:Articles not disputed",
+     "url": "https://en.wikinews.org/wiki/Category:Articles_not_disputed"
+    },
+    {
+     "name": "Category:February 9, 2009",
+     "url": "https://en.wikinews.org/wiki/Category:February_9,_2009"
+    }
+   ],
+   "templates": [
+    {
+     "name": "Template:Archived-cc-2.5",
+     "url": "https://en.wikinews.org/wiki/Template:Archived-cc-2.5"
+    },
+    {
+     "name": "Template:Date",
+     "url": "https://en.wikinews.org/wiki/Template:Date"
+    },
+    {
+     "name": "Template:Brazil",
+     "url": "https://en.wikinews.org/wiki/Template:Brazil"
+    },
+    {
+     "name": "Template:Haveyoursay",
+     "url": "https://en.wikinews.org/wiki/Template:Haveyoursay"
+    },
+    {
+     "name": "Template:Source",
+     "url": "https://en.wikinews.org/wiki/Template:Source"
+    },
+    {
+     "name": "Template:Publish",
+     "url": "https://en.wikinews.org/wiki/Template:Publish"
+    }
+   ],
+   "redirects": [
+    {
+     "name": "Aeroplane crash in Brazil kills 24",
+     "url": "https://en.wikinews.org/wiki/Aeroplane_crash_in_Brazil_kills_24"
+    }
+   ],
+   "is_part_of": {
+    "identifier": "enwikinews",
+    "url": "https://en.wikinews.org"
+   },
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/ mw: http://mediawiki.org/rdf/\" about=\"https://en.wikinews.org/wiki/Special:Redirect/revision/4813066\"><head prefix=\"mwr: https://en.wikinews.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><meta property=\"mw:pageId\" content=\"120792\"/><meta property=\"mw:pageNamespace\" content=\"0\"/><link rel=\"dc:replaces\" resource=\"mwr:revision/4273192\"/><meta property=\"mw:revisionSHA1\" content=\"6831ca014196236e0ab1563448863182da83b26a\"/><meta property=\"dc:modified\" content=\"2024-12-18T03:12:30.000Z\"/><meta property=\"mw:htmlVersion\" content=\"2.8.0\"/><meta property=\"mw:html:version\" content=\"2.8.0\"/><link rel=\"dc:isVersionOf\" href=\"//en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24\"/><base href=\"//en.wikinews.org/wiki/\"/><title>Airplane crash in Brazil kills 24</title><link rel=\"stylesheet\" href=\"/w/load.php?lang=en&amp;modules=mediawiki.skinning.content.parsoid%7Cmediawiki.skinning.interface%7Csite.styles&amp;only=styles&amp;skin=vector\"/><meta http-equiv=\"content-language\" content=\"en\"/><meta http-equiv=\"vary\" content=\"Accept\"/></head><body lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\" data-mw-parsoid-version=\"0.21.0.0-alpha18\" data-mw-html-version=\"2.8.0\" id=\"mwAA\"><section data-mw-section-id=\"0\" id=\"mwAQ\"><p id=\"mwAg\"><link rel=\"mw:PageProp/Category\" href=\"./Category:February_9,_2009\" about=\"#mwt1\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"date\",\"href\":\"./Template:Date\"},\"params\":{\"1\":{\"wt\":\"February 9, 2009\"}},\"i\":0}}]}' id=\"mwAw\"/><strong class=\"published\" about=\"#mwt1\"><span id=\"publishDate\" class=\"value-title\" title=\"2009-02-09\"></span>Monday, February 9, 2009</strong><span class=\"Z3988\" style=\"display:none\" title=\"ctx_ver=Z39.88-2004&amp;rft_val_fmt=info%3Aofi%2Ffmt%3Akev%3Amtx%3Ajournal&amp;rfr_id=rfr_id=info:sid/en.wikinews.org:User%3ADendodge&amp;rft_id=info:sid/en.wikinews.org:Airplane_crash_in_Brazil_kills_24&amp;rft.atitle=Airplane+crash+in+Brazil+kills+24&amp;rft.jtitle=Wikinews&amp;rft.date=2009-02-09&amp;rft.aucorp=Wikinews+contributors&amp;rft.genre=article&amp;rft.rights=CC-BY+2.5&amp;rft.identifier=%2F%2Fen.wikinews.org%2Fwiki%2FAirplane_crash_in_Brazil_kills_24&amp;rft.artnum=-\" about=\"#mwt1\" id=\"mwBA\"><span typeof=\"mw:Entity\"> </span></span></p>\n\n<div class=\"infobox noprint desktop-only\" style=\"margin-left: 5px; float: right; width: 200px; background: #edf7ff; border: solid #666666 1px; padding: 0px; font-size: x-small; clear:right;\" about=\"#mwt2\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"Brazil\",\"href\":\"./Template:Brazil\"},\"params\":{},\"i\":0}}]}' id=\"mwBQ\">\n<div style=\"text-decoration:none; background: #7ec9fd; padding: 2px; text-align: center; style; font-size: 140%; border-bottom: solid 1px #666666;\"><b><a rel=\"mw:WikiLink\" href=\"./Brazil\" title=\"Brazil\" class=\"mw-redirect\">Brazil</a></b></div>\n\n<div style=\"background: #bce1ff; color: #202122; padding: 2px; text-align: center; style; font-size: normal;\">Related articles</div>\n<div style=\"padding: 2px;\">\n\n<ul typeof=\"mw:Extension/dynamicpagelist\" about=\"#mwt4\" data-mw='{\"name\":\"dynamicpagelist\",\"attrs\":{},\"body\":{\"extsrc\":\"\\ncategory=published\\ncategory=Brazil\\nnotcategory=disputed\\nnotcategory=no publish\\nnamespace=Main\\naddfirstcategorydate=true\\ncount=5\\n\"}}'>\n<li>17 February 2025: <a href=\"/wiki/Latin_American_expedition_of_Viktor_Pinchuk:_meeting_with_the_traveler_took_place_in_Yalta\" title=\"Latin American expedition of Viktor Pinchuk: meeting with the traveler took place in Yalta\">Latin American expedition of Viktor Pinchuk: meeting with the traveler took place in Yalta</a></li> \n<li>17 February 2025: <a href=\"/wiki/Rio_Negro_tributary_of_the_Amazon_River_experiences_lowest_water_level_on_record\" title=\"Rio Negro tributary of the Amazon River experiences lowest water level on record\">Rio Negro tributary of the Amazon River experiences lowest water level on record</a></li> \n<li>17 February 2025: <a href=\"/wiki/%22National_treasure%22:_Former_Brazilian_footballer_Pel%C3%A9_dies_at_age_82\" title='\"National treasure\": Former Brazilian footballer Pelé dies at age 82'>\"National treasure\": Former Brazilian footballer Pelé dies at age 82</a></li> \n<li>17 February 2025: <a href=\"/wiki/Supporters_of_ex-President_Bolsonaro_storm_Brazil%27s_Congress,_Supreme_Court\" title=\"Supporters of ex-President Bolsonaro storm Brazil's Congress, Supreme Court\">Supporters of ex-President Bolsonaro storm Brazil's Congress, Supreme Court</a></li> \n<li>17 February 2025: <a href=\"/wiki/UN_agency_reports_531_dead_in_Haiti,_calls_for_international_support\" title=\"UN agency reports 531 dead in Haiti, calls for international support\">UN agency reports 531 dead in Haiti, calls for international support</a></li></ul><span about=\"#mwt4\">\n</span>\n</div>\n<div style=\"background: #bce1ff; color: #202122; padding: 2px; text-align: center; style; font-size: normal;\">Location of Brazil</div>\n<div style=\"padding: 2px;\">\n<figure class=\"mw-halign-center\" typeof=\"mw:File\"><a href=\"./File:Brazil_(orthographic_projection).svg\" class=\"mw-file-description\"><img resource=\"./File:Brazil_(orthographic_projection).svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Brazil_%28orthographic_projection%29.svg/175px-Brazil_%28orthographic_projection%29.svg.png\" decoding=\"async\" data-file-width=\"541\" data-file-height=\"541\" data-file-type=\"drawing\" height=\"175\" width=\"175\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Brazil_%28orthographic_projection%29.svg/263px-Brazil_%28orthographic_projection%29.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Brazil_%28orthographic_projection%29.svg/350px-Brazil_%28orthographic_projection%29.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption></figcaption></figure>\n</div>\n<div style=\"background: #bce1ff; padding: 2px; text-align: center; style; font-size: normal; {{{style}}}\">Collaborate!</div>\n<div style=\"padding: 2px;\">\n<ul><li><a rel=\"mw:WikiLink\" href=\"./Wikinews:PILLARS\" title=\"Wikinews:PILLARS\" class=\"mw-redirect\">Pillars of Wikinews writing</a></li>\n<li><a rel=\"mw:WikiLink\" href=\"./Wikinews:WRITE\" title=\"Wikinews:WRITE\" class=\"mw-redirect\">Writing an article</a></li></ul>\n</div><figure class=\"mw-halign-center\" typeof=\"mw:File\"><a href=\"./Category:Brazil\" title=\"Brazil\"><img alt=\"Brazil\" resource=\"./File:Flag_of_Brazil.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/0/05/Flag_of_Brazil.svg/60px-Flag_of_Brazil.svg.png\" decoding=\"async\" data-file-width=\"1000\" data-file-height=\"700\" data-file-type=\"drawing\" height=\"42\" width=\"60\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/0/05/Flag_of_Brazil.svg/90px-Flag_of_Brazil.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/0/05/Flag_of_Brazil.svg/120px-Flag_of_Brazil.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption>Brazil</figcaption></figure>\n</div><p id=\"mwBg\">Twenty-four people, among them seven children, were killed on Sunday after their airplane crashed in a river in <a rel=\"mw:WikiLink\" href=\"./Brazil\" title=\"Brazil\" class=\"mw-redirect\" id=\"mwBw\">Brazil</a>. Four people survived the crash, including a 9-year-old boy. The aircraft, which was a twin-engine <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Embraer\" title=\"w:Embraer\" class=\"extiw\" id=\"mwCA\">Embraer</a> <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Turboprop\" title=\"w:Turboprop\" class=\"extiw\" id=\"mwCQ\">turboprop</a> chartered by Manaus Aerotaxis, was carrying 26 passengers and two crew members when it crashed.</p>\n\n<p id=\"mwCg\">The pilots of the plane, which had departed from <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Coari\" title=\"w:Coari\" class=\"extiw\" id=\"mwCw\">Coari</a>, had supposedly contacted the air traffic control near their destination of <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Manaus\" title=\"w:Manaus\" class=\"extiw\" id=\"mwDA\">Manaus</a> to announce that they were turning back. The plane, however, then disappeared from radar. The plane made an emergency landing in the river <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Manacapuru\" title=\"w:Manacapuru\" class=\"extiw\" id=\"mwDQ\">Manacapuru</a>, a branch the <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Amazon%20river\" title=\"w:Amazon river\" class=\"extiw\" id=\"mwDg\">Amazon river</a> in the <a rel=\"mw:WikiLink\" href=\"./Brazil\" title=\"Brazil\" class=\"mw-redirect\" id=\"mwDw\">Brazilian</a> state of <a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Amazonas\" title=\"w:Amazonas\" class=\"extiw\" id=\"mwEA\">Amazonas</a>, 50 miles (80 kilometers) from Manaus.</p>\n\n<p id=\"mwEQ\">Rescue teams were dispatched immediately, and four passengers from the accident were recovered alive and in reportedly good condition. The rest of the passengers were found inside the plane. The rescue effort was made more difficult by nightfall and heavy rains.</p>\n\n<p id=\"mwEg\">According to passenger reports, one of the plane's engines stopped shortly before the crash. Some survivors also said that they managed to jump out of a door in the back of the aircraft before impact.</p>\n\n<p id=\"mwEw\">The authorities, who are still investigating the cause of the accident, suspect that the plane tried to make an emergency landing at the Panamacapuru airport nearby, but ditched in the river instead after falling short by half a kilometer. Heavy rain was reported when the plane went down and bad weather is hampering the investigation. Operations to recover the wreckage have been suspended until the weather improves.</p>\n\n<p about=\"#mwt5\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"haveyoursay\",\"href\":\"./Template:Haveyoursay\"},\"params\":{},\"i\":0}}]}' id=\"mwFA\"><br style=\"clear:none;\"/></p><span about=\"#mwt5\">\n</span><div align=\"center\" about=\"#mwt5\" id=\"mwFQ\">\n<div class=\"noprint messagebox boilerplate plainlinks\" id=\"commentrequest\" style=\"border:1px solid #CCCCCC; padding:2px;width:50%; text-size:smallest;\">\n<p>Have an opinion on this story? <a rel=\"mw:WikiLink\" href=\"./Comments:Airplane_crash_in_Brazil_kills_24\" title=\"Comments:Airplane crash in Brazil kills 24\">Share it!</a></p>\n</div></div>\n</section><section data-mw-section-id=\"1\" id=\"mwFg\"><h2 id=\"Sources\">Sources</h2>\n<ul about=\"#mwt18\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[\"*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://news.xinhuanet.com/english/2009-02/09/content_10786570.htm\"},\"title\":{\"wt\":\"Brazilian plane crash rescue work suspended due to heavy rain\"},\"author\":{\"wt\":\"\"},\"pub\":{\"wt\":\"Xinhua News Agency\"},\"date\":{\"wt\":\"February 9, 2009\"}},\"i\":0}},\"\\n*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://www.google.com/hostednews/afp/article/ALeqM5jehyfwE2-qSXmNfSR7XFEKCtyhNg\"},\"title\":{\"wt\":\"Survivor search ends after Brazil plane crash kills 24\"},\"author\":{\"wt\":\"\"},\"pub\":{\"wt\":\"Agence France-Presse\"},\"date\":{\"wt\":\"February 8, 2009\"}},\"i\":1}},\"\\n*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://news.bbc.co.uk/2/hi/americas/7877276.stm\"},\"title\":{\"wt\":\"Brazil river plane crash kills 24\"},\"author\":{\"wt\":\"\"},\"pub\":{\"wt\":\"BBC News Online\"},\"date\":{\"wt\":\"February 8, 2009\"}},\"i\":2}},\"\\n*\",{\"template\":{\"target\":{\"wt\":\"source\",\"href\":\"./Template:Source\"},\"params\":{\"url\":{\"wt\":\"http://www.hindustantimes.com/StoryPage/StoryPage.aspx?sectionName=HomePage&amp;id=e83fcda2-b7f3-40ad-9e6a-4c4bf5177c41&amp;&amp;Headline=24+bodies+recovered+from+Brazil+plane+crash\"},\"title\":{\"wt\":\"24 bodies recovered from Brazil plane crash\"},\"author\":{\"wt\":\"Associated Press\"},\"pub\":{\"wt\":\"Hindustan Times\"},\"date\":{\"wt\":\"February 8, 2009\"}},\"i\":3}},\"\\n\\n[[Category:Aviation]]\\n[[Category:South America]]\\n[[Category:Disasters and accidents]]\\n[[Category:Transport]]\\n[[Category:Weather]]\\n[[Category:Brazil]]\\n[[Category:Aviation accidents and incidents]]\\n\",{\"template\":{\"target\":{\"wt\":\"publish\",\"href\":\"./Template:Publish\"},\"params\":{},\"i\":4}}]}' id=\"mwFw\"><li><span class=\"sourceTemplate\"> \"<a rel=\"mw:ExtLink nofollow\" href=\"http://news.xinhuanet.com/english/2009-02/09/content_10786570.htm\" class=\"external text\">Brazilian plane crash rescue work suspended due to heavy rain</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-foreign\"><a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Xinhua%20News%20Agency\" title=\"w:Xinhua News Agency\" class=\"extiw\">Xinhua News Agency</a></span></i>, February 9, 2009</span></li>\n<li><span class=\"sourceTemplate\"> \"<a rel=\"mw:ExtLink nofollow\" href=\"http://www.google.com/hostednews/afp/article/ALeqM5jehyfwE2-qSXmNfSR7XFEKCtyhNg\" class=\"external text\">Survivor search ends after Brazil plane crash kills 24</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./Agence_France-Presse\" title=\"Agence France-Presse\" class=\"mw-redirect\">Agence France-Presse</a></span></i>, February 8, 2009</span></li>\n<li><span class=\"sourceTemplate\"> \"<a rel=\"mw:ExtLink nofollow\" href=\"http://news.bbc.co.uk/2/hi/americas/7877276.stm\" class=\"external text\">Brazil river plane crash kills 24</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-local\"><a rel=\"mw:WikiLink\" href=\"./BBC_News_Online\" title=\"BBC News Online\" class=\"mw-redirect\">BBC News Online</a></span></i>, February 8, 2009</span></li>\n<li><span class=\"sourceTemplate\">Associated Press. \"<a rel=\"mw:ExtLink nofollow\" href=\"http://www.hindustantimes.com/StoryPage/StoryPage.aspx?sectionName=HomePage&amp;id=e83fcda2-b7f3-40ad-9e6a-4c4bf5177c41&amp;&amp;Headline=24+bodies+recovered+from+Brazil+plane+crash\" class=\"external text\">24 bodies recovered from Brazil plane crash</a>\" <span typeof=\"mw:Entity\">—</span><span typeof=\"mw:Entity\"> </span><i><span class=\"interwiki-link-foreign\"><a rel=\"mw:WikiLink/Interwiki\" href=\"https://en.wikipedia.org/wiki/Hindustan%20Times\" title=\"w:Hindustan Times\" class=\"extiw\">Hindustan Times</a></span></i>, February 8, 2009</span>\n\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Aviation\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:South_America\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Disasters_and_accidents\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Transport\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Weather\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Brazil\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Aviation_accidents_and_incidents\"/>\n<link rel=\"mw:PageProp/Category\" href=\"./Category:Published\"/><link rel=\"mw:PageProp/Category\" href=\"./Category:Articles_not_disputed\"/><br style=\"clear:both\"/></li></ul><span about=\"#mwt18\">\n</span><table align=\"center\" style=\"width:30%; background-color:#FFFFFF; border:1px solid #a7d7f9; -moz-border-radius: 9px;-webkit-border-radius: 9px; border-radius: 9px; padding:1px;\" id=\"social_bookmarks\" class=\"noprint\" about=\"#mwt18\">\n<tbody><tr>\n<td><figure class=\"mw-halign-left\" typeof=\"mw:File\"><a href=\"http://en.wikinews.org/wiki/Wikinews:Social_bookmarks\"><img resource=\"./File:Bookmark-new.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/25px-Bookmark-new.svg.png\" decoding=\"async\" data-file-width=\"48\" data-file-height=\"48\" data-file-type=\"drawing\" height=\"25\" width=\"25\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/38px-Bookmark-new.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bookmark-new.svg/50px-Bookmark-new.svg.png 2x\" class=\"mw-file-element\"/></a><figcaption></figcaption></figure>\n<div class=\"plainlinks\" align=\"center\">\n<p><b>Share this:</b><span typeof=\"mw:Entity\"> </span>\n<span title=\"Share via e-mail\" class=\"plainlinks\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"E-mail this story\"}'><a href=\"mailto:?subject=Airplane_crash_in_Brazil_kills_24%20–%20Wikinews&amp;body=Airplane_crash_in_Brazil_kills_24:%0Ahttps://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24%0A%0AFrom%20Wikinews,%20the%20free%20news%20source%20you%20can%20write!\" rel=\"nofollow\" title=\"E-mail this story\"><img alt=\"E-mail this story\" resource=\"./File:Email.png\" src=\"//upload.wikimedia.org/wikipedia/commons/5/5c/Email.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Facebook\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on Facebook\"}'><a href=\"http://www.facebook.com/sharer.php?u=https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24&amp;t=Airplane+crash+in+Brazil+kills+24+-+Wikinews\" rel=\"nofollow\" title=\"Share on Facebook\"><img alt=\"Share on Facebook\" resource=\"./File:Facebook.png\" src=\"//upload.wikimedia.org/wikinews/en/5/55/Facebook.png\" decoding=\"async\" data-file-width=\"16\" data-file-height=\"16\" data-file-type=\"bitmap\" height=\"16\" width=\"16\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on reddit\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on reddit.com\"}'><a href=\"http://reddit.com/submit?url=https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24&amp;title=Airplane+crash+in+Brazil+kills+24+-+Wikinews\" rel=\"nofollow\" title=\"Share on reddit.com\"><img alt=\"Share on reddit.com\" resource=\"./File:Reddit.png\" src=\"//upload.wikimedia.org/wikinews/en/1/10/Reddit.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on LinkedIn\"><span typeof=\"mw:File\" data-mw='{\"caption\":\"Share on LinkedIn.com\"}'><a href=\"http://www.linkedin.com/shareArticle?mini=true&amp;url=https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24&amp;title=Airplane+crash+in+Brazil+kills+24+-+Wikinews\" rel=\"nofollow\" title=\"Share on LinkedIn.com\"><img alt=\"Share on LinkedIn.com\" resource=\"./File:Linkedin.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/16px-Linkedin.svg.png\" decoding=\"async\" data-file-width=\"200\" data-file-height=\"200\" data-file-type=\"drawing\" height=\"16\" width=\"16\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/24px-Linkedin.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Linkedin.svg/32px-Linkedin.svg.png 2x\" class=\"mw-file-element\"/></a></span></span>\n<span title=\"Share on Twitter\"><span class=\"mw-default-size\" typeof=\"mw:File\" data-mw='{\"caption\":\"Share on twitter.com\"}'><a href=\"https://twitter.com/intent/tweet?url=Look%20what%20I%20found%20on%20Wikinews:%20https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24\" rel=\"nofollow\" title=\"Share on twitter.com\"><img alt=\"Share on twitter.com\" resource=\"./File:Twitter.png\" src=\"//upload.wikimedia.org/wikinews/en/f/f7/Twitter.png\" decoding=\"async\" data-file-width=\"18\" data-file-height=\"18\" data-file-type=\"bitmap\" height=\"18\" width=\"18\" class=\"mw-file-element\"/></a></span></span></p>\n</div></td></tr>\n</tbody></table><span about=\"#mwt18\">\n</span>\n<p about=\"#mwt19\" typeof=\"mw:Transclusion\" data-mw='{\"parts\":[{\"template\":{\"target\":{\"wt\":\"Archived-cc-2.5\",\"href\":\"./Template:Archived-cc-2.5\"},\"params\":{},\"i\":0}}]}' id=\"mwGA\"><br style=\"clear:both;\"/></p><span about=\"#mwt19\">\n</span><div class=\"desktop-only\" about=\"#mwt19\"><table class=\"plainlinks noprint xambox xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td>\n<p><b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b></p>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crash_in_Brazil_kills_24\" title=\"Talk:Airplane crash in Brazil kills 24\">talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<p><small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small></p>\n</td>\n\n</tr></tbody></table></div><div class=\"mobile-only\" about=\"#mwt19\"><table class=\"plainlinks noprint xambox-mobile xambox-type-notice\"><tbody><tr>\n<td class=\"xambox-image\"> <span typeof=\"mw:File\"><a href=\"./File:Padlock-silver-medium.svg\" class=\"mw-file-description\"><img resource=\"./File:Padlock-silver-medium.svg\" src=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/40px-Padlock-silver-medium.svg.png\" decoding=\"async\" data-file-width=\"128\" data-file-height=\"128\" data-file-type=\"drawing\" height=\"40\" width=\"40\" srcset=\"//upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/60px-Padlock-silver-medium.svg.png 1.5x, //upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Padlock-silver-medium.svg/80px-Padlock-silver-medium.svg.png 2x\" class=\"mw-file-element\"/></a></span></td>\n<td> <b>This page is <a rel=\"mw:WikiLink\" href=\"./Wikinews:Archive_conventions\" title=\"Wikinews:Archive conventions\">archived</a>, and is no longer publicly editable.</b>\n\n<div style=\"padding: 5px 40px 0px 40px; font-size:90%;\">Articles presented on Wikinews reflect the specific time at which they were written and published, and do not attempt to encompass events or knowledge which occur or become known after their publication.</div>\n\n<p>Got a correction? Add the template {{<a rel=\"mw:WikiLink\" href=\"./Template:Editprotected\" title=\"Template:Editprotected\">editprotected</a>}} to the <a rel=\"mw:WikiLink\" href=\"./Talk:Airplane_crash_in_Brazil_kills_24\" title=\"Talk:Airplane crash in Brazil kills 24\">talk page</a> along with your corrections, and it will be <a rel=\"mw:WikiLink\" href=\"./Wikinews:Admin_action_alerts#Edits_to_protected_pages\" title=\"Wikinews:Admin action alerts\">brought to the attention of</a> the <a rel=\"mw:WikiLink\" href=\"./Wikinews:Administrators\" title=\"Wikinews:Administrators\">administrators</a>.</p>\n\n<p><small>Please note that due to our <a rel=\"mw:WikiLink\" href=\"./Wikinews:ARCHIVE\" title=\"Wikinews:ARCHIVE\" class=\"mw-redirect\">archival policy</a>, we will not alter or update the content of articles that are archived, but will only accept requests to make grammatical and formatting corrections.</small></p>\n\n<p><small>Note that some listed sources or external links may no longer be available online due to age.</small></p>\n\n<small>The text of this article is licensed under the terms of the <a rel=\"mw:ExtLink nofollow\" href=\"https://creativecommons.org/licenses/by/2.5/\" class=\"external text\">Creative Commons Attribution 2.5 License</a></small> </td>\n\n</tr></tbody></table></div><span about=\"#mwt19\">\n</span><link rel=\"mw:PageProp/Category\" href=\"./Category:Archived\" about=\"#mwt19\"/><span about=\"#mwt19\">\n\n</span></section></body></html>",
+    "wikitext": "{{date|February 9, 2009}}\n\n{{Brazil}}Twenty-four people, among them seven children, were killed on Sunday after their airplane crashed in a river in [[Brazil]]. Four people survived the crash, including a 9-year-old boy. The aircraft, which was a twin-engine [[w:Embraer|Embraer]] [[w:Turboprop|turboprop]] chartered by Manaus Aerotaxis, was carrying 26 passengers and two crew members when it crashed.\n\nThe pilots of the plane, which had departed from [[w:Coari|Coari]], had supposedly contacted the air traffic control near their destination of [[w:Manaus|Manaus]] to announce that they were turning back. The plane, however, then disappeared from radar. The plane made an emergency landing in the river [[w:Manacapuru|Manacapuru]], a branch the [[w:Amazon river|Amazon river]] in the [[Brazil|Brazilian]] state of [[w:Amazonas|Amazonas]], 50 miles (80 kilometers) from Manaus.\n\nRescue teams were dispatched immediately, and four passengers from the accident were recovered alive and in reportedly good condition. The rest of the passengers were found inside the plane. The rescue effort was made more difficult by nightfall and heavy rains.\n\nAccording to passenger reports, one of the plane's engines stopped shortly before the crash. Some survivors also said that they managed to jump out of a door in the back of the aircraft before impact.\n\nThe authorities, who are still investigating the cause of the accident, suspect that the plane tried to make an emergency landing at the Panamacapuru airport nearby, but ditched in the river instead after falling short by half a kilometer. Heavy rain was reported when the plane went down and bad weather is hampering the investigation. Operations to recover the wreckage have been suspended until the weather improves.\n\n{{haveyoursay}}\n==Sources==\n*{{source|url=http://news.xinhuanet.com/english/2009-02/09/content_10786570.htm\n|title=Brazilian plane crash rescue work suspended due to heavy rain \n|author=\n|pub=Xinhua News Agency\n|date=February 9, 2009}}\n*{{source|url=http://www.google.com/hostednews/afp/article/ALeqM5jehyfwE2-qSXmNfSR7XFEKCtyhNg\n|title=Survivor search ends after Brazil plane crash kills 24\n|author=\n|pub=Agence France-Presse\n|date=February 8, 2009}}\n*{{source|url=http://news.bbc.co.uk/2/hi/americas/7877276.stm\n|title=Brazil river plane crash kills 24\n|author=\n|pub=BBC News Online\n|date=February 8, 2009}}\n*{{source|url=http://www.hindustantimes.com/StoryPage/StoryPage.aspx?sectionName=HomePage&id=e83fcda2-b7f3-40ad-9e6a-4c4bf5177c41&&Headline=24+bodies+recovered+from+Brazil+plane+crash\n|title=24 bodies recovered from Brazil plane crash\n|author=Associated Press\n|pub=Hindustan Times\n|date=February 8, 2009}}\n\n[[Category:Aviation]]\n[[Category:South America]]\n[[Category:Disasters and accidents]]\n[[Category:Transport]]\n[[Category:Weather]]\n[[Category:Brazil]]\n[[Category:Aviation accidents and incidents]]\n{{publish}}\n{{Archived-cc-2.5}}"
+   },
+   "license": [
+    {
+     "name": "Creative Commons Attribution-ShareAlike License 4.0",
+     "identifier": "CC-BY-SA-4.0",
+     "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+    }
+   ],
+   "event": {
+    "identifier": "4ea13f12-0a7c-42c5-bc77-1bd637be56be",
+    "type": "update",
+    "date_created": "2025-03-17T23:31:02.360091Z",
+    "date_published": "2025-03-17T23:31:02.360091Z"
+   },
+   "image": {
+    "content_url": "https://upload.wikimedia.org/wikipedia/commons/3/3b/Brazil_%28orthographic_projection%29.svg",
+    "width": 541,
+    "height": 541
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Airplane crash in Brazil kills 24 - Wikinews</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:image\" content=\"https://thumb.wikimedia.org/wikipedia/commons/thumb/3/3b/Brazil_%28orthographic_projection%29.svg/1280px-Brazil_%28orthographic_projection%29.svg.png?utm_source=en.wikinews.org&amp;utm_campaign=index&amp;utm_content=thumbnail\"><meta property=\"og:title\" content=\"Airplane crash in Brazil kills 24 - Wikinews\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Airplane crash in Brazil kills 24\", \"url\": \"https://en.wikinews.org/wiki/Airplane_crash_in_Brazil_kills_24\", \"sameAs\": \"http://www.wikidata.org/entity/Q17654337\", \"mainEntity\": \"http://www.wikidata.org/entity/Q17654337\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2024-12-18T03:12:30Z\", \"image\": \"https://upload.wikimedia.org/wikipedia/commons/3/3b/Brazil_%28orthographic_projection%29.svg?utm_source=en.wikinews.org&utm_campaign=index&utm_content=original\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul><li><a href=\"/wiki/Category:February 9, 2009\">February 9, 2009</a></li><li><a href=\"/wiki/Category:Aviation\">Aviation</a></li><li><a href=\"/wiki/Category:South America\">South America</a></li><li><a href=\"/wiki/Category:Disasters and accidents\">Disasters and accidents</a></li><li><a href=\"/wiki/Category:Transport\">Transport</a></li><li><a href=\"/wiki/Category:Weather\">Weather</a></li><li><a href=\"/wiki/Category:Brazil\">Brazil</a></li><li><a href=\"/wiki/Category:Aviation accidents and incidents\">Aviation accidents and incidents</a></li><li><a href=\"/wiki/Category:Published\">Published</a></li><li><a href=\"/wiki/Category:Articles not disputed\">Articles not disputed</a></li><li><a href=\"/wiki/Category:Archived\">Archived</a></li></ul></div></div></body></html>",
+  "disambiguation": false
+ }
+]

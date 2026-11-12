@@ -1,0 +1,18 @@
+{
+ "source": "wikipedia",
+ "run": "fixture",
+ "as_of": "2026-11-01T00:00:00Z",
+ "files": [
+  "wikipedia-000001.parquet"
+ ],
+ "removed": null,
+ "rows": 51,
+ "counts": {
+  "other_namespace": 1,
+  "pages": 51,
+  "disambiguation": 1,
+  "deleted": 1,
+  "older_copy": 1,
+  "no_html": 1
+ }
+}
