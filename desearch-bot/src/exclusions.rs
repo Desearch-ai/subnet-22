@@ -9,13 +9,9 @@ use crate::suffixes::RULES;
 static INFRASTRUCTURE_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!("(?i){}", RULES.infrastructure_name)).expect("infrastructure pattern"));
 
-/// Operators who asked us to stop; matching the label covers their other sites too.
+/// Operators who asked us to stop, as the abuse blocklist names them.
 pub fn blocked_operator(host: &str) -> bool {
-    if RULES.not_blocked.contains(host) {
-        return false;
-    }
-    let label = host.split('.').next().unwrap_or("");
-    RULES.blocked_operators.iter().any(|name| label.contains(name.as_str()))
+    crate::blocklist::blocked_host(host)
 }
 
 pub fn valid_host(host: &str) -> bool {

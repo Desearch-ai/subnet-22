@@ -13,8 +13,6 @@ pub(crate) struct Rules {
     pub english_market: HashSet<String>,
     pub generic: HashSet<String>,
     pub big_generic: HashSet<String>,
-    pub blocked_operators: Vec<String>,
-    pub not_blocked: HashSet<String>,
     pub dynamic_platforms: HashSet<String>,
     pub infrastructure: HashSet<String>,
     pub infrastructure_name: String,

@@ -116,3 +116,17 @@ def test_a_bucket_is_opened_once_for_every_domain_it_holds(monkeypatch):
     assert [bucket for bucket, _ in opened] == [0, 1]
     assert all(store.closed for _, store in opened)
     assert {row["host"] for row in rows} == set(hosts)
+
+
+@needs_rocksdict
+def test_hosts_and_pages_in_the_abuse_blocklist_never_reach_the_queue(monkeypatch):
+    hosts = ["a0.example", "shfg.com", "b0.example"]
+    pages = dict(entry(host, "page", 2) for host in hosts)
+    pages[host_prefix("b0.example") + b"www.shinhangroup.com/x"] = RECORD.pack(9, 0, 0, 0, 0, 0, 0)
+    monkeypatch.setattr(bot_stores, "open_store", lambda root, bucket, secondary: Store(pages))
+    monkeypatch.setattr(bot_stores, "store_index", lambda host: 0)
+
+    rows = bot_stores.collect_pages("/buckets", "/tmp", hosts, 5)
+
+    assert {row["host"] for row in rows} == {"a0.example", "b0.example"}
+    assert not any("shinhan" in row["url"] for row in rows)

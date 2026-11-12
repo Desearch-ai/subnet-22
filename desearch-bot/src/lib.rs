@@ -1,6 +1,7 @@
 //! The DesearchBot crawl loop, on every core of one process.
 
 pub mod allowed;
+pub mod blocklist;
 pub mod buckets;
 pub mod churn;
 pub mod crawl;

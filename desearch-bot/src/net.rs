@@ -58,12 +58,12 @@ const V6_EXCEPTIONS: [(u128, u32); 6] = [
     (0x2001_0030 << 96, 28),
 ];
 
-fn within4(ip: Ipv4Addr, (net, prefix): ([u8; 4], u32)) -> bool {
+pub(crate) fn within4(ip: Ipv4Addr, (net, prefix): ([u8; 4], u32)) -> bool {
     let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
     u32::from(ip) & mask == u32::from(Ipv4Addr::from(net)) & mask
 }
 
-fn within6(ip: Ipv6Addr, (net, prefix): (u128, u32)) -> bool {
+pub(crate) fn within6(ip: Ipv6Addr, (net, prefix): (u128, u32)) -> bool {
     let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
     u128::from(ip) & mask == net & mask
 }
@@ -101,6 +101,37 @@ impl fmt::Display for NotPublic {
 
 impl Error for NotPublic {}
 
+#[derive(Debug)]
+struct Blocked(String);
+
+impl fmt::Display for Blocked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} resolves into the abuse blocklist", self.0)
+    }
+}
+
+impl Error for Blocked {}
+
+/// How `failure` names a request the abuse blocklist kept from going out.
+pub const BLOCKED: &str = "Blocked";
+
+/// Public answers, or why none may be asked: none public, or one in the abuse blocklist, which then refuses the name outright.
+fn usable(name: &str, answers: impl Iterator<Item = IpAddr>) -> Result<Addrs, Box<dyn Error + Send + Sync>> {
+    let mut public = Vec::new();
+    for ip in answers {
+        if crate::blocklist::blocked_ip(ip) {
+            return Err(Box::new(Blocked(name.to_string())));
+        }
+        if is_global(ip) {
+            public.push(SocketAddr::new(ip, 0));
+        }
+    }
+    if public.is_empty() {
+        return Err(Box::new(NotPublic(name.to_string())));
+    }
+    Ok(Box::new(public.into_iter()))
+}
+
 /// The local caching resolver, with answers that point into a private network dropped.
 #[derive(Clone)]
 pub struct PublicResolver(TokioAsyncResolver);
@@ -121,11 +152,7 @@ impl Resolve for PublicResolver {
         let resolver = self.0.clone();
         Box::pin(async move {
             let answers = resolver.lookup_ip(name.as_str()).await?;
-            let public: Vec<SocketAddr> = answers.iter().filter(|&ip| is_global(ip)).map(|ip| SocketAddr::new(ip, 0)).collect();
-            if public.is_empty() {
-                return Err(Box::new(NotPublic(name.as_str().to_string())) as Box<dyn Error + Send + Sync>);
-            }
-            Ok(Box::new(public.into_iter()) as Addrs)
+            usable(name.as_str(), answers.iter())
         })
     }
 }
@@ -175,7 +202,7 @@ pub fn connect_failed(error: &reqwest::Error) -> bool {
         if current.downcast_ref::<std::io::Error>().is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut)) {
             return true;
         }
-        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<rustls::Error>() {
+        if current.is::<ResolveError>() || current.is::<NotPublic>() || current.is::<Blocked>() || current.is::<rustls::Error>() {
             return false;
         }
         cause = current.source();
@@ -199,6 +226,9 @@ pub fn failure(error: &reqwest::Error, elapsed: Duration, connecting: Option<Dur
     }
     let mut cause = error.source();
     while let Some(current) = cause {
+        if current.is::<Blocked>() {
+            return BLOCKED;
+        }
         if current.is::<ResolveError>() || current.is::<NotPublic>() {
             return "ClientConnectorDNSError";
         }
@@ -248,6 +278,14 @@ mod tests {
         let error = client.get(format!("http://{addr}/")).send().await.unwrap_err();
         assert_eq!(failure(&error, started.elapsed(), Some(Duration::from_millis(200))), "ConnectionTimeoutError", "named as aiohttp names it");
         assert!(!connect_failed(&error), "connected, then no answer: {error:?}");
+    }
+
+    #[test]
+    fn an_answer_in_the_blocklist_refuses_the_name() {
+        let ips = |list: &[&str]| list.iter().map(|ip| ip.parse::<IpAddr>().unwrap()).collect::<Vec<_>>().into_iter();
+        assert!(usable("shfg.com", ips(&["8.8.8.8", "106.249.55.48"])).err().unwrap().is::<Blocked>());
+        assert!(usable("a.test", ips(&["10.0.0.1"])).err().unwrap().is::<NotPublic>());
+        assert_eq!(usable("a.test", ips(&["10.0.0.1", "8.8.8.8"])).unwrap().count(), 1);
     }
 
     #[test]
