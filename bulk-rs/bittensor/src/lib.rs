@@ -1,4 +1,4 @@
-//! Bittensor subnets as `bulk/bittensor.py` builds them, the shared extraction's part in `python -m bulk.page_worker`.
+//! Bittensor subnets as pages, the shared extraction's part in `python -m bulk.page_worker`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

@@ -11,7 +11,7 @@ pub const NETWORK: &str = "finney";
 pub const DATE_ATTEMPTS: u32 = 6;
 const PALLET: &str = "SubtensorModule";
 
-/// The chain read gave fewer subnets than it counts: `python -m bulk` exits 2 on this.
+/// The chain read gave fewer subnets than it counts: the fetch exits 2 on this.
 #[derive(Debug)]
 pub struct ChainError(pub String);
 

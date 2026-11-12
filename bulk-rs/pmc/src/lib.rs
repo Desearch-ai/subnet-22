@@ -132,7 +132,7 @@ fn lines(items: &[String]) -> String {
     items.iter().map(|item| format!("{item}\n")).collect()
 }
 
-/// `python -m bulk pmc`.
+/// `bulk pmc`.
 pub fn main(args: Args) -> Result<()> {
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, "pmc")?;
     let renderer = Arc::new(Renderer::start(&args.render)?);
@@ -155,7 +155,7 @@ pub fn main(args: Args) -> Result<()> {
     bulk_core::run::finish(&args.run, batches, &counts)
 }
 
-/// `python -m bulk pmc-inventory`.
+/// `bulk pmc-inventory`.
 pub fn inventory_main(args: InventoryArgs) -> Result<()> {
     let client = Client::new(USER_AGENT)?;
     for path in latest_inventory(&args.out, &client, BUCKET)? {
@@ -164,7 +164,7 @@ pub fn inventory_main(args: InventoryArgs) -> Result<()> {
     Ok(())
 }
 
-/// `python -m bulk pmc-order`.
+/// `bulk pmc-order`.
 pub fn order_main(args: OrderArgs) -> Result<()> {
     let names = latest_from_inventory(&args.inventory)?;
     let ids = pmc_ids(&args.pmc_ids)?;
@@ -185,7 +185,7 @@ pub fn order_main(args: OrderArgs) -> Result<()> {
     Ok(())
 }
 
-/// `python -m bulk pmc-pmids`.
+/// `bulk pmc-pmids`.
 pub fn pmids_main(args: PmidsArgs) -> Result<()> {
     let names = bucket::sorted_names(&args.inventory)?;
     // A list cut short by a failed read must not pass for whole as a PubMed run's --skip-pmids.

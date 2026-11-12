@@ -130,7 +130,7 @@ pub struct Args {
     pub oai: PathBuf,
 }
 
-/// `python -m bulk arxiv-text`.
+/// `bulk arxiv-text`.
 pub fn main(args: Args) -> Result<()> {
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, "arxiv-text")?;
     let papers = bulk_arxiv::open_papers(&oai_pages(&args.oai)?)?;

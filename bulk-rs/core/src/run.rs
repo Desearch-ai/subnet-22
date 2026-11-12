@@ -25,14 +25,14 @@ pub struct RunArgs {
     pub limit: u64,
 }
 
-/// The run's batches and its as-of time in microseconds, as `python -m bulk` opens them for `source`.
+/// The run's batches and its as-of time in microseconds, for `source`.
 pub fn start(args: &RunArgs, source: &str) -> Result<(Batches, i64)> {
     let as_of_us = parse_as_of(&args.as_of)?;
     let run = if args.run.is_empty() { utc_format(as_of_us, "%Y%m%d") } else { args.run.clone() };
     Ok((Batches::new(&args.out, source, &run, as_of_us)?, as_of_us))
 }
 
-/// Closes the run and prints its summary line exactly as `python -m bulk` prints it.
+/// Closes the run and prints its one-line JSON summary.
 pub fn finish(args: &RunArgs, batches: Batches, counts: &Counts) -> Result<()> {
     let summary = batches.close(counts)?;
     println!("{}", summary_line(&args.out, &summary, counts));

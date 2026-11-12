@@ -30,7 +30,7 @@ fn settings() -> Settings {
     Settings { max_rows: 2, max_text_bytes: 32 << 20, pages_per_hour: 0.0 }
 }
 
-/// A run folder as `python -m bulk` leaves it, its pages fetched at `as_of`.
+/// A run folder as `bulk` leaves it, its pages fetched at `as_of`.
 fn run(dir: &std::path::Path, as_of: i64, files: &[(&str, &[(&str, &str)])]) {
     std::fs::create_dir_all(dir).unwrap();
     for (name, pages) in files {

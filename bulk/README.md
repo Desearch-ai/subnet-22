@@ -5,14 +5,14 @@ lane turns a source's records into page rows in the bulk feed, so the compactor,
 index treat them like crawled pages.
 
 ```
-source files ─► python -m bulk <source> ─► run folder ─► publisher bulk ─► bulk feed ─┬─► planner's bulk lane
-                                                                                           ├─► compactor ─► current/
-                                                                                           └─► index
+source files ─► bulk <source> ─► run folder ─► publisher bulk ─► bulk feed ─┬─► planner's bulk lane
+                                                                             ├─► compactor ─► current/
+                                                                             └─► index
 ```
 
 ## A bulk page
 
-- **Same row as a crawled page.** `python -m bulk` writes each page in the miners' upload schema, with v2 extraction.
+- **Same row as a crawled page.** `bulk` writes each page in the miners' upload schema, with v2 extraction.
   `publisher bulk` builds the record with the publisher's own code, so key, version, `doc_id` and `content_sha1` match
   a crawl of the same URL.
 - **Its own feed.** Bulk files are numbered in `bulk/`, apart from the change log, so a large run never holds up
@@ -35,22 +35,27 @@ source files ─► python -m bulk <source> ─► run folder ─► publisher b
 
 ## Run
 
-Each run gets its own new folder. `--as-of` is when the source's data was taken.
+`bulk` is the Rust binary in `bulk-rs/` (`cargo build --release -p bulk`). Each run gets its own new folder. `--as-of`
+is when the source's data was taken.
 
 ```bash
-python -m bulk pmc-inventory --out inventory
-python -m bulk pmc-pmids --inventory inventory/*.csv.gz --out pmc-pmids.txt
-python -m bulk pubmed --out runs/pubmed-n0001 --as-of 2026-01-29T00:00:00Z --skip-pmids pmc-pmids.txt pubmed26n0001.xml.gz
-python -m bulk pmc --out runs/pmc-1027 --as-of 2026-10-27T01:00:00Z --inventory inventory/*.csv.gz
+bulk pmc-inventory --out inventory
+bulk pmc-pmids --inventory inventory/*.csv.gz --out pmc-pmids.txt
+bulk pubmed --out runs/pubmed-n0001 --as-of 2026-01-29T00:00:00Z --skip-pmids pmc-pmids.txt pubmed26n0001.xml.gz
+bulk pmc --out runs/pmc-1027 --as-of 2026-10-27T01:00:00Z --inventory inventory/*.csv.gz
 curl -O https://ftp.ncbi.nlm.nih.gov/pub/pmc/PMC-ids.csv.gz
-python -m bulk pmc-order --inventory inventory/*.csv.gz --pmc-ids PMC-ids.csv.gz --out pmc-order.txt
-python -m bulk pmc --out runs/pmc-1110-01 --run 20261110-01 --as-of 2026-11-10T00:00:00Z --names pmc-order-01.txt
-python -m bulk arxiv-harvest --out oai --from 2026-10-01 --until 2026-10-27
-python -m bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
-python -m bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
-python -m bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
-python -m bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
+bulk pmc-order --inventory inventory/*.csv.gz --pmc-ids PMC-ids.csv.gz --out pmc-order.txt
+bulk pmc --out runs/pmc-1110-01 --run 20261110-01 --as-of 2026-11-10T00:00:00Z --names pmc-order-01.txt
+bulk arxiv-harvest --out oai --from 2026-10-01 --until 2026-10-27
+bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
+bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
+bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
+bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
 ```
+
+The shared extraction stays in Python: `bulk wikipedia`, `subnet-sites`, `subnet-github` and `bittensor-fetch` start
+`python -m bulk.page_worker` processes, and `bulk pmc` starts `python -m bulk.pmc_render` processes. `--python` names
+the interpreter (one with lxml), `--python-path` the repo root, and `--workers` (`--render-workers` for PMC) how many.
 
 Then publish the folder, into a local folder laid out as the pages bucket or into the change feed `serve` writes:
 

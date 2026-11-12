@@ -243,14 +243,14 @@ pub struct Args {
     pub files: Vec<PathBuf>,
 }
 
-/// `python -m bulk arxiv-harvest`.
+/// `bulk arxiv-harvest`.
 pub fn harvest_main(args: HarvestArgs) -> Result<()> {
     let pages = harvest(&args.out, &args.since, &args.until, bulk_core::http::USER_AGENT)?;
     println!("{pages} pages saved in {}", bulk_core::run::path_str(&args.out));
     Ok(())
 }
 
-/// `python -m bulk arxiv`.
+/// `bulk arxiv`.
 pub fn main(args: Args) -> Result<()> {
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, "arxiv")?;
     let counts = run(&args.files, &mut batches, as_of_us, args.run.limit)?;

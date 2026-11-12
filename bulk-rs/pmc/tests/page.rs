@@ -1,7 +1,6 @@
 mod support;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use bulk_core::{Line, RunArgs};
@@ -162,36 +161,24 @@ fn args(folder: &Path, out: &Path, python: &str, root: &Path, limit: u64, pmids:
     }
 }
 
-fn python_run(python: &str, root: &Path, folder: &Path, out: &Path, limit: u64, pmids: &Path) {
-    let status = Command::new(python)
-        .args(["-m", "bulk", "pmc", "--folder"])
-        .arg(folder)
-        .arg("--out")
-        .arg(out)
-        .args(["--as-of", "2026-11-01T00:00:00Z", "--run", "test", "--limit", &limit.to_string(), "--pmids-out"])
-        .arg(pmids)
-        .env("PYTHONPATH", root)
-        .current_dir(root)
-        .status()
-        .unwrap();
-    assert!(status.success());
-}
-
 #[test]
 fn pmc_folder_runs_match_the_python_run() {
     let Some((python, root)) = python() else { return };
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/pmc-kinds");
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("input");
     std::fs::create_dir(&folder).unwrap();
     write_folder(&folder);
+    for entry in std::fs::read_dir(fixtures.join("input")).unwrap() {
+        let name = entry.unwrap().file_name();
+        assert_eq!(std::fs::read(folder.join(&name)).unwrap(), std::fs::read(fixtures.join("input").join(&name)).unwrap(), "{name:?}");
+    }
     for limit in [0, 2] {
-        let (ours, theirs) = (dir.path().join(format!("rust-{limit}")), dir.path().join(format!("python-{limit}")));
-        let (our_pmids, their_pmids) = (dir.path().join(format!("rust-{limit}.txt")), dir.path().join(format!("python-{limit}.txt")));
+        let (ours, our_pmids) = (dir.path().join(format!("rust-{limit}")), dir.path().join(format!("rust-{limit}.txt")));
         bulk_pmc::main(args(&folder, &ours, &python, &root, limit, &our_pmids)).unwrap();
-        python_run(&python, &root, &folder, &theirs, limit, &their_pmids);
-        let diff = bulk_core::runs::diff(&ours, &theirs, 5).unwrap();
+        let diff = bulk_core::runs::diff(&ours, &fixtures.join(format!("python-{limit}")), 5).unwrap();
         assert!(diff.manifest_differences.is_empty() && diff.rows_differing == 0, "{diff:?}");
         assert_eq!(diff.rows_a, if limit == 0 { 3 } else { 2 });
-        assert_eq!(std::fs::read_to_string(&our_pmids).unwrap(), std::fs::read_to_string(&their_pmids).unwrap());
+        assert_eq!(std::fs::read_to_string(&our_pmids).unwrap(), std::fs::read_to_string(fixtures.join(format!("pmids-{limit}.txt"))).unwrap());
     }
 }

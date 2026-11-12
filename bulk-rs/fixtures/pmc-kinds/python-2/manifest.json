@@ -1,0 +1,15 @@
+{
+ "source": "pmc",
+ "run": "test",
+ "as_of": "2026-11-01T00:00:00Z",
+ "files": [
+  "pmc-000001.parquet"
+ ],
+ "removed": null,
+ "rows": 2,
+ "counts": {
+  "pages": 2,
+  "no_title": 1,
+  "no_body": 1
+ }
+}

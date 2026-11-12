@@ -1,4 +1,4 @@
-//! `bulk bittensor-fetch` as `bulk/bittensor_fetch.py` runs it: chain, registration dates, sites and GitHub, for the subnet builds.
+//! `bulk bittensor-fetch`: chain, registration dates, sites and GitHub, for the subnet builds.
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -230,7 +230,7 @@ pub async fn fetch(options: &Options, anchors: Arc<Anchors>) -> Result<Counts> {
     Ok(counts)
 }
 
-/// `python -m bulk bittensor-fetch`: the fetch, then its counts on stdout; a short chain read exits 2.
+/// `bulk bittensor-fetch`: the fetch, then its counts on stdout; a short chain read exits 2.
 pub fn main(args: FetchArgs) -> Result<()> {
     let python_path = args.python.python_path(PAGE_WORKER);
     let python = args.python.python.clone();

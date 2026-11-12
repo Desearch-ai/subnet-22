@@ -373,7 +373,7 @@ pub fn read_skip(path: &Path) -> Result<HashSet<String>> {
     Ok(words(&text).map(str::to_string).collect())
 }
 
-/// `python -m bulk pubmed`.
+/// `bulk pubmed`.
 pub fn main(args: Args) -> Result<()> {
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, "pubmed")?;
     let skip = match &args.skip_pmids {

@@ -42,7 +42,7 @@ enum Command {
     },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
-    /// Publish a bulk run's batch files from `python -m bulk` into the bulk feed: a folder laid out as the pages bucket with `--log`, or the pages bucket with `--r2`.
+    /// Publish a bulk run's batch files from `bulk` into the bulk feed: a folder laid out as the pages bucket with `--log`, or the pages bucket with `--r2`.
     Bulk(BulkArgs),
     /// Keep the current state under `COMPACTOR_PREFIX` (default `current/`) up to the change log, a cycle at a time, until SIGTERM.
     Compact {
