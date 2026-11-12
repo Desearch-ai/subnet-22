@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
@@ -77,6 +78,15 @@ impl Worker {
         answer.with_context(|| format!("{} worker stopped; check --python and --python-path", self.module))
     }
 
+    /// One JSON answer; a worker's `{"error": ...}` answer is an error.
+    pub fn ask_json(&mut self, parts: &[&[u8]]) -> Result<Value> {
+        let answer: Value = serde_json::from_slice(&self.ask(parts)?).with_context(|| format!("a {} answer", self.module))?;
+        if let Some(error) = answer.get("error") {
+            bail!("{} failed: {error}\n{}", self.module, answer.get("detail").and_then(Value::as_str).unwrap_or(""));
+        }
+        Ok(answer)
+    }
+
     fn exchange(&mut self, parts: &[&[u8]]) -> Result<Vec<u8>> {
         let size = u32::try_from(parts.iter().map(|p| p.len()).sum::<usize>()).context("a request over 4 GiB")?;
         let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("worker closed"))?;
@@ -102,6 +112,48 @@ impl Drop for Worker {
         drop(self.stdin.take());
         let _ = self.child.wait();
     }
+}
+
+/// Each item's result in item order, from up to `workers` workers that each take the next item when free.
+pub fn map_in_order<T: Sync, R: Send>(
+    items: &[T],
+    workers: usize,
+    spawn: &(dyn Fn() -> Result<Worker> + Sync),
+    each: &(dyn Fn(&mut Worker, &T) -> Result<R> + Sync),
+) -> Result<Vec<R>> {
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let threads = workers.max(1).min(items.len());
+    let done: Vec<Result<Vec<(usize, R)>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| -> Result<Vec<(usize, R)>> {
+                    let mut worker = spawn().inspect_err(|_| failed.store(true, Ordering::Relaxed))?;
+                    let mut done = Vec::new();
+                    while !failed.load(Ordering::Relaxed) {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        match each(&mut worker, item) {
+                            Ok(result) => done.push((i, result)),
+                            Err(error) => {
+                                failed.store(true, Ordering::Relaxed);
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Ok(done)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow!("a worker thread panicked")))).collect()
+    });
+    let mut results: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+    for found in done {
+        for (i, result) in found? {
+            results[i] = Some(result);
+        }
+    }
+    results.into_iter().map(|r| r.ok_or_else(|| anyhow!("an item without a result"))).collect()
 }
 
 /// `desearch.extraction.Page` from `dataclasses.asdict(page)`.

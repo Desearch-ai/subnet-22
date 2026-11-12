@@ -1,0 +1,3 @@
+{"out": "bulk-rs/fixtures/bittensor/python/subnets", "files": 1, "rows": 15, "removed": 2, "pages": 15, "with_identity": 10, "with_date": 12}
+{"out": "bulk-rs/fixtures/bittensor/python/subnet-sites", "files": 1, "rows": 8, "removed": 2, "pages": 8, "thin": 4, "app_page": 2, "duplicate": 1, "blocked": 1}
+{"out": "bulk-rs/fixtures/bittensor/python/subnet-github", "files": 1, "rows": 7, "removed": 1, "pages": 7, "no_repo": 2, "duplicate": 1, "no_readme": 1}

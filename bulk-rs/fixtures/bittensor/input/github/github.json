@@ -1,0 +1,278 @@
+[
+ {
+  "netuid": 2,
+  "listed": "https://github.com/DaniLabsAI/subnet",
+  "repo": {
+   "full_name": "DaniLabsAI/subnet",
+   "html_url": "https://github.com/DaniLabsAI/subnet",
+   "description": "DaniLabs validator code for Bittensor: report validation, miner scoring, and chain weight submission. Miners use the separate ManagedVNetIR miner kit.",
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 1,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-11-10T21:20:50Z",
+   "created_at": "2026-10-21T19:14:34Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "DaniLabsAI__subnet.html"
+ },
+ {
+  "netuid": 14,
+  "listed": "https://github.com/latent-to/cacheon",
+  "repo": {
+   "full_name": "latent-to/cacheon",
+   "html_url": "https://github.com/latent-to/cacheon",
+   "description": "Inference Optimization by Economic Kernel Search",
+   "homepage": "https://cacheon.ai",
+   "topics": [
+    "ai",
+    "artificial-intelligence",
+    "bittensor",
+    "bittensor-subnet",
+    "gpu-kernel",
+    "gpu-kernel-performance"
+   ],
+   "stargazers_count": 4,
+   "forks_count": 2,
+   "language": "Python",
+   "license": {
+    "key": "apache-2.0",
+    "name": "Apache License 2.0",
+    "spdx_id": "Apache-2.0",
+    "url": "https://api.github.com/licenses/apache-2.0",
+    "node_id": "MDc6TGljZW5zZTI="
+   },
+   "pushed_at": "2026-11-09T13:32:43Z",
+   "created_at": "2026-05-31T13:18:14Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "latent-to__cacheon.html"
+ },
+ {
+  "netuid": 39,
+  "listed": "https://github.com/deprecated/deprecated",
+  "error": "repo: HTTP 404"
+ },
+ {
+  "netuid": 102,
+  "listed": "https://github.com/Connito-AI/Connito",
+  "repo": {
+   "full_name": "Connito-AI/Connito",
+   "html_url": "https://github.com/Connito-AI/Connito",
+   "description": null,
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 5,
+   "forks_count": 13,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-10-30T14:49:48Z",
+   "created_at": "2026-04-07T13:47:41Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "master"
+  },
+  "readme_file": "Connito-AI__Connito.html"
+ },
+ {
+  "netuid": 105,
+  "listed": "https://github.com/orgs/Beam-Network/repositories",
+  "error": "not a repo url"
+ },
+ {
+  "netuid": 106,
+  "listed": "https://github.com/nodexo-ai/nodexo",
+  "repo": {
+   "full_name": "nodexo-ai/nodexo",
+   "html_url": "https://github.com/nodexo-ai/nodexo",
+   "description": "Miner, validator, CLI, and operator setup for Nodexo, a verified decentralized compute subnet on Bittensor",
+   "homepage": "https://nodexo.ai",
+   "topics": [],
+   "stargazers_count": 1,
+   "forks_count": 1,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-07-23T13:38:57Z",
+   "created_at": "2026-06-17T12:51:39Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "nodexo-ai__nodexo.html"
+ },
+ {
+  "netuid": 111,
+  "listed": "https://github.com/DeSciClaims/Claims",
+  "repo": {
+   "full_name": "DeSciClaims/Claims",
+   "html_url": "https://github.com/DeSciClaims/Claims",
+   "description": "SN111: An incentive mechanism for building the canonical claim-evidence record for science.  ",
+   "homepage": "claims111.ai",
+   "topics": [
+    "bittensor",
+    "bittensor-subnet"
+   ],
+   "stargazers_count": 6,
+   "forks_count": 3,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-11-10T23:13:51Z",
+   "created_at": "2026-05-25T01:38:55Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "DeSciClaims__Claims.html"
+ },
+ {
+  "netuid": 115,
+  "listed": "https://github.com/moirai115/MoirAI",
+  "repo": {
+   "full_name": "moirai115/MoirAI",
+   "html_url": "https://github.com/moirai115/MoirAI",
+   "description": "An evolving AIGC Harness for creators & agents. From idea to finished work",
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 0,
+   "language": null,
+   "license": null,
+   "pushed_at": "2026-09-03T07:04:04Z",
+   "created_at": "2026-09-03T05:50:34Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "moirai115__MoirAI.html"
+ },
+ {
+  "netuid": 3,
+  "listed": "https://github.com/DaniLabsAI/subnet",
+  "repo": {
+   "full_name": "DaniLabsAI/subnet",
+   "html_url": "https://github.com/DaniLabsAI/subnet",
+   "description": "DaniLabs validator code for Bittensor: report validation, miner scoring, and chain weight submission. Miners use the separate ManagedVNetIR miner kit.",
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 1,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-11-10T21:20:50Z",
+   "created_at": "2026-10-21T19:14:34Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "DaniLabsAI__subnet.html"
+ },
+ {
+  "netuid": 901,
+  "listed": "https://github.com/example/no-readme-first",
+  "repo": {
+   "full_name": "example/no-readme-first",
+   "html_url": "https://github.com/example/no-readme-first",
+   "description": null,
+   "homepage": "",
+   "topics": [
+    "topic-0",
+    "topic-1",
+    "topic-2",
+    "topic-3",
+    "topic-4",
+    "topic-5",
+    "topic-6",
+    "topic-7",
+    "topic-8",
+    "topic-9",
+    "topic-10",
+    "topic-11",
+    "topic-12",
+    "topic-13",
+    "topic-14",
+    "topic-15",
+    "topic-16",
+    "topic-17",
+    "topic-18",
+    "topic-19",
+    "topic-20",
+    "topic-21",
+    "topic-22",
+    "topic-23",
+    "topic-24"
+   ],
+   "language": null,
+   "license": {
+    "name": null
+   },
+   "pushed_at": null
+  }
+ },
+ {
+  "netuid": 902,
+  "listed": "https://github.com/example/no-readme-first",
+  "repo": {
+   "full_name": "example/no-readme-first",
+   "html_url": "https://github.com/example/no-readme-first",
+   "description": null,
+   "homepage": "",
+   "topics": [
+    "topic-0",
+    "topic-1",
+    "topic-2",
+    "topic-3",
+    "topic-4",
+    "topic-5",
+    "topic-6",
+    "topic-7",
+    "topic-8",
+    "topic-9",
+    "topic-10",
+    "topic-11",
+    "topic-12",
+    "topic-13",
+    "topic-14",
+    "topic-15",
+    "topic-16",
+    "topic-17",
+    "topic-18",
+    "topic-19",
+    "topic-20",
+    "topic-21",
+    "topic-22",
+    "topic-23",
+    "topic-24"
+   ],
+   "language": null,
+   "license": {
+    "name": null
+   },
+   "pushed_at": null
+  },
+  "readme_file": "example__crlf.html"
+ }
+]

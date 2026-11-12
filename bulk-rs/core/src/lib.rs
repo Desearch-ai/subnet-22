@@ -4,14 +4,16 @@ mod casefold;
 pub mod counts;
 pub mod http;
 mod isotime;
+pub mod py;
 pub mod pyjson;
 pub mod rows;
 pub mod run;
 pub mod runs;
 pub mod text;
+pub mod urlparse;
 pub mod worker;
 
 pub use counts::Counts;
-pub use rows::{authors_line, paper_page, upload_row, Batches, Page, PaperMeta, Row};
+pub use rows::{authors_line, paper_page, typed_page, upload_row, Batches, Page, PaperMeta, Row};
 pub use run::RunArgs;
 pub use text::Line;

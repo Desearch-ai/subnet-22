@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INGOT · dashboard</title>
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="favicon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/ingot.css?v=48034fa364">
+<script>try { const t = localStorage.getItem("ingot-theme"); if (t === "light" || (!t && matchMedia("(prefers-color-scheme: light)").matches)) document.documentElement.dataset.theme = "light"; } catch {}</script>
+</head>
+<body>
+
+<header class="top" id="top"></header>
+
+<main>
+
+<section class="dash-head">
+  <div>
+    <div class="eyebrow">Dashboard</div>
+    <h1>The competition, <em>live.</em></h1>
+    <p class="lede">Every submission, every duel and every coronation of the round, polled from the validator.</p>
+  </div>
+  <aside class="dash-round" aria-label="The competitions">
+    <div class="stamp-tabs" role="tablist" aria-label="Competition">
+      <button class="stamp-tab" role="tab" data-tab="q2" aria-selected="true">1.75-bit <small class="open">open</small></button>
+      <button class="stamp-tab" role="tab" data-tab="fp8" aria-selected="false">8-bit <small>closed</small></button>
+    </div>
+    <div class="stamp-label" id="hero-label">Open round</div>
+    <div class="dash-king" id="hero-king">—</div>
+    <div class="stamp-line" id="hero-line"></div>
+  </aside>
+</section>
+
+<section class="section">
+  <div class="head"><span class="label"><b></b>Kings</span><span class="meta" id="kings-meta"></span></div>
+  <div class="kings">
+    <div class="chart" id="kings-chart"></div>
+    <div class="lineage" id="lineage"></div>
+  </div>
+</section>
+
+<section class="section" id="benchmarks" data-info>
+  <div class="head"><span class="label"><b></b>Benchmarks<span class="bench-picker" id="bench-picker"></span></span><span class="meta" id="benchmarks-meta"></span></div>
+  <div class="benchmark-charts" id="benchmark-charts" tabindex="0" role="region" aria-label="Benchmark scores of the teacher, genesis and the chosen king"><div class="empty">loading…</div></div>
+  <div id="benchmarks-protocol"></div>
+</section>
+
+<div class="pair">
+<section class="section">
+  <div class="head"><span class="label"><b></b>Weight holders</span><span class="meta" id="reign-meta"></span></div>
+  <div id="reign-wrap"><div class="empty">loading…</div></div>
+</section>
+
+<section class="section">
+  <div class="head"><span class="label"><b></b>Registration</span><span class="meta" id="registration-meta"></span></div>
+  <div class="chart" id="registration-chart"></div>
+</section>
+</div>
+
+<section class="section" id="queue">
+  <div class="head"><span class="label"><b></b>Queue</span><span class="meta" id="pipeline-meta"></span></div>
+  <div id="pipeline-wrap"><div class="empty">loading…</div></div>
+</section>
+
+<section class="section">
+  <div class="head"><span class="label"><b></b>History</span><span class="meta" id="history-meta"></span></div>
+  <div class="data-table-wrap scroll" id="history-wrap"><div class="empty">loading…</div></div>
+</section>
+
+<section class="section">
+  <div class="head"><span class="label"><b></b>Fails</span><span class="meta" id="fails-meta"></span></div>
+  <div class="data-table-wrap scroll" id="fails-wrap"><div class="empty">loading…</div></div>
+</section>
+
+</main>
+
+<footer class="foot" id="foot"></footer>
+
+<script type="module" src="app.js?v=48034fa364"></script>
+</body>
+</html>

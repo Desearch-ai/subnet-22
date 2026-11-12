@@ -54,7 +54,7 @@ pub struct Page {
     pub text: String,
 }
 
-/// The keyword arguments of `paper_page` after the title and lines.
+/// The keyword arguments of `typed_page` and `paper_page` after the title and lines.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PaperMeta {
     pub lang: String,
@@ -82,11 +82,16 @@ pub fn upload_row(url: &str, page: Page, fetched_at_us: i64, content_type: &str)
 
 /// `bulk.rows.paper_page`: the title line, then cleaned lines with `##` headings.
 pub fn paper_page(title: &str, lines: Vec<Line>, meta: PaperMeta) -> Page {
+    typed_page(PAPER, title, lines, meta)
+}
+
+/// `bulk.rows.typed_page`: a page of `page_type` in v2's text conventions, the title line then cleaned lines.
+pub fn typed_page(page_type: &str, title: &str, lines: Vec<Line>, meta: PaperMeta) -> Page {
     let text = finish(title, &clean(lines, false), MAX_TEXT_CHARS);
     let mut tags = meta.tags;
     tags.truncate(MAX_TAGS);
     Page {
-        page_type: PAPER.to_string(),
+        page_type: page_type.to_string(),
         text_mode: MAIN.to_string(),
         title: title.to_string(),
         lang: meta.lang,

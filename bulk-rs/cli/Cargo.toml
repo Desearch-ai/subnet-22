@@ -14,6 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 bulk-arxiv.workspace = true
 bulk-arxiv-text.workspace = true
+bulk-bittensor.workspace = true
 bulk-core.workspace = true
 bulk-pmc.workspace = true
 bulk-pubmed.workspace = true

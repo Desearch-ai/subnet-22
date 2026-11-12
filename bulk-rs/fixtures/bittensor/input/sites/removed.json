@@ -1,0 +1,18 @@
+[
+ {
+  "url": "https://danilabs.ai/?utm_medium=a",
+  "why": "gone"
+ },
+ {
+  "url": "https://gone.example/page?b=1&utm_source=x",
+  "why": "gone"
+ },
+ {
+  "url": "https://gone.example/page?b=1",
+  "why": "gone"
+ },
+ {
+  "url": "https://refused.example/",
+  "why": "denied"
+ }
+]

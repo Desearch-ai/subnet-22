@@ -1,0 +1,89 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Nodexo</h1><a id="user-content-nodexo" class="anchor" aria-label="Permalink: Nodexo" href="#nodexo"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Verified decentralized compute on Bittensor.</p>
+<p dir="auto">This repository contains the public operator software for running Nodexo miners
+and validators, plus the CLI and setup scripts used to manage them.</p>
+<p dir="auto">Start here:</p>
+<ul dir="auto">
+<li><a href="docs/MINER_QUICKSTART.md">Miner quickstart</a></li>
+<li><a href="docs/VALIDATOR_QUICKSTART.md">Validator quickstart</a></li>
+<li><a href="docs/ENDPOINT_SECURITY.md">Endpoint security</a></li>
+<li><a href="docs/CLI_REFERENCE.md">CLI reference</a></li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Install</h2><a id="user-content-install" class="anchor" aria-label="Permalink: Install" href="#install"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Miner host:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="curl -fsSL https://raw.githubusercontent.com/nodexo-ai/nodexo/main/install.sh | bash"><pre>curl -fsSL https://raw.githubusercontent.com/nodexo-ai/nodexo/main/install.sh <span class="pl-k">|</span> bash</pre></div>
+<p dir="auto">Validator host:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="curl -fsSL https://raw.githubusercontent.com/nodexo-ai/nodexo/main/install.sh | bash -s -- --validator"><pre>curl -fsSL https://raw.githubusercontent.com/nodexo-ai/nodexo/main/install.sh <span class="pl-k">|</span> bash -s -- --validator</pre></div>
+<p dir="auto">Manual install:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="git clone https://github.com/nodexo-ai/nodexo.git
+cd nodexo
+bash scripts/setup_miner.sh      # GPU host
+bash scripts/setup_validator.sh  # CPU-only validator host"><pre>git clone https://github.com/nodexo-ai/nodexo.git
+<span class="pl-c1">cd</span> nodexo
+bash scripts/setup_miner.sh      <span class="pl-c"><span class="pl-c">#</span> GPU host</span>
+bash scripts/setup_validator.sh  <span class="pl-c"><span class="pl-c">#</span> CPU-only validator host</span></pre></div>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Minimum Host Requirements</h2><a id="user-content-minimum-host-requirements" class="anchor" aria-label="Permalink: Minimum Host Requirements" href="#minimum-host-requirements"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Minimum</th>
+<th>Recommended</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Miner</td>
+<td>Ubuntu/Debian GPU host, <a href="docs/SUPPORTED_GPUS.md">supported NVIDIA GPU</a>, working <code>nvidia-smi</code>, Docker, 4 CPU cores, 16 GB RAM, 40 GB free Docker storage</td>
+<td>8+ CPU cores, 32+ GB RAM, 100+ GB free Docker storage</td>
+</tr>
+<tr>
+<td>Validator</td>
+<td>Ubuntu/Debian host, 4 vCPU, 16 GB RAM, 100 GB disk, synchronized clock, Postgres, dedicated Subtensor RPC</td>
+<td>8+ vCPU, 32+ GB RAM, 200+ GB disk, local or private Subtensor RPC</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Both roles require a registered Bittensor hotkey for the target subnet.
+Validators should not use public Subtensor RPC for production operation. Miners
+also need the public API port and rental TCP port range reachable from
+validators and renters.
+Validators do not require third-party API keys for normal proof verification
+and weight setting.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Networks</h2><a id="user-content-networks" class="anchor" aria-label="Permalink: Networks" href="#networks"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Network</th>
+<th>Runtime flag</th>
+<th align="right">Netuid</th>
+<th>Chain config</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Testnet</td>
+<td><code>--subtensor-network test</code></td>
+<td align="right"><code>468</code></td>
+<td><code>chain_config_testnet.json</code></td>
+</tr>
+<tr>
+<td>Mainnet</td>
+<td><code>--subtensor-network finney</code></td>
+<td align="right"><code>106</code></td>
+<td><code>chain_config_mainnet.json</code></td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">The setup scripts select the matching chain config from the network flag.
+Operators can override the Subtensor transport with <code>--subtensor-endpoint</code> when
+using a local node or private RPC endpoint:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="--subtensor-network finney --subtensor-endpoint ws://127.0.0.1:9944"><pre>--subtensor-network finney --subtensor-endpoint ws://127.0.0.1:9944</pre></div>
+<p dir="auto">Validators should use a dedicated Subtensor endpoint. Public <code>test</code> and
+<code>finney</code> endpoints are only suitable for setup checks or short local tests.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">CLI</h2><a id="user-content-cli" class="anchor" aria-label="Permalink: CLI" href="#cli"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">For local fleet status after setup:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="nodexo fleet
+nodexo inventory"><pre>nodexo fleet
+nodexo inventory</pre></div>
+</article></div>

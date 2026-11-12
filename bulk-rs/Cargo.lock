@@ -314,6 +314,7 @@ dependencies = [
  "anyhow",
  "bulk-arxiv",
  "bulk-arxiv-text",
+ "bulk-bittensor",
  "bulk-core",
  "bulk-pmc",
  "bulk-pubmed",
@@ -361,6 +362,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-bittensor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "desearch",
+ "indexmap",
+ "regex",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bulk-core"
 version = "0.1.0"
 dependencies = [
@@ -377,6 +392,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "unicode-normalization",
 ]
 
 [[package]]

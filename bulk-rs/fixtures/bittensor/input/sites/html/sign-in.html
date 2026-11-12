@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INGOT</title>
+<meta name="description" content="Qwen3.8-27B in 5.95 GB: Prism ML's ternary Bonsai 2, refined by competing miners and assayed against the original.">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="favicon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/ingot.css?v=48034fa364">
+<script>try { const t = localStorage.getItem("ingot-theme"); if (t === "light" || (!t && matchMedia("(prefers-color-scheme: light)").matches)) document.documentElement.dataset.theme = "light"; } catch {}</script>
+</head>
+<body>
+
+<header class="top" id="top"></header>
+
+<main class="landing">
+
+<section class="hero">
+  <div>
+    <h1><span id="m-teacher-short">Qwen3.8-27B</span><br>in <em id="m-size">5.95 GB.</em></h1>
+    <p class="lede">Prism ML's ternary <a href="https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf" target="_blank" rel="noopener">Bonsai 2</a>, refined by miners competing to bring it closer to the original.</p>
+    <div class="actions">
+      <a class="btn" id="m-download" href="https://huggingface.co/dendriteholdings" target="_blank" rel="noopener">Download on Hugging Face</a>
+    </div>
+  </div>
+  <aside class="stamp" aria-label="The best model">
+    <svg class="pixels" viewBox="0 0 160 120" shape-rendering="crispEdges" aria-hidden="true">
+      <rect x="132" y="8" width="16" height="16" class="p1"/><rect x="112" y="20" width="10" height="10" class="p2"/>
+      <rect x="146" y="34" width="8" height="8" class="p3"/><rect x="122" y="40" width="14" height="14" class="p1"/>
+      <rect x="98" y="6" width="6" height="6" class="p3"/><rect x="104" y="44" width="6" height="6" class="p2"/>
+      <rect x="140" y="62" width="10" height="10" class="p2"/><rect x="84" y="26" width="4" height="4" class="p3"/>
+      <rect x="118" y="70" width="6" height="6" class="p3"/><rect x="152" y="84" width="6" height="6" class="p4"/>
+      <rect x="92" y="58" width="4" height="4" class="p4"/>
+    </svg>
+    <div class="stamp-label" id="m-label">Best model</div>
+    <div class="stamp-king" id="m-name">—</div>
+    <div class="stamp-repo" id="m-repo"></div>
+    <div class="stamp-line" id="m-line"></div>
+  </aside>
+</section>
+
+<section class="stats" id="stats" aria-label="Headline figures">
+  <div class="stat"><b id="s-size">5.95 GB</b><span>one file, 1.75 bits per weight</span></div>
+  <div class="stat"><b id="s-index">—</b><span>AA Intelligence Index, estimated</span></div>
+  <div class="stat"><b id="s-ahead">—</b><span>benchmarks at or above Bonsai 2</span></div>
+</section>
+
+<section class="section" id="benchmarks" data-info>
+  <div class="head"><span class="label"><b></b>Benchmarks</span></div>
+  <div class="figures" id="panel-figures">
+    <figure><figcaption><h3>Artificial Analysis Intelligence Index</h3><p>v4.3.2</p></figcaption><div class="vbars" id="index-chart"></div></figure>
+    <figure><figcaption><h3>Size</h3><p>the file you download, in GB · the line a 16 GB MacBook draws</p></figcaption><div class="sizes" id="size-chart"></div></figure>
+  </div>
+  <p class="run-note quiet wide info-src">Artificial Analysis has not evaluated our models or Bonsai 2, so their bars (≈) are estimates: how much of
+    the teacher's score each keeps on SWE-bench Multilingual, Terminal-Bench, GPQA and MATH-500 in the scores below, scaled to match
+    Qwen3.5 9B's and gpt-oss-20b's <a href="https://artificialanalysis.ai/methodology/intelligence-benchmarking" target="_blank" rel="noopener">published scores</a>.
+    Gemma 4 12B's score is Artificial Analysis's own estimate.</p>
+</section>
+
+<section class="section" id="distance" data-info hidden>
+  <div class="head"><span class="label"><b></b>Distance to the teacher</span><span class="meta" id="distance-meta"></span></div>
+  <div class="distance-line" id="distance-wrap"></div>
+  <p class="run-note quiet wide info-src"><code>KL(teacher &#8214; model)</code>, averaged over tokens. The teacher writes an answer, every model reads that same answer, and at each token we compare the model's distribution over the next token with the teacher's. Lower is closer, and zero is the teacher itself.</p>
+  <p class="run-note quiet wide info-src" id="distance-note"></p>
+</section>
+
+<section class="section" id="scores" data-info>
+  <div class="head"><span class="label"><b></b>Scores</span></div>
+  <div class="benchmark-charts" id="benchmark-charts"><div class="empty">loading…</div></div>
+  <div id="scores-protocol"></div>
+</section>
+
+<section class="section" id="tokens" data-info hidden>
+  <div class="head"><span class="label"><b></b>Token by token</span><span class="meta">held-out steps</span></div>
+  <div class="figures" id="tokens-figures"></div>
+  <p class="run-note quiet wide info-src">The validator scores a model by the KL divergence of its next-token distribution from the teacher's, at every
+    token of the teacher's answers. Here the answers are the teacher's next step in its own Terminal-Bench 2.1 and SWE-bench Multilingual
+    runs, which the validator never scores on, and both models read the same answers.</p>
+  <details class="tok-viewer">
+    <summary><span>Compare them token by token</span><small id="tok-demo-note"></small></summary>
+    <p class="tok-intro">The end of the teacher's thinking through its first tool call, each token shaded by the selected model's KL there;
+      point at a token to see the teacher's five likeliest next tokens beside each model's.</p>
+    <div class="tok-picker" id="tokens-picker"></div>
+    <div class="tok-context" id="tokens-context"></div>
+    <div class="tok-main">
+      <div class="tok-stream" id="tokens-stream" tabindex="0" aria-label="The teacher's answer, each token shaded by the selected model's KL; arrow keys move between tokens"></div>
+      <div class="tok-inspect" id="tokens-inspect" aria-live="polite"></div>
+    </div>
+    <div class="tok-legend"><span>KL per token</span><span>≤0.03</span><i></i><span>≥1</span></div>
+  </details>
+</section>
+
+
+<section class="section" id="run">
+  <div class="head"><span class="label"><b></b>Run it</span><span class="meta" id="run-meta">5.95 GB · one file</span></div>
+  <pre class="cmd" id="run-cmd">hf download dendriteholdings/Ingot-IV-27B-Q2 Ingot-IV-27B-PTQ1_0.gguf --local-dir .
+llama-server -m Ingot-IV-27B-PTQ1_0.gguf -ngl 99 -fa on --jinja</pre>
+  <p class="run-note"><code>llama-server</code> from <a href="https://github.com/DendriteLabs/llama.cpp/tree/dendrite" target="_blank" rel="noopener">our llama.cpp fork</a>.</p>
+</section>
+
+<section class="section" id="kings">
+  <div class="head"><span class="label"><b></b>The kings</span><span class="meta" id="kings-meta"></span></div>
+  <div class="king-cards" id="king-cards"><div class="empty">loading…</div></div>
+</section>
+
+<section class="section" id="how">
+  <div class="head"><span class="label"><b></b>How it is made</span></div>
+  <div class="steps">
+    <div class="step"><i>1</i><h3>Submit</h3><p>Miners upload a ternary GGUF with the teacher's exact layout: every weight −1, 0 or +1 times a block scale, the file capped at Bonsai 2's size. The codes and scales are theirs to set.</p></div>
+    <div class="step"><i>2</i><h3>Assay</h3><p>The validator reads every submission against the unquantized teacher on the same prompts: the divergence of its next-token distribution from the teacher's, token by token.</p></div>
+    <div class="step"><i>3</i><h3>Crown</h3><p>A submission measurably closer than the reigning king becomes king, earns the subnet's emission, and is mirrored to Hugging Face with its 1.75-bit file. <a href="dashboard.html">Watch the queue</a>.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot" id="foot"></footer>
+
+<script type="module" src="landing.js?v=48034fa364"></script>
+</body>
+</html>

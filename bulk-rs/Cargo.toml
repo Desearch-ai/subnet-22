@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "cli"]
+members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "cli"]
 resolver = "3"
 
 [workspace.package]
@@ -32,6 +32,7 @@ bulk-arxiv-text = { path = "arxiv-text" }
 bulk-pubmed = { path = "pubmed" }
 bulk-pmc = { path = "pmc" }
 bulk-wikipedia = { path = "wikipedia" }
+bulk-bittensor = { path = "bittensor" }
 
 [profile.release]
 debug = false

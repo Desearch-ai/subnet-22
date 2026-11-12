@@ -1,0 +1,19 @@
+[package]
+name = "bulk-bittensor"
+description = "Bittensor subnets: a page per subnet from its chain identity, and the subnets' own websites and GitHub READMEs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+desearch.workspace = true
+indexmap.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

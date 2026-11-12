@@ -31,6 +31,12 @@ enum Command {
     Wikipedia(bulk_wikipedia::Args),
     /// Print the hidden categories of a category-namespace snapshot.
     HiddenCategories(bulk_wikipedia::HiddenArgs),
+    /// A page per Bittensor subnet from its chain identity.
+    Subnets(bulk_bittensor::SubnetsArgs),
+    /// The Bittensor subnets' fetched website pages.
+    SubnetSites(bulk_bittensor::SitesArgs),
+    /// The Bittensor subnets' GitHub repositories and READMEs.
+    SubnetGithub(bulk_bittensor::GithubArgs),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -47,6 +53,9 @@ fn main() -> anyhow::Result<()> {
         Command::PmcPmids(args) => bulk_pmc::pmids_main(args),
         Command::Wikipedia(args) => bulk_wikipedia::main(args),
         Command::HiddenCategories(args) => bulk_wikipedia::hidden_main(args),
+        Command::Subnets(args) => bulk_bittensor::subnets_main(args),
+        Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
+        Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }

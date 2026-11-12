@@ -1,0 +1,225 @@
+[
+ {
+  "netuid": 2,
+  "listed": "https://danilabs.ai/",
+  "pages": [
+   {
+    "url": "https://danilabs.ai/",
+    "final_url": "https://danilabs.ai/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "9e100c40e08530b3.html",
+    "bytes": 9079
+   },
+   {
+    "url": "https://danilabs.ai/network",
+    "final_url": "https://danilabs.ai/network/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "d2248a33bfe2f6b2.html",
+    "bytes": 1136
+   },
+   {
+    "url": "https://danilabs.ai/docs",
+    "final_url": "https://danilabs.ai/docs/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "fb71918056d3aaba.html",
+    "bytes": 1030
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 48,
+  "listed": "https://www.qbittensorlabs.com/",
+  "pages": [
+   {
+    "url": "https://www.qbittensorlabs.com/about",
+    "final_url": "https://www.qbittensorlabs.com/about",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "9ee414ba1960d6b3.html",
+    "bytes": 38660
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 49,
+  "listed": "https://www.nepher.ai/",
+  "pages": [
+   {
+    "url": "https://www.nepher.ai/account",
+    "final_url": "https://www.nepher.ai/account",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "25c2b59bf8299e5f.html",
+    "bytes": 12466
+   }
+  ],
+  "docs_links": [
+   "https://docs.nepher.ai/",
+   "https://docs.nepher.ai/nepher-cli"
+  ],
+  "robots": "none"
+ },
+ {
+  "netuid": 56,
+  "listed": "https://www.gradients.io/",
+  "pages": [
+   {
+    "url": "https://www.gradients.io/team",
+    "final_url": "https://www.gradients.io/auth",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "b11ac74c5c9c5a2b.html",
+    "bytes": 8291
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 63,
+  "listed": "https://www.qbittensorlabs.com/",
+  "pages": [
+   {
+    "url": "https://www.qbittensorlabs.com/about",
+    "final_url": "https://www.qbittensorlabs.com/about",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "9ee414ba1960d6b3.html",
+    "bytes": 38660
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 97,
+  "listed": "https://theingot.ai",
+  "pages": [
+   {
+    "url": "https://theingot.ai/",
+    "final_url": "https://theingot.ai/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "5fb0c6fdd3c1adaf.html",
+    "bytes": 8229
+   },
+   {
+    "url": "https://theingot.ai/dashboard.html",
+    "final_url": "https://theingot.ai/dashboard.html",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "b0455b218d1c7b8d.html",
+    "bytes": 3801
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 125,
+  "listed": "https://refinery125.com",
+  "pages": [
+   {
+    "url": "https://refinery125.com/",
+    "final_url": "https://refinery125.com/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "28e4d1a22391453b.html",
+    "bytes": 19569
+   },
+   {
+    "url": "https://refinery125.com/MINING_AGENTS_INFO.md",
+    "final_url": "https://refinery125.com/MINING_AGENTS_INFO.md",
+    "status": 200,
+    "content_type": "text/markdown"
+   },
+   {
+    "url": "https://refinery125.com/index.html",
+    "final_url": "https://refinery125.com/index.html",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "d4c8e5d68b43ba74.html",
+    "bytes": 19569
+   }
+  ],
+  "docs_links": [],
+  "robots": "none"
+ },
+ {
+  "netuid": 128,
+  "listed": "ByteLeap.ai",
+  "pages": [
+   {
+    "url": "https://byteleap.ai/",
+    "final_url": "https://byteleap.ai/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "ba48e75429218bb8.html",
+    "bytes": 2005
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ },
+ {
+  "netuid": 900,
+  "listed": "https://danilabs.ai",
+  "pages": [
+   {
+    "url": "https://danilabs.ai/?ref=bt",
+    "final_url": "https://danilabs.ai/?utm_source=bittensor&fbclid=x",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "home-again.html",
+    "bytes": 9079
+   },
+   {
+    "url": "https://blocked.example/",
+    "final_url": "https://blocked.example/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "challenge.html",
+    "bytes": 205
+   },
+   {
+    "url": "https://latin.example/caf\u00e9",
+    "final_url": "https://latin.example/caf\u00e9?home",
+    "status": 200,
+    "content_type": null,
+    "file": "latin1.html",
+    "bytes": 444
+   },
+   {
+    "url": "https://wallet.example/w",
+    "final_url": "https://wallet.example/5123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmno",
+    "status": 200,
+    "content_type": "",
+    "file": "wallet.html",
+    "bytes": 1030
+   },
+   {
+    "url": "https://theingot.ai/sign-in",
+    "final_url": "https://theingot.ai/sign-in?authRedir=/dashboard&utm_campaign=x",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "sign-in.html",
+    "bytes": 8229
+   },
+   {
+    "url": "https://refused.example/",
+    "final_url": "https://refused.example/",
+    "status": 403,
+    "content_type": "text/html"
+   }
+  ],
+  "docs_links": [],
+  "robots": "parsed"
+ }
+]
