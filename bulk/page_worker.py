@@ -17,9 +17,6 @@ from dataclasses import asdict  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from desearch.extraction import extract  # noqa: E402
-from desearch.extraction.blocked import looks_blocked  # noqa: E402
-from desearch.extraction.structured.html import parse  # noqa: E402
-from desearch.extraction.text.markdown import render  # noqa: E402
 
 EXTRACT = b"e"
 WIKIPEDIA = b"w"
@@ -43,9 +40,14 @@ def answer(request: bytes) -> dict:
             return {"disambiguation": True}
         return {"page": asdict(extract(framed, article["url"]))}
     if op == BLOCKED:
+        from desearch.extraction.blocked import looks_blocked
+
         found = json.loads(data)
         return {"blocked": looks_blocked(found["status"], found["html"], found["text"], found["title"])}
     if op == BODY:
+        from desearch.extraction.structured.html import parse
+        from desearch.extraction.text.markdown import render
+
         root = parse(f"<html><body>{data.decode()}</body></html>")
         body = root.find(".//body") if root is not None else None
         return {"lines": None if body is None else [list(line) for line in render(body)]}
