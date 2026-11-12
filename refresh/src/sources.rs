@@ -27,6 +27,8 @@ pub const REPO: &str = "~/refresh/subnet-22";
 pub const PYTHON: &str = "~/refresh/venv/bin/python";
 /// The Rust bulk builders (subnet-22 `bulk-rs`), for the sources they cover.
 const BULK: &str = "~/refresh/bin/bulk";
+/// desearch-bot, whose `refresh edgar|fred` are the crawler's refresh commands in Rust.
+const BOT: &str = "~/refresh/bin/desearch-bot";
 const CRAWLER: &str = "~/desearch-engine.v8";
 const CRAWLER_PYTHON: &str = "~/venv/bin/python";
 const CRAWLER_MEMORY: u64 = 4 << 30;
@@ -80,7 +82,7 @@ pub const SOURCES: &[Source] = &[
         fetch: &[],
         builds: &[Build {
             name: "edgar",
-            argv: &["{python}", "-m", "crawler", "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "8"],
+            argv: &[BOT, "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "8", "--python", "{python}"],
             full_list: false,
             volatile: false,
         }],
@@ -92,7 +94,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "fred",
         fetch: &[],
-        builds: &[Build { name: "fred", argv: &["{python}", "-m", "crawler", "refresh", "fred", "--out", "{out}"], full_list: false, volatile: true }],
+        builds: &[Build { name: "fred", argv: &[BOT, "refresh", "fred", "--out", "{out}", "--python", "{python}"], full_list: false, volatile: true }],
         cwd: CRAWLER,
         python: CRAWLER_PYTHON,
         memory_bytes: CRAWLER_MEMORY,
