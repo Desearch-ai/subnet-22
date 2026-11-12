@@ -1,0 +1,451 @@
+{
+ "hosts": {
+  "busy.stlouisfed.org": {
+   "/a": {
+    "headers": [
+     [
+      "Retry-After",
+      "1"
+     ]
+    ],
+    "status": 429
+   },
+   "/b": {
+    "headers": [
+     [
+      "Retry-After",
+      "1"
+     ]
+    ],
+    "status": 429
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "data.sec.gov": {
+   "/submissions/CIK0000000999.json": {
+    "body": "{\"cik\": \"0000000999\", \"name\": \"DISALLOWED CO\", \"filings\": {\"recent\": {\"form\": [\"10-Q\"], \"filingDate\": [\"2026-11-10\"], \"accessionNumber\": [\"0000000999-26-000001\"], \"primaryDocument\": [\"q.htm\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000001001.json": {
+    "body": "{\"cik\": \"0000001001\", \"name\": \"ACME CORP\", \"filings\": {\"recent\": {\"form\": [\"10-K\", \"10-Q\", \"10-K\"], \"filingDate\": [\"2026-11-10\", \"2026-11-10\", \"2026-11-06\"], \"accessionNumber\": [\"0000001001-26-000001\", \"0000001001-26-000002\", \"0000001001-26-000003\"], \"primaryDocument\": [\"acme-10k.htm\", \"R2.htm\", \"old-10k.htm\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000001002.json": {
+    "body": "{\"cik\": \"0000001002\", \"name\": \"BETA HOLDINGS INC\", \"filings\": {\"recent\": {\"form\": [\"8-K\", \"8-K\", \"8-K\"], \"filingDate\": [\"2026-11-11\", \"2026-11-10\", \"2026-11-10\"], \"accessionNumber\": [\"0000001002-26-000008\", \"0000001002-26-000007\", \"0000001002-26-000006\"], \"primaryDocument\": [\"later-8k.htm\", \"beta-8k.htm\", \"exhibit.pdf\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000001003.json": {
+    "body": "{\"cik\": \"0000001003\", \"name\": \"GAMMA TRUST\", \"filings\": {\"recent\": {\"form\": [\"DEF 14A\", \"4\"], \"filingDate\": [\"2026-11-08\", \"2026-11-10\"], \"accessionNumber\": [\"0000001003-26-000002\", \"0000001003-26-000003\"], \"primaryDocument\": [\"proxy.htm\", \"f4.xml\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000002002.json": {
+    "body": "{not json",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000002003.json": {
+    "body": "{\"cik\": \"0000002003\", \"name\": \"BROKEN DOC CO\", \"filings\": {\"recent\": {\"form\": [\"10-K\"], \"filingDate\": [\"2026-11-12\"], \"accessionNumber\": [\"0000002003-26-000001\"], \"primaryDocument\": [\"broken.htm\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000002004.json": {
+    "body": "{\"cik\": \"0000002004\", \"name\": \"FINE CO\", \"filings\": {\"recent\": {\"form\": [\"8-K\"], \"filingDate\": [\"2026-11-12\"], \"accessionNumber\": [\"0000002004-26-000001\"], \"primaryDocument\": [\"fine-8k.htm\"]}}}",
+    "status": 200,
+    "type": "application/json"
+   },
+   "/submissions/CIK0000002005.json": {
+    "close": true
+   }
+  },
+  "down.stlouisfed.org": {
+   "/robots.txt": {
+    "status": 503
+   }
+  },
+  "elsewhere.test": {
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "fred.stlouisfed.org": {
+   "/data/GDP": {
+    "body": "<html lang=\"en\"><head><title>Gross Domestic Product (GDP) data</title></head><body><h1>Gross Domestic Product</h1><p>The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><table id=\"data-table-observations\"><thead><tr><th>DATE</th><th>VALUE</th></tr></thead><tbody><tr><th scope=\"row\" class=\"date\">2021-01-01</th><td class=\"value\">10.5</td></tr><tr><th scope=\"row\" class=\"date\">2021-04-01</th><td class=\"value\">11.0</td></tr><tr><th scope=\"row\" class=\"date\">2021-07-01</th><td class=\"value\">11.25</td></tr></tbody></table><div id=\"extra-rows\">#2020-01-01|9.0#2020-04-01|9.5#2020-07-01|10.0</div></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nDisallow: /private/\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/series/A": {
+    "body": "<html lang=\"en\"><head><title>Series A</title></head><body><h1>Series A</h1><p>Series A: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series A notes.</p><p>Series A: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series A notes.</p><p>Series A: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series A notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/B": {
+    "body": "<html lang=\"en\"><head><title>Series B</title></head><body><h1>Series B</h1><p>Series B: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series B notes.</p><p>Series B: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series B notes.</p><p>Series B: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series B notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/C": {
+    "body": "<html lang=\"en\"><head><title>Series C</title></head><body><h1>Series C</h1><p>Series C: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series C notes.</p><p>Series C: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series C notes.</p><p>Series C: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series C notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/D": {
+    "body": "<html lang=\"en\"><head><title>Series D</title></head><body><h1>Series D</h1><p>Series D: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series D notes.</p><p>Series D: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series D notes.</p><p>Series D: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series D notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/E": {
+    "body": "<html lang=\"en\"><head><title>Series E</title></head><body><h1>Series E</h1><p>Series E: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series E notes.</p><p>Series E: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series E notes.</p><p>Series E: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series E notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/F": {
+    "body": "<html lang=\"en\"><head><title>Series F</title></head><body><h1>Series F</h1><p>Series F: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series F notes.</p><p>Series F: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series F notes.</p><p>Series F: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series F notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/G": {
+    "body": "<html lang=\"en\"><head><title>Series G</title></head><body><h1>Series G</h1><p>Series G: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series G notes.</p><p>Series G: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series G notes.</p><p>Series G: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series G notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/H": {
+    "body": "<html lang=\"en\"><head><title>Series H</title></head><body><h1>Series H</h1><p>Series H: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series H notes.</p><p>Series H: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series H notes.</p><p>Series H: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series H notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/I": {
+    "body": "<html lang=\"en\"><head><title>Series I</title></head><body><h1>Series I</h1><p>Series I: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series I notes.</p><p>Series I: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series I notes.</p><p>Series I: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series I notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/J": {
+    "body": "<html lang=\"en\"><head><title>Series J</title></head><body><h1>Series J</h1><p>Series J: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series J notes.</p><p>Series J: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series J notes.</p><p>Series J: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series J notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/K": {
+    "body": "<html lang=\"en\"><head><title>Series K</title></head><body><h1>Series K</h1><p>Series K: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Series K notes.</p><p>Series K: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Series K notes.</p><p>Series K: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Series K notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/LOCKED": {
+    "body": "<html lang=\"en\"><head><title>Locked series</title></head><body><h1>Locked series</h1><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Locked series notes.</p><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Locked series notes.</p><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Locked series notes.</p></body></html>",
+    "else": {
+     "headers": [
+      [
+       "Location",
+       "https://login.stlouisfed.org/auth?back=/series/LOCKED"
+      ]
+     ],
+     "status": 302
+    },
+    "need_cookie": "fredsess",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/OLD": {
+    "headers": [
+     [
+      "Location",
+      "/series/K"
+     ]
+    ],
+    "status": 301
+   },
+   "/series/P1": {
+    "body": "<html lang=\"en\"><head><title>Case series P1</title></head><body><h1>Case series P1</h1><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P1 notes.</p><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P1 notes.</p><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P1 notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/P2": {
+    "body": "<html lang=\"en\"><head><title>Case series P2</title></head><body><h1>Case series P2</h1><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P2 notes.</p><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P2 notes.</p><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P2 notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/P3": {
+    "body": "<html lang=\"en\"><head><title>Case series P3</title></head><body><h1>Case series P3</h1><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P3 notes.</p><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P3 notes.</p><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P3 notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/away": {
+    "headers": [
+     [
+      "Location",
+      "https://elsewhere.test/landing"
+     ]
+    ],
+    "status": 302
+   },
+   "/series/broken": {
+    "status": 502
+   },
+   "/series/empty": {
+    "body": "",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/series/fr": {
+    "body": "<html lang=\"fr\"><head><title>Serie francaise</title></head><body><h1>Serie francaise</h1><p>Serie francaise: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Serie francaise notes.</p><p>Serie francaise: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Serie francaise notes.</p><p>Serie francaise: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Serie francaise notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/loop1": {
+    "headers": [
+     [
+      "Location",
+      "/series/loop2"
+     ]
+    ],
+    "status": 301
+   },
+   "/series/loop2": {
+    "headers": [
+     [
+      "Location",
+      "/series/loop3"
+     ]
+    ],
+    "status": 301
+   },
+   "/series/loop3": {
+    "headers": [
+     [
+      "Location",
+      "/series/loop4"
+     ]
+    ],
+    "status": 301
+   },
+   "/series/loop4": {
+    "headers": [
+     [
+      "Location",
+      "/series/loop5"
+     ]
+    ],
+    "status": 301
+   },
+   "/series/loop5": {
+    "body": "<html lang=\"en\"><head><title>Loop end</title></head><body><h1>Loop end</h1><p>Loop end: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Loop end notes.</p><p>Loop end: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Loop end notes.</p><p>Loop end: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Loop end notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/noindex": {
+    "body": "<html lang=\"en\"><head><title>No index series</title><meta name=\"robots\" content=\"noindex\"></head><body><h1>No index series</h1><p>No index series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the No index series notes.</p><p>No index series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the No index series notes.</p><p>No index series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the No index series notes.</p></body></html>",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/series/plain": {
+    "body": "a plain text page",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/series/self": {
+    "headers": [
+     [
+      "Location",
+      "/series/self"
+     ]
+    ],
+    "status": 301
+   }
+  },
+  "login.stlouisfed.org": {
+   "/auth?back=/series/LOCKED": {
+    "headers": [
+     [
+      "Location",
+      "https://fred.stlouisfed.org/series/LOCKED"
+     ],
+     [
+      "Set-Cookie",
+      "fredsess=1; Domain=stlouisfed.org; Path=/"
+     ]
+    ],
+    "status": 302
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "www.sec.gov": {
+   "/Archives/edgar/daily-index/2026/QTR4/form.20261107.idx": {
+    "status": 403
+   },
+   "/Archives/edgar/daily-index/2026/QTR4/form.20261109.idx": {
+    "status": 403
+   },
+   "/Archives/edgar/daily-index/2026/QTR4/form.20261110.idx": {
+    "body": "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\nLast Data Received:    November 10, 2026\n\nForm Type   Company Name                                                  CIK         Date Filed  File Name\n------------------------------------------------------------------------------------------------------------------------\n10-K        ACME CORP                                                     1001        20261110    edgar/data/1001/x.txt\n8-K         BETA HOLDINGS INC                                             1002        20261110    edgar/data/1002/x.txt\nDEF 14A     GAMMA TRUST                                                   1003        20261110    edgar/data/1003/x.txt\n4           GAMMA TRUST                                                   1003        20261110    edgar/data/1003/x.txt\n4           SOMEONE                                                       1005        20261110    edgar/data/1005/x.txt\n10-Q        DISALLOWED CO                                                 999         20261110    edgar/data/999/x.txt\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/Archives/edgar/daily-index/2026/QTR4/form.20261112.idx": {
+    "body": "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\nLast Data Received:    November 10, 2026\n\nForm Type   Company Name                                                  CIK         Date Filed  File Name\n------------------------------------------------------------------------------------------------------------------------\n10-K        MISSING CO                                                    2001        20261110    edgar/data/2001/x.txt\n8-K         GARBLED CO                                                    2002        20261110    edgar/data/2002/x.txt\n10-K        BROKEN DOC CO                                                 2003        20261110    edgar/data/2003/x.txt\n8-K         FINE CO                                                       2004        20261110    edgar/data/2004/x.txt\n8-K         HANGUP CO                                                     2005        20261110    edgar/data/2005/x.txt\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/Archives/edgar/daily-index/2026/QTR4/form.20261113.idx": {
+    "status": 500
+   },
+   "/Archives/edgar/data/1001/000000100126000001/acme-10k.htm": {
+    "body": "<html><head><title>ACME CORP 10-K</title></head><body><p>Table of Contents</p><p>Item 1. Business</p><p>Item 1A. Risk Factors</p><p>Item 7. Management Discussion</p><p>Item 1. Business</p><p>ACME CORP Business paragraph 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Business paragraph 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Business paragraph 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Business paragraph 3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>Item 1A. Risk Factors</p><p>ACME CORP Risk Factors paragraph 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Risk Factors paragraph 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Risk Factors paragraph 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Risk Factors paragraph 3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>Item 7. Management Discussion</p><p>ACME CORP Management Discussion paragraph 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Management Discussion paragraph 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Management Discussion paragraph 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>ACME CORP Management Discussion paragraph 3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/Archives/edgar/data/1002/000000100226000007/beta-8k.htm": {
+    "body": "<html><head><title>BETA HOLDINGS INC 8-K</title></head><body><p>BETA HOLDINGS INC 8-K section 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>BETA HOLDINGS INC 8-K section 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>BETA HOLDINGS INC 8-K section 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/Archives/edgar/data/1003/000000100326000002/proxy.htm": {
+    "b64": "PGh0bWw+PGhlYWQ+PHRpdGxlPkdBTU1BIFRSVVNUIHByb3h5PC90aXRsZT48L2hlYWQ+PGJvZHk+PHA+R0FNTUEgVFJVU1QgcHJveHkgc3RhdGVtZW50IHBhcnQgMCwgdGhlIGJvYXJkknMgk2NhZumUIG5vdGVzOiBUaGUgc2VyaWVzIGlzIHB1Ymxpc2hlZCBieSB0aGUgYWdlbmN5IGV2ZXJ5IG1vbnRoIGFuZCB0aGUgZmlndXJlcyBhcmUgcmV2aXNlZCB3aGVuIG5ldyBzdXJ2ZXkgZGF0YSBhcnJpdmVzLiBBbmFseXN0cyB1c2UgaXQgdG8gZm9sbG93IGNoYW5nZXMgaW4gdGhlIGVjb25vbXkgb3ZlciB0aW1lLCBhbmQgdGhlIG5vdGVzIGJlbG93IGV4cGxhaW4gaG93IHRoZSB2YWx1ZXMgYXJlIG1lYXN1cmVkLCB3aGljaCBzb3VyY2VzIHRoZXkgY29tZSBmcm9tIGFuZCB3aGF0IHRoZSB1bml0cyBtZWFuIGZvciBlYWNoIHJlbGVhc2UuPC9wPjxwPkdBTU1BIFRSVVNUIHByb3h5IHN0YXRlbWVudCBwYXJ0IDEsIHRoZSBib2FyZJJzIJNjYWbplCBub3RlczogVGhlIHNlcmllcyBpcyBwdWJsaXNoZWQgYnkgdGhlIGFnZW5jeSBldmVyeSBtb250aCBhbmQgdGhlIGZpZ3VyZXMgYXJlIHJldmlzZWQgd2hlbiBuZXcgc3VydmV5IGRhdGEgYXJyaXZlcy4gQW5hbHlzdHMgdXNlIGl0IHRvIGZvbGxvdyBjaGFuZ2VzIGluIHRoZSBlY29ub215IG92ZXIgdGltZSwgYW5kIHRoZSBub3RlcyBiZWxvdyBleHBsYWluIGhvdyB0aGUgdmFsdWVzIGFyZSBtZWFzdXJlZCwgd2hpY2ggc291cmNlcyB0aGV5IGNvbWUgZnJvbSBhbmQgd2hhdCB0aGUgdW5pdHMgbWVhbiBmb3IgZWFjaCByZWxlYXNlLjwvcD48cD5HQU1NQSBUUlVTVCBwcm94eSBzdGF0ZW1lbnQgcGFydCAyLCB0aGUgYm9hcmSScyCTY2Fm6ZQgbm90ZXM6IFRoZSBzZXJpZXMgaXMgcHVibGlzaGVkIGJ5IHRoZSBhZ2VuY3kgZXZlcnkgbW9udGggYW5kIHRoZSBmaWd1cmVzIGFyZSByZXZpc2VkIHdoZW4gbmV3IHN1cnZleSBkYXRhIGFycml2ZXMuIEFuYWx5c3RzIHVzZSBpdCB0byBmb2xsb3cgY2hhbmdlcyBpbiB0aGUgZWNvbm9teSBvdmVyIHRpbWUsIGFuZCB0aGUgbm90ZXMgYmVsb3cgZXhwbGFpbiBob3cgdGhlIHZhbHVlcyBhcmUgbWVhc3VyZWQsIHdoaWNoIHNvdXJjZXMgdGhleSBjb21lIGZyb20gYW5kIHdoYXQgdGhlIHVuaXRzIG1lYW4gZm9yIGVhY2ggcmVsZWFzZS48L3A+PC9ib2R5PjwvaHRtbD4=",
+    "status": 200,
+    "type": "text/html; charset=windows-1252"
+   },
+   "/Archives/edgar/data/2003/000000200326000001/broken.htm": {
+    "status": 500
+   },
+   "/Archives/edgar/data/2004/000000200426000001/fine-8k.htm": {
+    "body": "<html><head><title>FINE CO 8-K</title></head><body><p>FINE CO 8-K section 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>FINE CO 8-K section 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>FINE CO 8-K section 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nDisallow: /Archives/edgar/data/999/\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  }
+ },
+ "runs": {
+  "edgar_errors": {
+   "args": [
+    "edgar",
+    "--since",
+    "2026-11-12",
+    "--until",
+    "2026-11-12",
+    "--per-second",
+    "50"
+   ]
+  },
+  "edgar_index_fail": {
+   "args": [
+    "edgar",
+    "--since",
+    "2026-11-12",
+    "--until",
+    "2026-11-13",
+    "--per-second",
+    "50"
+   ]
+  },
+  "edgar_none": {
+   "args": [
+    "edgar",
+    "--since",
+    "2026-11-14",
+    "--until",
+    "2026-11-13",
+    "--per-second",
+    "50"
+   ]
+  },
+  "edgar_ok": {
+   "args": [
+    "edgar",
+    "--since",
+    "2026-11-07",
+    "--until",
+    "2026-11-10",
+    "--per-second",
+    "50"
+   ]
+  },
+  "fred_cases": {
+   "args": [
+    "fred"
+   ],
+   "urls": [
+    "https://fred.stlouisfed.org/series/P1",
+    "https://fred.stlouisfed.org/series/missing",
+    "https://fred.stlouisfed.org/private/x",
+    "https://down.stlouisfed.org/series/X",
+    "https://fred.stlouisfed.org/series/noindex",
+    "https://fred.stlouisfed.org/series/fr",
+    "https://busy.stlouisfed.org/a",
+    "https://fred.stlouisfed.org/series/plain",
+    "not a url",
+    "https://fred.stlouisfed.org/series/away",
+    "https://busy.stlouisfed.org/b",
+    "https://busy.stlouisfed.org/c",
+    "https://fred.stlouisfed.org/series/LOCKED",
+    "https://fred.stlouisfed.org/series/loop1",
+    "https://fred.stlouisfed.org/series/self",
+    "https://fred.stlouisfed.org/series/empty",
+    "https://fred.stlouisfed.org/series/broken",
+    "https://down.stlouisfed.org/series/Y",
+    "https://fred.stlouisfed.org/series/P2",
+    "https://fred.stlouisfed.org/series/P3",
+    "https://fred.stlouisfed.org/series/P1#notes"
+   ]
+  },
+  "fred_exists": {
+   "args": [
+    "fred"
+   ],
+   "exists": true,
+   "urls": [
+    "https://fred.stlouisfed.org/series/A"
+   ]
+  },
+  "fred_ok": {
+   "args": [
+    "fred",
+    "--run",
+    "fred-test"
+   ],
+   "urls": [
+    "https://fred.stlouisfed.org/series/A",
+    "https://fred.stlouisfed.org/series/B",
+    "https://fred.stlouisfed.org/series/C",
+    "https://fred.stlouisfed.org/data/GDP",
+    "https://fred.stlouisfed.org/series/A?utm_source=feed",
+    "https://fred.stlouisfed.org/series/OLD",
+    "https://fred.stlouisfed.org/series/D",
+    "https://fred.stlouisfed.org/series/E",
+    "https://fred.stlouisfed.org/series/F",
+    "https://fred.stlouisfed.org/series/G",
+    "https://fred.stlouisfed.org/series/H",
+    "https://fred.stlouisfed.org/series/I",
+    "https://fred.stlouisfed.org/series/J",
+    "  https://fred.stlouisfed.org/series/B  "
+   ]
+  }
+ },
+ "set": {
+  "sites": [
+   {
+    "host": "fred.stlouisfed.org",
+    "rule": "bulk"
+   },
+   {
+    "host": "sec.gov",
+    "rule": "bulk"
+   }
+  ],
+  "undated": "article"
+ }
+}

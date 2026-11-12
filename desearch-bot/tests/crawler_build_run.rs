@@ -90,7 +90,7 @@ fn a_build_keeps_record_order_and_python_counts() {
         skip,
         drop_mirrors: true,
         python: "python3".into(),
-        worker: stub,
+        worker: Some(stub),
         subnet22: dir.clone(),
         workers: 3,
         worker_memory_mb: 0,

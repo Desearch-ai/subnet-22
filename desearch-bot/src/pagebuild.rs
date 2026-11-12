@@ -20,6 +20,8 @@ use crate::setrule::{self, SetRule};
 use crate::uploads::{Batches, Page, Row};
 
 pub const SOURCE: &str = "crawl";
+/// The extraction worker this binary was built with, run with `python -c` when no script is named.
+pub const WORKER: &str = include_str!("../worker/extract_worker.py");
 
 pub struct Options {
     pub records: Vec<PathBuf>,
@@ -30,7 +32,8 @@ pub struct Options {
     pub skip: HashSet<String>,
     pub drop_mirrors: bool,
     pub python: String,
-    pub worker: PathBuf,
+    /// The worker script; none runs the built-in `WORKER`.
+    pub worker: Option<PathBuf>,
     pub subnet22: PathBuf,
     pub workers: usize,
     pub worker_memory_mb: u64,
@@ -113,7 +116,11 @@ struct Worker {
 impl Worker {
     fn start(o: &Options) -> Result<Self> {
         let mut cmd = Command::new(&o.python);
-        cmd.arg(&o.worker).arg("--subnet22").arg(&o.subnet22).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        match &o.worker {
+            Some(script) => cmd.arg(script),
+            None => cmd.arg("-c").arg(WORKER),
+        };
+        cmd.arg("--subnet22").arg(&o.subnet22).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         if o.worker_memory_mb > 0 {
             let bytes = o.worker_memory_mb << 20;
             use std::os::unix::process::CommandExt;
@@ -127,7 +134,8 @@ impl Worker {
                 });
             }
         }
-        let mut child = cmd.spawn().with_context(|| format!("starting {} {}", o.python, o.worker.display()))?;
+        let script = o.worker.as_ref().map_or("its built-in worker".to_string(), |w| w.display().to_string());
+        let mut child = cmd.spawn().with_context(|| format!("starting {} {script}", o.python))?;
         let stdin = BufWriter::new(child.stdin.take().expect("piped stdin"));
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
         Ok(Self { child, stdin, stdout })

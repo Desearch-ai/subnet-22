@@ -58,6 +58,128 @@ enum Command {
     CrawlSites(CrawlSitesArgs),
     /// Read each host's robots.txt and sitemaps and say whether the bot can make miner tasks from them, as JSON lines.
     SitemapCheck(SitemapCheckArgs),
+    /// Fetch a source again into a finished run folder for the bulk refresh runner, as `python -m crawler refresh` does.
+    #[command(infer_long_args = true)]
+    Refresh(RefreshArgs),
+}
+
+#[derive(clap::Args)]
+struct RefreshArgs {
+    #[command(subcommand)]
+    source: RefreshSource,
+}
+
+#[derive(Subcommand)]
+enum RefreshSource {
+    /// Filings filed in a date range, from SEC's daily indexes.
+    #[command(infer_long_args = true)]
+    Edgar(RefreshEdgarArgs),
+    /// The admitted FRED series pages.
+    #[command(infer_long_args = true)]
+    Fred(RefreshFredArgs),
+}
+
+#[derive(clap::Args)]
+struct RefreshEdgarArgs {
+    #[arg(long, value_parser = desearch_bot::refresh::iso_date)]
+    since: chrono::NaiveDate,
+    #[arg(long, value_parser = desearch_bot::refresh::iso_date)]
+    until: chrono::NaiveDate,
+    /// SEC requests a second, all SEC jobs on this IP together under 10.
+    #[arg(long, default_value = "8", value_parser = desearch_bot::refresh::per_second)]
+    per_second: f64,
+    #[command(flatten)]
+    target: RefreshTargetArgs,
+}
+
+#[derive(clap::Args)]
+struct RefreshFredArgs {
+    /// One URL per line, without the held daily price series; `~/crawl/fred/refresh-urls.txt` by default.
+    #[arg(long)]
+    urls: Option<PathBuf>,
+    #[command(flatten)]
+    target: RefreshTargetArgs,
+}
+
+#[derive(clap::Args)]
+struct RefreshTargetArgs {
+    /// A new run folder.
+    #[arg(long)]
+    out: PathBuf,
+    /// The run's name in its row ids; the folder name by default.
+    #[arg(long)]
+    run: Option<String>,
+    /// `~/crawl/v1-set-current.json.gz` by default.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// A subnet-22 checkout with `desearch/`, `~/subnet-22` by default.
+    #[arg(long)]
+    subnet22: Option<PathBuf>,
+    /// The Python the extraction workers run with.
+    #[arg(long, default_value = "python3")]
+    python: String,
+    /// The extraction worker script; the one built into this binary by default.
+    #[arg(long)]
+    worker: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
+    /// Address-space cap for each worker, in MB; 0 sets none.
+    #[arg(long, default_value_t = 0)]
+    worker_memory_mb: u64,
+    /// Tests only: every name resolves to this address, never the public resolver.
+    #[arg(long, hide = true)]
+    test_resolve_all: Option<std::net::SocketAddr>,
+    /// Tests only: a PEM certificate to trust beside the public roots.
+    #[arg(long, hide = true)]
+    test_ca_cert: Option<PathBuf>,
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(std::env::home_dir).unwrap_or_default()
+}
+
+fn refresh(args: RefreshArgs) -> Result<()> {
+    use desearch_bot::refresh::{self, RefreshFailed, Target};
+    use desearch_bot::sitecrawl::fetch::Connect;
+    let t = match &args.source {
+        RefreshSource::Edgar(a) => &a.target,
+        RefreshSource::Fred(a) => &a.target,
+    };
+    let mut connect = Connect { resolve_all: t.test_resolve_all, root_certificate: None };
+    if let Some(path) = &t.test_ca_cert {
+        connect = connect.with_certificate_file(path)?;
+    }
+    let target = Target {
+        out: t.out.clone(),
+        run: t.run.clone().filter(|r| !r.is_empty()).unwrap_or_else(|| refresh::py_name(&t.out)),
+        set: t.set.clone().unwrap_or_else(|| home().join("crawl/v1-set-current.json.gz")),
+        subnet22: t.subnet22.clone().unwrap_or_else(|| home().join("subnet-22")),
+        python: t.python.clone(),
+        worker: t.worker.clone(),
+        workers: t.workers,
+        worker_memory_mb: t.worker_memory_mb,
+        connect,
+    };
+    let done = match &args.source {
+        RefreshSource::Edgar(a) => refresh::refresh_edgar(a.since, a.until, &target, refresh::SEC_AGENT, a.per_second),
+        RefreshSource::Fred(a) => {
+            let urls = a.urls.clone().unwrap_or_else(|| home().join("crawl/fred/refresh-urls.txt"));
+            refresh::read_lines(&urls).and_then(|urls| refresh::refresh_fred(&urls, &target))
+        }
+    };
+    match done {
+        Ok(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        Err(e) => match e.downcast_ref::<RefreshFailed>() {
+            Some(why) => {
+                println!("{}", refresh::failed_line(why));
+                std::process::exit(1)
+            }
+            None => Err(e),
+        },
+    }
 }
 
 #[derive(clap::Args)]
@@ -210,7 +332,7 @@ fn build_run(args: BuildArgs) -> Result<()> {
         skip,
         drop_mirrors: args.drop_mirrors,
         python: args.python,
-        worker,
+        worker: Some(worker),
         subnet22: args.subnet22,
         workers: args.workers,
         worker_memory_mb: args.worker_memory_mb,
@@ -432,6 +554,7 @@ struct RunArgs {
 
 fn main() -> Result<()> {
     let args = match Cli::parse().command {
+        Command::Refresh(args) => return refresh(args),
         Command::Run(args) => *args,
         Command::RemoveEscaped(args) => return remove_escaped(args),
         Command::RestoreEscaped(args) => return restore_escaped(args),

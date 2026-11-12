@@ -117,7 +117,7 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    fn admit(&self, url: &str) -> bool {
+    pub fn admit(&self, url: &str) -> bool {
         self.set.as_ref().is_none_or(|set| set.may_admit(url))
     }
 
@@ -401,7 +401,7 @@ impl Crawl<'_> {
 }
 
 /// Every future to its end, or the first error, which drops the rest as Python's `gather` leaves them.
-async fn try_join_all<F: Future<Output = Result<(), Crash>>>(futures: Vec<F>) -> Result<(), Crash> {
+pub(crate) async fn try_join_all<F: Future<Output = Result<(), Crash>>>(futures: Vec<F>) -> Result<(), Crash> {
     let mut futures: Vec<Option<Pin<Box<F>>>> = futures.into_iter().map(|f| Some(Box::pin(f))).collect();
     std::future::poll_fn(|cx| {
         let mut pending = false;

@@ -1,9 +1,11 @@
-//! Site crawls from a home page by links, the Python crawler's `site` command: robots.txt and each host's pace, the record files it writes.
+//! The Python crawler's fetches in Rust: site crawls by links, URL lists and EDGAR filings, under robots.txt and each host's pace, into its record files.
 
 pub mod cookies;
+pub mod edgar;
 pub mod fetch;
 pub mod hosts;
 pub mod links;
+pub mod lists;
 pub mod robots;
 pub mod run;
 pub mod scope;

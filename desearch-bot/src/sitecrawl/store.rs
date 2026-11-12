@@ -33,8 +33,13 @@ pub fn counts_json(counts: &IndexMap<String, i64>) -> String {
 
 /// One record line as `json.dumps(record(r, html, source), ensure_ascii=False)` writes it.
 pub fn record_line(r: &Response, html: &str, source: &str) -> String {
+    record_line_with(r, html, source, "{}")
+}
+
+/// A record line whose `meta` is the JSON text given, as Python writes it.
+pub fn record_line_with(r: &Response, html: &str, source: &str, meta: &str) -> String {
     format!(
-        "{{\"url\": {}, \"status\": {}, \"fetched_at\": {}, \"content_type\": {}, \"source\": {}, \"html\": {}, \"meta\": {{}}}}",
+        "{{\"url\": {}, \"status\": {}, \"fetched_at\": {}, \"content_type\": {}, \"source\": {}, \"html\": {}, \"meta\": {meta}}}",
         json_string(&r.url),
         r.status,
         json_string(&r.fetched_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
@@ -42,6 +47,19 @@ pub fn record_line(r: &Response, html: &str, source: &str) -> String {
         json_string(source),
         json_string(html),
     )
+}
+
+/// A JSON value as `json.dumps(value, ensure_ascii=False)` writes it, for the strings, numbers and nesting JSON reads give.
+pub fn py_json(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.into(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => json_string(s),
+        Value::Array(items) => format!("[{}]", items.iter().map(py_json).collect::<Vec<_>>().join(", ")),
+        Value::Object(map) => format!("{{{}}}", map.iter().map(|(k, v)| format!("{}: {}", json_string(k), py_json(v))).collect::<Vec<_>>().join(", ")),
+    }
 }
 
 impl Writer {
