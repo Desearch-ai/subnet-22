@@ -8,7 +8,7 @@ use desearch::time::now;
 use crate::chain::Chain;
 use crate::manifest::{local_block_hash, seed_from_hash, REVEAL_AFTER_BLOCKS};
 
-pub const BLOCK_SECONDS: f64 = 12.0;
+pub use desearch::chain::BLOCK_SECONDS;
 
 pub enum Seeds {
     /// Blocks counted on the clock from `genesis`, for tests and the devnet.
