@@ -6,10 +6,10 @@
   "wikipedia-000001.parquet"
  ],
  "removed": null,
- "rows": 51,
+ "rows": 52,
  "counts": {
   "other_namespace": 1,
-  "pages": 51,
+  "pages": 52,
   "disambiguation": 1,
   "deleted": 1,
   "older_copy": 1,

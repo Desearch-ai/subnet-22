@@ -7,6 +7,8 @@ use std::borrow::Cow;
 pub struct Tag {
     pub name: String,
     pub attrs: Vec<(String, String)>,
+    /// The byte just past the tag's `>`.
+    pub end: usize,
 }
 
 impl Tag {
@@ -105,7 +107,7 @@ pub fn start_tags(doc: &str) -> Vec<Tag> {
         }
         let raw = matches!(name.as_str(), "script" | "style");
         let close = format!("</{name}");
-        tags.push(Tag { name, attrs });
+        tags.push(Tag { name, attrs, end: k });
         i = if raw { find_ci(b, close.as_bytes(), k).unwrap_or(b.len()) } else { k };
     }
     tags
@@ -153,6 +155,32 @@ pub fn decode_entities(value: &str) -> Cow<'_, str> {
         }
     }
     out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// `inner` as lxml writes it back out: an empty `<li>` loses its `</li>`, so what follows it is the item's on the next
+/// parse. `tags` are `start_tags` of the document `inner` is cut from, `at` bytes in.
+pub fn as_lxml_writes<'a>(inner: &'a str, tags: &[Tag], at: usize) -> Cow<'a, str> {
+    let cuts: Vec<(usize, usize)> = tags
+        .iter()
+        .filter(|t| t.name == "li" && t.end >= at && t.end <= at + inner.len())
+        .filter_map(|t| {
+            let rest = &inner.as_bytes()[t.end - at..];
+            let close = rest.get(..4).filter(|b| b.eq_ignore_ascii_case(b"</li"))?;
+            let spaces = rest[close.len()..].iter().take_while(|&&b| is_space(b)).count();
+            (rest.get(close.len() + spaces) == Some(&b'>')).then_some((t.end - at, close.len() + spaces + 1))
+        })
+        .collect();
+    if cuts.is_empty() {
+        return Cow::Borrowed(inner);
+    }
+    let mut out = String::with_capacity(inner.len());
+    let mut copied = 0;
+    for (start, len) in cuts {
+        out.push_str(&inner[copied..start]);
+        copied = start + len;
+    }
+    out.push_str(&inner[copied..]);
     Cow::Owned(out)
 }
 
@@ -252,6 +280,15 @@ mod tests {
     #[test]
     fn entities() {
         assert_eq!(decode_entities("a &amp; b &#39;c&#x27; &bogus; &"), "a & b 'c' &bogus; &");
+    }
+
+    #[test]
+    fn empty_items_lose_their_end_tag() {
+        let doc = "<body><ol><li class=\"mw-empty-elt\"></li><li value=\"3\"></LI >\n<dl><dd>t</dd></dl><li> </li><li>x</li></ol></body>";
+        let tags = start_tags(doc);
+        let inner = body_inner(&format!("<html><head></head>{doc}</html>")).map(str::to_string).unwrap();
+        let at = doc.find(&inner).unwrap();
+        assert_eq!(as_lxml_writes(&inner, &tags, at), "<ol><li class=\"mw-empty-elt\"><li value=\"3\">\n<dl><dd>t</dd></dl><li> </li><li>x</li></ol>");
     }
 
     #[test]

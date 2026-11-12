@@ -334,6 +334,31 @@
  },
  {
   "article": {
+   "name": "Numbered law",
+   "identifier": 1013,
+   "url": "https://en.wikipedia.org/wiki/Numbered_law",
+   "namespace": {
+    "identifier": 0
+   },
+   "version": {
+    "identifier": 5013
+   },
+   "is_part_of": {
+    "identifier": "enwiki"
+   },
+   "in_language": {
+    "identifier": "en"
+   },
+   "date_modified": "2026-10-30T12:00:00Z",
+   "article_body": {
+    "html": "<!DOCTYPE html>\n<html prefix=\"dc: http://purl.org/dc/terms/\" about=\"https://en.wikipedia.org/wiki/Special:Redirect/revision/1\"><head prefix=\"mwr: https://en.wikipedia.org/wiki/Special:Redirect/\"><meta charset=\"utf-8\"/><title>T</title></head><body id=\"mwAA\" lang=\"en\" class=\"mw-content-ltr sitedir-ltr ltr mw-body-content parsoid-body mediawiki mw-parser-output\" dir=\"ltr\"><section><ol id=\"o1\"><li class=\"mw-empty-elt\" id=\"e1\"></li><li value=\"34\" id=\"e2\"></li>\n<dl id=\"d1\"><dd id=\"d2\">(a) The owner of copyright may transfer the economic rights in whole or in part.</dd></dl><li value=\"35\">When the registered copyright is transferred, the transferee may apply.</li></ol></section></body></html>"
+   }
+  },
+  "frame": "<!DOCTYPE html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"UTF-8\"><title>Numbered law - Wikipedia</title><meta name=\"generator\" content=\"MediaWiki\"><meta name=\"robots\" content=\"max-image-preview:standard\"><meta property=\"og:title\" content=\"Numbered law - Wikipedia\"><meta property=\"og:type\" content=\"website\"><link rel=\"canonical\" href=\"https://en.wikipedia.org/wiki/Numbered_law\"><script type=\"application/ld+json\">{\"@context\": \"https://schema.org\", \"@type\": \"Article\", \"name\": \"Numbered law\", \"url\": \"https://en.wikipedia.org/wiki/Numbered_law\", \"author\": {\"@type\": \"Organization\", \"name\": \"Contributors to Wikimedia projects\"}, \"publisher\": {\"@type\": \"Organization\", \"name\": \"Wikimedia Foundation, Inc.\", \"logo\": {\"@type\": \"ImageObject\", \"url\": \"https://www.wikimedia.org/static/images/wmf-hor-googpub.png\"}}, \"dateModified\": \"2026-10-30T12:00:00Z\"}</script></head><body><div id=\"mw-content-text\" class=\"mw-body-content\"><div class=\"mw-content-ltr mw-parser-output\" lang=\"en\" dir=\"ltr\">\u0000INNER\u0000</div></div><div id=\"catlinks\"><div id=\"mw-normal-catlinks\" class=\"mw-normal-catlinks\"><ul></ul></div></div></body></html>",
+  "disambiguation": false
+ },
+ {
+  "article": {
    "name": "Airplane crashes in Nigeria",
    "identifier": 27659,
    "abstract": "Saturday, December 10, 2005 A DC-9, operated by privately owned, Sosoliso Airlines, crashed in Port Harcourt, Nigeria, reportedly killing at least 103 people. Seven people are reported to have survived the crash. Landing during an electrical storm, the plane overshot the runway and burst into flames. The aircraft broke into three main pieces, scattering passengers and wreckage. Some 75 children returning home for the holidays are among the victims.",

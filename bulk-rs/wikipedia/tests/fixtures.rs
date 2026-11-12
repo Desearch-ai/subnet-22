@@ -34,7 +34,9 @@ fn frames_match_page_html() {
         assert_eq!(without_inner(&page), case["frame"].as_str().unwrap(), "{}", article["name"]);
         assert_eq!(disambiguation, case["disambiguation"].as_bool().unwrap(), "{}", article["name"]);
         let body = article["article_body"]["html"].as_str().unwrap();
-        assert!(page.contains(bulk_wikipedia::html::body_inner(body).unwrap()));
+        let inner = bulk_wikipedia::html::body_inner(body).unwrap();
+        let at = inner.as_ptr() as usize - body.as_ptr() as usize;
+        assert!(page.contains(&*bulk_wikipedia::html::as_lxml_writes(inner, &bulk_wikipedia::html::start_tags(body), at)));
     }
 }
 

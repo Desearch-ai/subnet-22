@@ -155,6 +155,7 @@ pub fn frame(article: &Value, hidden: &HashSet<String>) -> Result<Option<(String
         return Ok(None);
     };
     let tags = html::start_tags(body_html);
+    let inner = html::as_lxml_writes(inner, &tags, inner.as_ptr() as usize - body_html.as_ptr() as usize);
     let disambiguation = tags.iter().any(|t| t.name == "meta" && t.get("property") == Some(DISAMBIGUATION_MARK));
     let mut categories: Vec<String> = Vec::new();
     for tag in &tags {
