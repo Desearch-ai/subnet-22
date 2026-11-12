@@ -1,0 +1,524 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div align="center" dir="auto">
+  <a href="https://www.synthdata.co/" rel="nofollow">
+    <img alt="Synth banner logo" src="https://github.com/synthdataco/synth-subnet/raw/main/docs/images/logo.png" height="134" style="max-width: 100%; height: auto; max-height: 134px;">
+  </a>
+</div>
+<div class="markdown-heading" dir="auto"><h1 align="center" class="heading-element" dir="auto">
+    Synth Subnet
+</h1><a id="user-content-----synth-subnet" class="anchor" aria-label="Permalink: 
+    Synth Subnet
+" href="#----synth-subnet"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div align="center" dir="auto">
+    <a href="https://www.synthdata.co" rel="nofollow">
+        <b>Website</b>
+    </a>
+·
+    <a href="https://github.com/synthdataco/synth-subnet/blob/main/Synth%20Whitepaper%20v1.pdf">
+        <b>Whitepaper</b>
+    </a>
+·
+    <a href="https://discord.gg/gnt8sFMdg6" rel="nofollow">
+        <b>Discord</b>
+    </a>
+·
+    <a href="https://api.synthdata.co/docs" rel="nofollow">
+        <b>API Documentation</b>
+    </a>
+</div>
+<hr>
+<div align="center" dir="auto">
+<p dir="auto"><a href="https://github.com/synthdataco/synth-subnet/blob/main/LICENSE"><img src="https://camo.githubusercontent.com/023f867a71eef8ee25c57982af2d21cb99b3cd63e3d9a1a343a2769a2e05dc1e/68747470733a2f2f696d672e736869656c64732e696f2f6769746875622f6c6963656e73652f73796e746864617461636f2f73796e74682d7375626e6574" alt="License: MIT" data-canonical-src="https://img.shields.io/github/license/synthdataco/synth-subnet" style="max-width: 100%;"></a></p>
+</div>
+<hr>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Table of contents</h3><a id="user-content-table-of-contents" class="anchor" aria-label="Permalink: Table of contents" href="#table-of-contents"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<ul dir="auto">
+<li><a href="#-1-overview">1. Overview</a>
+<ul dir="auto">
+<li><a href="#11-introduction">1.1. Introduction</a></li>
+<li><a href="#12-task-presented-to-the-miners">1.2. Task Presented to the Miners</a></li>
+<li><a href="#13-validators-scoring-methodology">1.3. Validator's Scoring Methodology</a></li>
+<li><a href="#14-calculation-of-leaderboard-score">1.4. Calculation of Leaderboard Score</a></li>
+</ul>
+</li>
+<li><a href="#-2-usage">2. Usage</a>
+<ul dir="auto">
+<li><a href="#quick-start">Quick Start</a></li>
+<li><a href="#21-miners">2.1. Miners</a>
+<ul dir="auto">
+<li><a href="#211-tutorial">2.1.1. Tutorial</a></li>
+<li><a href="#212-reference">2.1.2. Reference</a></li>
+<li><a href="#213-automated-deployment">2.1.3. Automated Deployment</a></li>
+<li><a href="#214-backtesting">2.1.4. Backtesting</a></li>
+</ul>
+</li>
+<li><a href="#22-validators">2.2. Validators</a></li>
+<li><a href="#23-develop">2.3. Develop</a></li>
+</ul>
+</li>
+<li><a href="#-3-license">3. License</a></li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">🔭 1. Overview</h2><a id="user-content--1-overview" class="anchor" aria-label="Permalink: 🔭 1. Overview" href="#-1-overview"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<blockquote>
+<p dir="auto"><strong>TL;DR</strong> — Miners submit ensembles of simulated price paths for a basket of crypto, equity, and commodity assets across two timeframes (<code>24h</code> and <code>1h</code>). Validators score each ensemble with CRPS on price changes over multiple time increments (plus realized volatility for Crypto 1h), take a rolling weighted average within a per-timeframe window (10 days for <code>24h</code>, 5 days for <code>1h</code>), and allocate emissions via softmax — equally split between 3 competitions: Crypto 1h, Crypto 24h, Commodities/Equities 24h. Lower CRPS → more emissions.</p>
+</blockquote>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">1.1. Introduction</h3><a id="user-content-11-introduction" class="anchor" aria-label="Permalink: 1.1. Introduction" href="#11-introduction"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The Synth Subnet leverages Bittensor’s decentralized intelligence network to create the world's most powerful synthetic data for price forecasting. Unlike traditional price prediction systems that focus on single-point forecasts, Synth specializes in capturing the full distribution of possible price movements and their associated probabilities, to build the most accurate synthetic data in the world.</p>
+<p dir="auto">Miners in the network are tasked with generating multiple simulated price paths, which must accurately reflect real-world price dynamics including volatility clustering and fat-tailed distributions. Their predictions are evaluated using the Continuous Ranked Probability Score (CRPS), which measures both the calibration and sharpness of their forecasts against actual price movements.</p>
+<p dir="auto">Validators score miners on short-term and long-term prediction accuracy, averaging each miner's per-request scores over a short rolling window so that recent performance dominates. Daily emissions are allocated based on miners’ relative performance, creating a competitive environment that rewards consistent accuracy.</p>
+<div align="center" dir="auto">
+    <a target="_blank" rel="noopener noreferrer" href="docs/images/synth_diagram@1920x1080.png"><img alt="Overview diagram of the synth subnet" src="docs/images/synth_diagram@1920x1080.png" style="max-width: 100%;"></a>
+</div>
+<p dir="auto">Figure 1.1: Overview of the synth subnet.</p>
+<p dir="auto">The Synth Subnet aims to become a key source of synthetic price data for AI Agents and the go-to resource for options trading and portfolio management, offering valuable insights into price probability distributions.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">1.2. Task Presented to the Miners</h3><a id="user-content-12-task-presented-to-the-miners" class="anchor" aria-label="Permalink: 1.2. Task Presented to the Miners" href="#12-task-presented-to-the-miners"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<section class="js-render-needs-enrichment render-needs-enrichment position-relative" data-identity="75880f31-6986-4ddf-adb7-ac5d5cd7e775" data-host="https://viewscreen.githubusercontent.com" data-src="https://viewscreen.githubusercontent.com/markdown/mermaid?docs_host=https%3A%2F%2Fdocs.github.com" data-type="mermaid" aria-label="mermaid rendered output container">
+  <div class="js-render-enrichment-target" data-json="{&quot;data&quot;:&quot;sequenceDiagram\n    participant Miner\n    participant Validator\n    participant Storage\n\n    loop Every Hour\n        Validator-&gt;&gt;Miner: Request with input prompts\n        note left of Validator: asset='BTC', start_time='2025-02-10T14:59:00', time_increment=300, etc.\n\n        Miner--&gt;&gt;Validator: Prediction results\n        note right of Miner: result: price prediction &lt;br/&gt; [&lt;start_time&gt;, &lt;time_increment&gt;, [97352.605, ...], [97361.753, ...], ...]\n\n        Validator-&gt;&gt;Validator: Run \&quot;prediction results\&quot; validation function\n\n        alt Validation error\n            Validator-&gt;&gt;Storage: Save error\n        else No errors\n            Validator-&gt;&gt;Storage: Save prediction results\n        end\n    end\n&quot;}" data-plain="sequenceDiagram
+    participant Miner
+    participant Validator
+    participant Storage
+
+    loop Every Hour
+        Validator-&gt;&gt;Miner: Request with input prompts
+        note left of Validator: asset='BTC', start_time='2025-02-10T14:59:00', time_increment=300, etc.
+
+        Miner--&gt;&gt;Validator: Prediction results
+        note right of Miner: result: price prediction &lt;br/&gt; [&lt;start_time&gt;, &lt;time_increment&gt;, [97352.605, ...], [97361.753, ...], ...]
+
+        Validator-&gt;&gt;Validator: Run &quot;prediction results&quot; validation function
+
+        alt Validation error
+            Validator-&gt;&gt;Storage: Save error
+        else No errors
+            Validator-&gt;&gt;Storage: Save prediction results
+        end
+    end
+" dir="auto">
+    <div class="render-plaintext-hidden" dir="auto">
+      <pre lang="mermaid" aria-label="Raw mermaid code">sequenceDiagram
+    participant Miner
+    participant Validator
+    participant Storage
+
+    loop Every Hour
+        Validator-&gt;&gt;Miner: Request with input prompts
+        note left of Validator: asset='BTC', start_time='2025-02-10T14:59:00', time_increment=300, etc.
+
+        Miner--&gt;&gt;Validator: Prediction results
+        note right of Miner: result: price prediction &lt;br/&gt; [&lt;start_time&gt;, &lt;time_increment&gt;, [97352.605, ...], [97361.753, ...], ...]
+
+        Validator-&gt;&gt;Validator: Run "prediction results" validation function
+
+        alt Validation error
+            Validator-&gt;&gt;Storage: Save error
+        else No errors
+            Validator-&gt;&gt;Storage: Save prediction results
+        end
+    end
+</pre>
+    </div>
+  </div>
+  <span class="js-render-enrichment-loader d-flex flex-justify-center flex-items-center width-full" style="min-height:100px" role="presentation">
+    <span data-view-component="true">
+  <svg style="box-sizing: content-box; color: var(--color-icon-primary);" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" data-view-component="true" class="octospinner mx-auto tmp-mx-auto anim-rotate">
+    <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle>
+    <path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path>
+</svg>    <span class="sr-only">Loading</span>
+</span>
+  </span>
+</section>
+
+<p dir="auto">Miners are tasked with providing probabilistic forecasts of an asset's future price movements. Specifically, each miner is required to generate multiple simulated price paths for an asset, from the current time over specified time increments and time horizon. The network currently runs two competitions distinguished by their forecast timeframe — <code>24h</code> and <code>1h</code> HFT — and the supported assets on each are listed in the parameter sections below.</p>
+<p dir="auto">The asset set has grown over time:</p>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Launch</td>
+<td>BTC only on the <code>24h</code> competition. 100 simulated paths, 5-minute increments.</td>
+</tr>
+<tr>
+<td>2025-11-13</td>
+<td>Bumped to 1000 paths; added ETH, SOL, XAU to the <code>24h</code> competition. Synth begins moving toward HFT.</td>
+</tr>
+<tr>
+<td>2026-01</td>
+<td>Added tokenized equities SPYX, NVDAX, TSLAX, AAPLX, GOOGLX to the <code>24h</code> competition.</td>
+</tr>
+<tr>
+<td>2026-03</td>
+<td>Added XRP, HYPE, WTIOIL to the <code>24h</code> competition; added HYPE to the <code>1h</code> competition.</td>
+</tr>
+<tr>
+<td>2026-06</td>
+<td>Changed the split of the competitions from 2 (1h/24h) to 3 (Crypto 1h, Crypto 24h, Commodities/Equities 24h). Added XRP to the 1h time length, removed XAU from the 1h time length, added SPCX to the 24h time length</td>
+</tr>
+<tr>
+<td>2026-07</td>
+<td>Migrated price feeds off Pyth: BTC/ETH/SOL/XRP to Binance spot, HYPE to Hyperliquid spot, equities/commodities to Hyperliquid perps. Replaced SPYX (tokenized SPY) with SP500 (S&amp;P 500 index) in the Commodities/Equities 24h competition.</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Whereas other subnets ask miners to predict single values for future prices, we’re interested in the miners correctly quantifying uncertainty. We want their price paths to represent their view of the probability distribution of the future price, and we want their paths to encapsulate realistic price dynamics, such as volatility clustering and skewed fat tailed price change distributions. As the network matures, modelling the correlations between asset prices will be essential.</p>
+<p dir="auto">If the miners do a good job, the Synth Subnet will become the world-leading source of realistic synthetic price data for training AI agents. And it will be the go-to location for asking questions on future price probability distributions - a valuable resource for options trading and portfolio management.</p>
+<p dir="auto">The checking prompts sent to the miners will have the format:
+(start_time, asset, time_increment, time_horizon, num_simulations)</p>
+<p dir="auto">The three competitions differ on the parameters below:</p>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Crypto 1h</th>
+<th>Crypto 24h</th>
+<th>Commodities/Equities 24h</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Emissions share</td>
+<td>1/3</td>
+<td>1/3</td>
+<td>1/3</td>
+</tr>
+<tr>
+<td>Cycle period (all assets)</td>
+<td>~15 min</td>
+<td>~15 min</td>
+<td>~32 min</td>
+</tr>
+<tr>
+<td>Start time (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t_0$</math-renderer>)</td>
+<td>+1 min from request</td>
+<td>+1 min from request</td>
+<td>+1 min from request</td>
+</tr>
+<tr>
+<td>Time increment (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\Delta t$</math-renderer>)</td>
+<td>1 min</td>
+<td>5 min</td>
+<td>5 min</td>
+</tr>
+<tr>
+<td>Time horizon (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$T$</math-renderer>)</td>
+<td>1 h</td>
+<td>24 h</td>
+<td>24 h</td>
+</tr>
+<tr>
+<td>Simulations (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$N_{\text{sim}}$</math-renderer>)</td>
+<td>1000</td>
+<td>1000</td>
+<td>1000</td>
+</tr>
+<tr>
+<td>Assets</td>
+<td>BTC, ETH, SOL, XRP, HYPE</td>
+<td>BTC, ETH, SOL, XRP, HYPE</td>
+<td>XAU, SP500, NVDAX, GOOGLX, TSLAX, AAPLX, WTIOIL, SPCX</td>
+</tr>
+<tr>
+<td>Rolling-average window</td>
+<td>5 days</td>
+<td>10 days</td>
+<td>10 days</td>
+</tr>
+<tr>
+<td>Softmax temperature (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\beta$</math-renderer>)</td>
+<td>0.3 (sharper allocation)</td>
+<td>0.15</td>
+<td>0.15</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">The validator requests are sent to miner following this schedule:</p>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Cycle</th>
+<th>Low frequency (LF)</th>
+<th>High frequency (HF)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Assets</td>
+<td>BTC, ETH, SOL, XRP, HYPE, XAU, SP500, NVDAX, GOOGLX, TSLAX, AAPLX, WTIOIL, SPCX</td>
+<td>BTC, ETH, SOL, XRP, HYPE</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Validators cycle through the assets, sending out prediction requests at regular intervals. The miner has until the start time to return (<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$N_{\text{sim}}$</math-renderer>) paths, each containing price predictions at times given by:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+t_i = t_0 + i \times \Delta t, \quad \text{for }, i = 0, 1, 2, \dots, N
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$N = \dfrac{T}{\Delta t}$</math-renderer> is the total number of increments.</li>
+</ul>
+<p dir="auto">We recommend the miner acquires the price of the asset at the start_time from the same feed the validator scores against: Binance spot for BTC/ETH/SOL/XRP, Hyperliquid for everything else (see <code>synth/miner/price_simulation.py</code> for the reference implementation and the asset maps).</p>
+<p dir="auto">If they fail to return predictions by the start_time or the predictions are in the wrong format, the submission is marked invalid and assigned the 90th-percentile score during the per-prompt CRPS transformation (see <a href="#14-calculation-of-leaderboard-score">§1.4</a>).</p>
+<p dir="auto">The assets and their weights for the rolling average are as follows:</p>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Asset</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BTC</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>ETH</td>
+<td>0.7064366394033871</td>
+</tr>
+<tr>
+<td>XAU</td>
+<td>1.7370922597118699</td>
+</tr>
+<tr>
+<td>SOL</td>
+<td>0.6310037175639559</td>
+</tr>
+<tr>
+<td>SP500</td>
+<td>3.437935601155441</td>
+</tr>
+<tr>
+<td>NVDAX</td>
+<td>1.6028217601617174</td>
+</tr>
+<tr>
+<td>TSLAX</td>
+<td>1.6068755936957768</td>
+</tr>
+<tr>
+<td>AAPLX</td>
+<td>2.0916380815843123</td>
+</tr>
+<tr>
+<td>GOOGLX</td>
+<td>1.6827392777257926</td>
+</tr>
+<tr>
+<td>XRP</td>
+<td>0.5658394110809131</td>
+</tr>
+<tr>
+<td>HYPE</td>
+<td>0.4784547133706857</td>
+</tr>
+<tr>
+<td>WTIOIL</td>
+<td>0.8475062847978935</td>
+</tr>
+<tr>
+<td>SPCX</td>
+<td>0.4329342627683478</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">1.3. Validator's Scoring Methodology</h3><a id="user-content-13-validators-scoring-methodology" class="anchor" aria-label="Permalink: 1.3. Validator's Scoring Methodology" href="#13-validators-scoring-methodology"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The role of the validators is, after the time horizon has passed, to judge the accuracy of each miner’s predicted paths compared to how the price moved in reality. The validator evaluates the miners' probabilistic forecasts using the Continuous Ranked Probability Score (CRPS). The CRPS is a proper scoring rule that measures the accuracy of probabilistic forecasts for continuous variables, considering both the calibration and sharpness of the predicted distribution. The lower the CRPS, the better the forecasted distribution predicted the observed value.</p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Application of CRPS to Ensemble Forecasts</h4><a id="user-content-application-of-crps-to-ensemble-forecasts" class="anchor" aria-label="Permalink: Application of CRPS to Ensemble Forecasts" href="#application-of-crps-to-ensemble-forecasts"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">In our setup, miners produce ensemble forecasts by generating a finite number of simulated price paths rather than providing an explicit continuous distribution. The CRPS can be calculated directly from these ensemble forecasts using an empirical formula suitable for finite samples.</p>
+<p dir="auto">For a single observation <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$x$</math-renderer> and an ensemble forecast consisting of <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$N$</math-renderer> members <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$y_1, y_2, \dots, y_N$</math-renderer>, the CRPS is calculated as:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+\text{CRPS} = \frac{1}{N}\sum_{n=1}^N \left| y_n - x \right| - \frac{1}{2N^2} \sum_{n=1}^N \sum_{m=1}^N \left| y_n - y_m \right|
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>The first term <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\dfrac{1}{N}\sum_{n=1}^N \left| y_n - x \right|$</math-renderer> measures the average absolute difference between the ensemble members and the observation <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$x$</math-renderer>.</li>
+<li>The second term <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\dfrac{1}{2N^2} \sum_{n=1}^N \sum_{m=1}^N \left| y_n - y_m \right|$</math-renderer> accounts for the spread within the ensemble, ensuring the score reflects the ensemble's uncertainty.</li>
+</ul>
+<p dir="auto">This formulation allows us to assess the miners' forecasts directly from their simulated paths without the need to construct an explicit probability distribution.</p>
+<p dir="auto">The CRPS values are calculated on the price change in basis points for each interval. This allows the prompt scores to have the same 'units' for all assets, and hence for the smoothed score to be calculated using an EMA over all prompts, irrespective of which asset the prompt corresponds to.</p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Application to Multiple Time Increments</h4><a id="user-content-application-to-multiple-time-increments" class="anchor" aria-label="Permalink: Application to Multiple Time Increments" href="#application-to-multiple-time-increments"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">To comprehensively assess the miners' forecasts, the CRPS is applied to sets of price changes in basis points over different time increments. The exact intervals depend on the prompt type:</p>
+<ul dir="auto">
+<li>
+<strong><code>24h</code> LF prompts</strong>: 5 minutes, 30 minutes, 3 hours, 24 hours.</li>
+<li>
+<strong><code>1h</code> HFT prompts</strong>: 1, 2, 5, 15, 30, and 60 minutes, plus a "gaps from start" series measured at every 5-minute offset between 5 and 60 minutes (i.e. price change from <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t_0$</math-renderer> to <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t_0 + 5\text{min}$</math-renderer>, <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t_0 + 10\text{min}$</math-renderer>, …, <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t_0 + 60\text{min}$</math-renderer>).</li>
+</ul>
+<p dir="auto">For each time increment:</p>
+<ul dir="auto">
+<li><strong>Predicted Price Changes</strong>: The miners' ensemble forecasts are used to compute predicted price changes in basis points over the specified intervals</li>
+<li><strong>Observed Price Changes</strong>: The real asset prices are used to calculate the observed price changes in basis points over the same intervals. The validator scores against 1-minute candle close prices — Binance spot for BTC/ETH/SOL/XRP, Hyperliquid spot for HYPE, Hyperliquid perps for equities/commodities (see the asset maps in <code>synth/validator/price_data_provider.py</code>).</li>
+<li><strong>CRPS Calculation</strong>: The CRPS is calculated for each increment by comparing the ensemble of predicted changes in basis points to the observed price change.</li>
+</ul>
+<p dir="auto">The price score for a miner for a single checking prompt is the sum of these CRPS values over all the time increments. For <code>crypto-1h</code> a volatility term is added on top of it, as described next.</p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Volatility Component (<code>crypto-1h</code> only)</h4><a id="user-content-volatility-component-crypto-1h-only" class="anchor" aria-label="Permalink: Volatility Component (crypto-1h only)" href="#volatility-component-crypto-1h-only"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The <code>crypto-1h</code> score also scores <strong>realized volatility</strong>. The hour is cut into consecutive blocks of three sizes — one 60-minute block, four 15-minute blocks and twelve 5-minute blocks. For every block, the standard deviation of the 1-minute price changes in basis points inside that block is computed for each simulated path and for the realized path, and the CRPS compares the ensemble of simulated block volatilities to the realized one. A block with fewer than two observed 1-minute changes is skipped.</p>
+<p dir="auto">Writing <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$S_{60}$</math-renderer>, <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$S_{15}$</math-renderer> and <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$S_5$</math-renderer> for the sums of those CRPS values over the blocks of each size, the volatility term is the mean, over the three block sizes, of the mean CRPS per block:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+\text{vol CRPS} = \frac{1}{3}\left(\frac{S_{60}}{1} + \frac{S_{15}}{4} + \frac{S_{5}}{12}\right)
+$$</math-renderer></p>
+<p dir="auto">so the total <code>crypto-1h</code> prompt score, with <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\lambda = 5.25$</math-renderer>, is</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+\text{score} = \text{price CRPS} + \lambda \cdot \text{vol CRPS} = \text{price CRPS} + 1.75 , S_{60} + 0.4375 , S_{15} + 0.1458 , S_{5}
+$$</math-renderer></p>
+<p dir="auto">The <code>crypto-24h</code> and <code>com-equ-24h</code> scores have no volatility term.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">1.4. Calculation of Leaderboard Score</h3><a id="user-content-14-calculation-of-leaderboard-score" class="anchor" aria-label="Permalink: 1.4. Calculation of Leaderboard Score" href="#14-calculation-of-leaderboard-score"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<section class="js-render-needs-enrichment render-needs-enrichment position-relative" data-identity="54a1228f-024d-43df-81cc-8c67ee03f53c" data-host="https://viewscreen.githubusercontent.com" data-src="https://viewscreen.githubusercontent.com/markdown/mermaid?docs_host=https%3A%2F%2Fdocs.github.com" data-type="mermaid" aria-label="mermaid rendered output container">
+  <div class="js-render-enrichment-target" data-json="{&quot;data&quot;:&quot;sequenceDiagram\n    participant Validator\n    participant Storage\n    participant PricesProvider as Prices Provider\n    participant Bittensor\n\n    loop Continuously\n        loop 3 Competitions\n            Validator-&gt;&gt;Storage: Get matured predictions (≥24h old)\n            Validator-&gt;&gt;PricesProvider: Get real prices\n            Validator-&gt;&gt;Validator: CRPS sum, cap worst 10% / invalid at 90th pct, subtract best\n            Validator-&gt;&gt;Storage: Save per-request scores\n            Validator-&gt;&gt;Storage: Get scores in the rolling  window\n            Validator-&gt;&gt;Validator: Weighted rolling average → softmax → weighted_score\n            Validator-&gt;&gt;Storage: Save weighted_score\n        end\n        Note over Validator: Combine: w(i) = 1/3·w_1h_crypto(i) + 1/3·w_24h_crypto(i) + 1/3·w_24h_com_equ(i)\n        Validator-&gt;&gt;Bittensor: Send combined weights w(i)\n    end\n&quot;}" data-plain="sequenceDiagram
+    participant Validator
+    participant Storage
+    participant PricesProvider as Prices Provider
+    participant Bittensor
+
+    loop Continuously
+        loop 3 Competitions
+            Validator-&gt;&gt;Storage: Get matured predictions (≥24h old)
+            Validator-&gt;&gt;PricesProvider: Get real prices
+            Validator-&gt;&gt;Validator: CRPS sum, cap worst 10% / invalid at 90th pct, subtract best
+            Validator-&gt;&gt;Storage: Save per-request scores
+            Validator-&gt;&gt;Storage: Get scores in the rolling  window
+            Validator-&gt;&gt;Validator: Weighted rolling average → softmax → weighted_score
+            Validator-&gt;&gt;Storage: Save weighted_score
+        end
+        Note over Validator: Combine: w(i) = 1/3·w_1h_crypto(i) + 1/3·w_24h_crypto(i) + 1/3·w_24h_com_equ(i)
+        Validator-&gt;&gt;Bittensor: Send combined weights w(i)
+    end
+" dir="auto">
+    <div class="render-plaintext-hidden" dir="auto">
+      <pre lang="mermaid" aria-label="Raw mermaid code">sequenceDiagram
+    participant Validator
+    participant Storage
+    participant PricesProvider as Prices Provider
+    participant Bittensor
+
+    loop Continuously
+        loop 3 Competitions
+            Validator-&gt;&gt;Storage: Get matured predictions (≥24h old)
+            Validator-&gt;&gt;PricesProvider: Get real prices
+            Validator-&gt;&gt;Validator: CRPS sum, cap worst 10% / invalid at 90th pct, subtract best
+            Validator-&gt;&gt;Storage: Save per-request scores
+            Validator-&gt;&gt;Storage: Get scores in the rolling  window
+            Validator-&gt;&gt;Validator: Weighted rolling average → softmax → weighted_score
+            Validator-&gt;&gt;Storage: Save weighted_score
+        end
+        Note over Validator: Combine: w(i) = 1/3·w_1h_crypto(i) + 1/3·w_24h_crypto(i) + 1/3·w_24h_com_equ(i)
+        Validator-&gt;&gt;Bittensor: Send combined weights w(i)
+    end
+</pre>
+    </div>
+  </div>
+  <span class="js-render-enrichment-loader d-flex flex-justify-center flex-items-center width-full" style="min-height:100px" role="presentation">
+    <span data-view-component="true">
+  <svg style="box-sizing: content-box; color: var(--color-icon-primary);" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" data-view-component="true" class="octospinner mx-auto tmp-mx-auto anim-rotate">
+    <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle>
+    <path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path>
+</svg>    <span class="sr-only">Loading</span>
+</span>
+  </span>
+</section>
+
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">CRPS Transformation</h4><a id="user-content-crps-transformation" class="anchor" aria-label="Permalink: CRPS Transformation" href="#crps-transformation"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">After calculating the sum of the CRPS values, the validator transforms the resulting scores in the following way:</p>
+<ul dir="auto">
+<li>Compute the 90th percentile of the CRPS sums across miners who submitted valid predictions;</li>
+<li>Cap each submitted CRPS sum at that 90th percentile (so the worst 10% are pulled in to the 90th percentile value);</li>
+<li>For miners that failed to submit predictions in time or in the correct format, assign the 90th percentile score;</li>
+<li>Get the best (=lowest) CRPS sum from the resulting set;</li>
+<li>Subtract that best score from every miner's score, so the best miner ends with a score of 0.</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Rolling Average (Leaderboard Score)</h4><a id="user-content-rolling-average-leaderboard-score" class="anchor" aria-label="Permalink: Rolling Average (Leaderboard Score)" href="#rolling-average-leaderboard-score"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The validator is required to store the historic request scores (as calculated in the previous step) for each miner. After each new request is scored, the validator recalculates the ‘leaderboard score’ for each miner, using a rolling average over their past <strong>per-request</strong> scores within a per-timeframe window, weighted by asset-specific weights. The <code>1h</code> prompts runs ~6× more cycles per day than <code>24h</code>, so it accumulates per-miner samples much faster — hence the shorter window.</p>
+<p dir="auto">This approach emphasizes recent performance while still accounting for historical scores.
+The leaderboard score for miner <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$i$</math-renderer> at time <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t$</math-renderer> is calculated as:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+L_i(t) = \frac{\sum_{j} S_{i,j} w_{k,j}}{\sum_{j} w_{k,j}}
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$S_{i,j}$</math-renderer> is the score of miner <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$i$</math-renderer> at request <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$j$</math-renderer>.</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$w_{k,j}$</math-renderer> is the weight given to asset <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$k$</math-renderer> scored at request <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$j$</math-renderer>.</li>
+<li>The sum runs over all requests <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$j$</math-renderer> such that <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t - t_j \leq T$</math-renderer>, where <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$T$</math-renderer> is the per-timeframe rolling window size.</li>
+</ul>
+<p dir="auto">Thus, highest-ranking miners are those with the lowest calculated scores.</p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Final Emissions</h4><a id="user-content-final-emissions" class="anchor" aria-label="Permalink: Final Emissions" href="#final-emissions"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Once the leaderboard scores have been calculated, the emission allocation for miner <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$i$</math-renderer> is given as:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$$
+A_i(t) = \frac{e^{-\beta \cdot L_i(t)}}{\sum_j e^{-\beta \cdot L_j(t)}} \cdot E(t)
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$L_i(t)$</math-renderer> is in basis points (inherited from the CRPS units in §1.3).</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$\beta$</math-renderer> is a per-competition softmax temperature (see §1.2).</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$E(t)$</math-renderer> is the total emission at time <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="7912801ac351a37a79b3b630951c3fb9">$t$</math-renderer>.</li>
+</ul>
+<p dir="auto">The three competitions are scored independently. Their softmax weights are then each scaled by one third (the emissions split shown in §1.2) and summed for miners that placed on multiple competitions.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">🪄 2. Usage</h2><a id="user-content--2-usage" class="anchor" aria-label="Permalink: 🪄 2. Usage" href="#-2-usage"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Quick Start</h3><a id="user-content-quick-start" class="anchor" aria-label="Permalink: Quick Start" href="#quick-start"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The fastest way to validate your environment and the reference miner locally:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="git clone https://github.com/synthdataco/synth-subnet.git
+cd synth-subnet
+curl -LsSf https://astral.sh/uv/install.sh | sh # install uv, if you don't have it
+source $HOME/.local/bin/env # put uv on PATH in the current shell
+export PYTHONPATH=.
+uv sync &amp;&amp; source .venv/bin/activate
+python synth/miner/run.py # prints &quot;CORRECT&quot; if the dummy model's output format is valid"><pre>git clone https://github.com/synthdataco/synth-subnet.git
+<span class="pl-c1">cd</span> synth-subnet
+curl -LsSf https://astral.sh/uv/install.sh <span class="pl-k">|</span> sh <span class="pl-c"><span class="pl-c">#</span> install uv, if you don't have it</span>
+<span class="pl-c1">source</span> <span class="pl-smi">$HOME</span>/.local/bin/env <span class="pl-c"><span class="pl-c">#</span> put uv on PATH in the current shell</span>
+<span class="pl-k">export</span> PYTHONPATH=.
+uv sync <span class="pl-k">&amp;&amp;</span> <span class="pl-c1">source</span> .venv/bin/activate
+python synth/miner/run.py <span class="pl-c"><span class="pl-c">#</span> prints "CORRECT" if the dummy model's output format is valid</span></pre></div>
+<p dir="auto">You can also benchmark your model's <strong>accuracy</strong> with the open-source <a href="https://github.com/synthdataco/synth-lib">synth-lib backtester</a>, which replays the real validator scoring (CRPS, smoothed scores, rank, estimated earnings) against historical market data:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="git clone https://github.com/synthdataco/synth-lib.git
+cd synth-lib &amp;&amp; uv sync
+uv run synth_lib/backtester/scripts/run_backtest.py --miner-name my_model --competition crypto-24h --asset BTC"><pre>git clone https://github.com/synthdataco/synth-lib.git
+<span class="pl-c1">cd</span> synth-lib <span class="pl-k">&amp;&amp;</span> uv sync
+uv run synth_lib/backtester/scripts/run_backtest.py --miner-name my_model --competition crypto-24h --asset BTC</pre></div>
+<p dir="auto">From there, follow the <a href="./docs/miner_tutorial.md">miner tutorial</a> to plug in your own model, register a Bittensor wallet, and launch the miner under PM2. Validators should jump straight to the <a href="./docs/validator_guide.md">validator guide</a>.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">2.1. Miners</h3><a id="user-content-21-miners" class="anchor" aria-label="Permalink: 2.1. Miners" href="#21-miners"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">2.1.1. Tutorial</h4><a id="user-content-211-tutorial" class="anchor" aria-label="Permalink: 2.1.1. Tutorial" href="#211-tutorial"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Please refer to this miner <a href="./docs/miner_tutorial.md">tutorial</a> for detailed instructions on getting a miner up and running.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">2.1.2. Reference</h4><a id="user-content-212-reference" class="anchor" aria-label="Permalink: 2.1.2. Reference" href="#212-reference"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Once you have your miner set up, you can check out the miner <a href="./docs/miner_reference.md">reference</a>.</p>
+<blockquote>
+<p dir="auto">💡 <strong>TIP:</strong> Are you having issues? Check out the <a href="./docs/miner_reference.md#21-faqs">FAQs</a> section of the miner <a href="./docs/miner_reference.md">reference</a>.</p>
+</blockquote>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">2.1.3. Automated Deployment</h4><a id="user-content-213-automated-deployment" class="anchor" aria-label="Permalink: 2.1.3. Automated Deployment" href="#213-automated-deployment"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">For a one-command miner setup, see the <a href="./miner-setup/">miner-setup</a> guide. It provides three options:</p>
+<ul dir="auto">
+<li><strong>Terraform</strong> — provision a cloud VM (GCP or AWS) with everything pre-installed</li>
+<li><strong>Docker</strong> — run the miner in a container on any machine</li>
+<li><strong>Ansible</strong> — install all dependencies on an existing VM</li>
+</ul>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">2.1.4. Backtesting</h4><a id="user-content-214-backtesting" class="anchor" aria-label="Permalink: 2.1.4. Backtesting" href="#214-backtesting"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The <a href="https://github.com/synthdataco/synth-lib">synth-lib</a> backtester scores your prediction files with the same CRPS / smoothed-score / reward-weight logic the live validator runs, and charts your projected rank and earnings over a historical window. See <a href="./docs/miner_tutorial.md#23-backtest-your-model">Backtest your model</a> in the tutorial and the <a href="https://github.com/synthdataco/synth-lib#2-run-a-backtest">synth-lib README</a> for the full guide.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">2.2. Validators</h3><a id="user-content-22-validators" class="anchor" aria-label="Permalink: 2.2. Validators" href="#22-validators"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Please refer to this <a href="./docs/validator_guide.md">guide</a> for more detailed instructions on getting a validator up and running.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">2.3 Develop</h3><a id="user-content-23-develop" class="anchor" aria-label="Permalink: 2.3 Develop" href="#23-develop"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><code>uv sync</code> installs the dev dependencies by default. Then:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="uv run pre-commit install"><pre>uv run pre-commit install</pre></div>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">📄 3. License</h2><a id="user-content--3-license" class="anchor" aria-label="Permalink: 📄 3. License" href="#-3-license"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Please refer to the <a href="https://github.com/synthdataco/synth-subnet/blob/main/LICENSE">LICENSE</a> file.</p>
+<p dir="auto"><sup><a href="#table-of-contents">Back to top ^</a></sup></p>
+
+</article></div>

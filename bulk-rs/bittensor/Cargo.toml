@@ -10,10 +10,20 @@ publish.workspace = true
 anyhow.workspace = true
 bulk-core.workspace = true
 clap.workspace = true
-desearch.workspace = true
+desearch = { workspace = true, features = ["chain"] }
+idna = "1"
 indexmap.workspace = true
 regex.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "deflate", "cookies"] }
 serde_json.workspace = true
+sha1 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+unicode-normalization = "0.1"
 
 [dev-dependencies]
+base64 = "0.22"
+flate2.workspace = true
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 tempfile.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

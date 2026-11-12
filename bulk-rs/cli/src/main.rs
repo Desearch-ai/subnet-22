@@ -37,6 +37,8 @@ enum Command {
     SubnetSites(bulk_bittensor::SitesArgs),
     /// The Bittensor subnets' GitHub repositories and READMEs.
     SubnetGithub(bulk_bittensor::GithubArgs),
+    /// Save the subnets' chain identities, websites and READMEs for `subnets`, `subnet-sites` and `subnet-github`.
+    BittensorFetch(bulk_bittensor::fetch::FetchArgs),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -56,6 +58,7 @@ fn main() -> anyhow::Result<()> {
         Command::Subnets(args) => bulk_bittensor::subnets_main(args),
         Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
+        Command::BittensorFetch(args) => bulk_bittensor::fetch::main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }

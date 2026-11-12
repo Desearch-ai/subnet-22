@@ -9,6 +9,89 @@ use serde_json::{Map, Value};
 use crate::pyjson::float_repr;
 use crate::text::drop_lone_surrogates;
 
+/// A Python `ValueError` and its message, as `str(error)` gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueError(pub String);
+
+impl std::fmt::Display for ValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ValueError {}
+
+impl ValueError {
+    /// `repr(error)`.
+    pub fn repr(&self) -> String {
+        format!("ValueError({})", repr_str(&self.0))
+    }
+}
+
+/// `str.isprintable` of one character.
+pub fn is_printable(c: char) -> bool {
+    use unicode_properties::{GeneralCategory as G, UnicodeGeneralCategory};
+    if c == ' ' {
+        return true;
+    }
+    !matches!(
+        c.general_category(),
+        G::Control | G::Format | G::Surrogate | G::PrivateUse | G::Unassigned | G::LineSeparator | G::ParagraphSeparator | G::SpaceSeparator
+    )
+}
+
+/// `repr(s)` of a str.
+pub fn repr_str(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if is_printable(c) => out.push(c),
+            c if (c as u32) < 0x100 => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x10000 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push_str(&format!("\\U{:08x}", c as u32)),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// The value of a Unicode decimal digit, as `int()` reads it.
+pub fn decimal_digit(c: char) -> Option<u32> {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    if c.is_ascii_digit() {
+        return c.to_digit(10);
+    }
+    if c.is_ascii() || c.general_category() != GeneralCategory::DecimalNumber {
+        return None;
+    }
+    let mut start = c as u32;
+    while let Some(prev) = start.checked_sub(1).and_then(char::from_u32) {
+        if prev.general_category() != GeneralCategory::DecimalNumber {
+            break;
+        }
+        start -= 1;
+    }
+    Some((c as u32 - start) % 10)
+}
+
+/// `int(s)` of a string of decimal digits, None when one is not a decimal digit or it overflows.
+pub fn decimal_int(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    s.chars().try_fold(0u64, |n, c| n.checked_mul(10)?.checked_add(u64::from(decimal_digit(c)?)))
+}
+
 /// `bool(v)`, a missing key read as None.
 pub fn truthy(v: Option<&Value>) -> bool {
     match v {
@@ -216,6 +299,14 @@ mod tests {
         assert_eq!(or(Some(&json!("")), Some(&json!("b"))), Some(&json!("b")));
         assert_eq!(or(Some(&json!(0)), None), None);
         assert!(equals_int(&json!(35.0), 35) && equals_int(&json!(false), 0) && !equals_int(&json!("0"), 0));
+    }
+
+    #[test]
+    fn strings_repr_as_python() {
+        assert_eq!(repr_str("a'b"), "\"a'b\"");
+        assert_eq!(repr_str("a'\"b"), "'a\\'\"b'");
+        assert_eq!(repr_str("t\u{1}\n\u{ad}\u{e9}\u{2028}"), "'t\\x01\\n\\xad\u{e9}\\u2028'");
+        assert_eq!(ValueError("Invalid IPv6 URL".into()).repr(), "ValueError('Invalid IPv6 URL')");
     }
 
     #[test]

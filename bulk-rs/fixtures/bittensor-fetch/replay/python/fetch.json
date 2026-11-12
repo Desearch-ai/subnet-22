@@ -1,0 +1,21 @@
+{
+ "subnets": 15,
+ "identities": 15,
+ "subnets_removed": 2,
+ "registration_dates": 10,
+ "site_removed_denied": 3,
+ "site_removed_gone": 3,
+ "site_removed_unlisted": 4,
+ "sites_held": 1,
+ "sites": 14,
+ "site_homes": 11,
+ "site_pages": 19,
+ "site_robots_skips": 1,
+ "site_robots_refused": 1,
+ "github_removed_gone": 2,
+ "github_listed": 12,
+ "github_repos": 9,
+ "github_readmes": 8,
+ "github_rate_wait_s": 1,
+ "previous": "previous"
+}

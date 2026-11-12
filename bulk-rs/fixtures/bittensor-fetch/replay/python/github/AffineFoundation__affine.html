@@ -1,0 +1,53 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Affine epoch subnet</h1><a id="user-content-affine-epoch-subnet" class="anchor" aria-label="Permalink: Affine epoch subnet" href="#affine-epoch-subnet"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Bittensor subnet 120 (MiMo GRPO). <strong>Miners upload one free batch file</strong> (prompts, rollouts,
+rewards) to a private per-hotkey object; at the miner's turn the validator copies it,
+checks the format, trains one GRPO step from the published head (trainer v8.3.3l) and the
+promotion gate keeps the candidate only if it improves the model on a private held-out set.
+Rewards are used as given; no mining software is needed.</p>
+<p dir="auto"><strong>Gate (prior-v1 baseline):</strong> GREEN iff gain &gt; 0, z &gt; 1 (flat bar, no time relaxation),
+pooled cap-hit &lt; 0.33 and at least 100 tasks scored. GREEN -&gt; the candidate becomes the head and
+the turn earns; RED -&gt; the head is kept and the turn earns nothing.
+<strong>GREEN files are public</strong> byte-exact at <code>https://affine.io/k1/turns/&lt;epoch&gt;/batch.json</code>
+(with their lr / kl in <code>turn.json</code>); RED files and RED training params stay private.</p>
+<ul dir="auto">
+<li><strong><a href="docs/MINER_QUICKSTART.md">Mining: the batch file, upload and rules</a></strong> ·
+reference helper <a href="miner/affine_batch.py"><code>miner/affine_batch.py</code></a> · <a href="miner/README.md">miner kit and validator code</a> ·
+live contract <a href="https://affine.io/mining.json" rel="nofollow">https://affine.io/mining.json</a> (<code>batch_file</code>) · <a href="https://affine.io/llms.txt" rel="nofollow">https://affine.io/llms.txt</a></li>
+<li>Optional per-turn <code>lr</code> (1.25e-7 to 1e-6, default 5e-7) and <code>kl</code> (0.005 to 0.1, default 0.02) in an <code>affine-batch-v2</code> file: <a href="docs/MINER_QUICKSTART.md#optional-affine-batch-v2-optional-lr-and-kl-from-2026-10-31">format and math</a> · <a href="ops/ff_train_params/README.md">validator side</a></li>
+<li>Optional per-turn <code>step_mult</code> (integer: 1, 2, default 1; duongna's step multiplier) and optimizer / loss knobs (per-group lr scales, adam_eps, weight_decay, clamp_mode, loss_agg, adv_center, adv_clip; all default to the previous trainer) in an <code>affine-batch-v2</code> file, from e575: <a href="docs/MINER_QUICKSTART.md">fields and math</a> · <a href="ops/step_mult/README.md">validator side (trainer v8.3.3l, replay, activation/revert)</a></li>
+<li><a href="priors/gate/README.md">Held-out gate and prior-v1 baseline (code)</a></li>
+<li><a href="ops/green_publish_default/README.md">GREEN-file publishing (default on)</a></li>
+<li><a href="ops/free_file/README.md">Validator side of the free-file protocol (lifecycle, activation/revert)</a></li>
+<li><a href="STANDING-RULES.md">STANDING RULES (ops): nothing ever on the encrypted disk</a></li>
+<li><a href="docs/LIVE_SUBNET.md">Live registration, payouts and rollback</a></li>
+<li><a href="CHANGELOG.md">Changelog</a></li>
+</ul>
+<p dir="auto">History and inactive designs (not the live protocol): <a href="docs/ARCHITECTURE.md">architecture and runtime</a> ·
+<a href="docs/MIMO_LIFECYCLE.md">MiMo operator lifecycle</a> · <a href="docs/FLIP_INCENTIVE.md">flip-incentive shadow scoring</a> ·
+<a href="docs/MIMO_FIXED_NONCE_GRPO_CUTOVER_PLAN.md">fixed-nonce GRPO cutover plan</a> ·
+<a href="docs/EXPERIMENTAL_RETAINED_NLL.md">retained-Adam NLL experiment</a> · <a href="docs/NATIVE_RCORE_COMMON.md">RCore adapter</a> ·
+<a href="IMPLEMENTATION_PLAN.md">implementation plan</a> · <a href="STATE.md">operational state and evidence</a></p>
+<p dir="auto">Run <code>.venv/bin/python -m subnet.mock</code> for a real model/R2/training smoke, or
+<code>.venv/bin/python -m subnet.tests</code> and <code>.venv/bin/python -m ops.new_subnet_checks</code>
+for protocol checks. Credentials and generated artifacts stay outside Git.</p>
+<p dir="auto">Read AGENTS.md before modifying this repo. Legacy production and its private archive
+remain separate; this checkout does not automatically deploy changes.</p>
+<p dir="auto">Independent, read-only evidence checks for retained experiments:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content=".venv/bin/python -m ops.check_epoch_evidence
+.venv/bin/python -m ops.check_service_evidence"><pre>.venv/bin/python -m ops.check_epoch_evidence
+.venv/bin/python -m ops.check_service_evidence</pre></div>
+<p dir="auto">The first checks completed multi-environment research epochs. The second checks
+the continuous controller's deadline, signed frozen artifacts, independently
+accepted batches, changed weight bytes, comparable held-out evaluations and the
+next epoch's checkpoint binding. Both reject payable test records and confirm
+their scores are excluded from payout aggregation; neither submits chain writes.
+Authority-scoped checkpoint descriptors preserve independent controller histories.
+Missing after-training evaluation files remain pending rather than counting as
+completed epochs. These checks establish the recorded runs, not general model
+improvement or completion of all environment integrations.</p>
+<p dir="auto">Isolated signed GPU role controls can be inspected with:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content=".venv/bin/python -m ops.check_gpu_role_evidence --state /private/operator-gpu-control-state"><pre>.venv/bin/python -m ops.check_gpu_role_evidence --state /private/operator-gpu-control-state</pre></div>
+<p dir="auto">This binds signed jobs to operator-collected reports, verifies frozen R2 bytes and
+checkpoint handover, and requires an independent published checkpoint byte audit.
+It does not itself recompute inference or prove continuous controller integration.</p>
+</article></div>

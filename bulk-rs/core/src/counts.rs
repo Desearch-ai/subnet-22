@@ -11,6 +11,14 @@ impl Counts {
         }
     }
 
+    /// `counter[key] = n`: the key keeps its place, or comes last when new.
+    pub fn set(&mut self, key: &str, n: u64) {
+        match self.0.iter_mut().find(|(k, _)| k == key) {
+            Some((_, count)) => *count = n,
+            None => self.0.push((key.to_string(), n)),
+        }
+    }
+
     pub fn get(&self, key: &str) -> u64 {
         self.0.iter().find(|(k, _)| k == key).map_or(0, |(_, n)| *n)
     }

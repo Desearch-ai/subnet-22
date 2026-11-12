@@ -1,0 +1,94 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">ByteLeap Miner - Bittensor SN128 Compute Network</h1><a id="user-content-byteleap-miner---bittensor-sn128-compute-network" class="anchor" aria-label="Permalink: ByteLeap Miner - Bittensor SN128 Compute Network" href="#byteleap-miner---bittensor-sn128-compute-network"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">ByteLeap Miner is the resource aggregation component of the ByteLeap distributed compute platform. Miners connect to the Bittensor network (SN128), aggregate worker resources, and earn rewards through active compute leases and computational challenges.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Architecture Overview</h2><a id="user-content-architecture-overview" class="anchor" aria-label="Permalink: Architecture Overview" href="#architecture-overview"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><strong>Three-tier system:</strong></p>
+<ul dir="auto">
+<li><strong>Validator</strong>: Network coordination and scoring validation</li>
+<li><strong>Miner</strong>: Resource aggregation and Bittensor network interface (this component)</li>
+<li><strong>Worker</strong>: Hardware monitoring and compute task execution (separate repository)</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Scoring System</h2><a id="user-content-scoring-system" class="anchor" aria-label="Permalink: Scoring System" href="#scoring-system"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Miners earn rewards through two main factors:</p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Score Components (Weighted)</h3><a id="user-content-score-components-weighted" class="anchor" aria-label="Permalink: Score Components (Weighted)" href="#score-components-weighted"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<ul dir="auto">
+<li><strong>Lease Revenue</strong> (100%): Active compute rentals generate the primary score</li>
+<li><strong>Availability Multiplier</strong>: Based on 169-hour online presence</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">How Scoring Works</h3><a id="user-content-how-scoring-works" class="anchor" aria-label="Permalink: How Scoring Works" href="#how-scoring-works"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><strong>Lease Revenue</strong></p>
+<ul dir="auto">
+<li>Workers with active compute rentals earn lease scores</li>
+<li>Idle workers score zero on this component</li>
+<li>Integrated with compute marketplace APIs</li>
+</ul>
+<p dir="auto"><strong>Worker Management</strong></p>
+<ul dir="auto">
+<li>Maximum 100 workers per miner</li>
+<li>Challenges target only unleased workers</li>
+<li>Final score sums all worker performance (capped at 100)</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Quick Start</h2><a id="user-content-quick-start" class="anchor" aria-label="Permalink: Quick Start" href="#quick-start"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Prerequisites</h3><a id="user-content-prerequisites" class="anchor" aria-label="Permalink: Prerequisites" href="#prerequisites"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<ul dir="auto">
+<li>Python 3.8+</li>
+<li>Bittensor wallet with registered hotkey</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Installation</h3><a id="user-content-installation" class="anchor" aria-label="Permalink: Installation" href="#installation"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="# Setup environment
+python3 -m venv venv
+source ./venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt"><pre><span class="pl-c"><span class="pl-c">#</span> Setup environment</span>
+python3 -m venv venv
+<span class="pl-c1">source</span> ./venv/bin/activate
+
+<span class="pl-c"><span class="pl-c">#</span> Install dependencies</span>
+pip install -r requirements.txt</pre></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Configuration</h3><a id="user-content-configuration" class="anchor" aria-label="Permalink: Configuration" href="#configuration"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Configure your setup in:</p>
+<ul dir="auto">
+<li><code>config/miner_config.yaml</code> - Network settings, wallet, worker management</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Running the Miner</h3><a id="user-content-running-the-miner" class="anchor" aria-label="Permalink: Running the Miner" href="#running-the-miner"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><strong>Start Miner</strong> (aggregates workers, communicates with Bittensor):</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python scripts/run_miner.py --config config/miner_config.yaml"><pre>python scripts/run_miner.py --config config/miner_config.yaml</pre></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">For production use, please run it with PM2.</h3><a id="user-content-for-production-use-please-run-it-with-pm2" class="anchor" aria-label="Permalink: For production use, please run it with PM2." href="#for-production-use-please-run-it-with-pm2"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Start Miner:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="pm2 start ecosystem.config.js"><pre>pm2 start ecosystem.config.js</pre></div>
+<p dir="auto"><strong>Note</strong>: Workers should be deployed separately using the byteleap-Worker repository.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Technical Architecture</h2><a id="user-content-technical-architecture" class="anchor" aria-label="Permalink: Technical Architecture" href="#technical-architecture"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="┌────────────────────────┐                       ┌───────────────────┐                   ┌────────────────────────┐
+│       Validator        │                       │       Miner       │                   │       Worker(s)        │
+│      (Bittensor)       │       Encrypted       │    (Bittensor)    │                   │                        │
+│                        │ ←── Communication ─── │                   │ ←── WebSocket ──→ │ • System Monitoring    │
+│ • Challenge Creation   │    (via bittensor)    │ • Worker Mgmt.    │      (1 : N)      │ • Challenge Execution  │
+│ • Score Validation     │                       │ • Resource Agg.   │                   │ • VMGW Session         │
+│ • Weight Calculation   │                       │ • Task Routing    │                   │ • Libvirt Mgmt.        │
+└────────────────────────┘                       └───────────────────┘                   └────────────────────────┘"><pre class="notranslate"><code>┌────────────────────────┐                       ┌───────────────────┐                   ┌────────────────────────┐
+│       Validator        │                       │       Miner       │                   │       Worker(s)        │
+│      (Bittensor)       │       Encrypted       │    (Bittensor)    │                   │                        │
+│                        │ ←── Communication ─── │                   │ ←── WebSocket ──→ │ • System Monitoring    │
+│ • Challenge Creation   │    (via bittensor)    │ • Worker Mgmt.    │      (1 : N)      │ • Challenge Execution  │
+│ • Score Validation     │                       │ • Resource Agg.   │                   │ • VMGW Session         │
+│ • Weight Calculation   │                       │ • Task Routing    │                   │ • Libvirt Mgmt.        │
+└────────────────────────┘                       └───────────────────┘                   └────────────────────────┘
+</code></pre></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Core Components</h3><a id="user-content-core-components" class="anchor" aria-label="Permalink: Core Components" href="#core-components"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><strong>Miner</strong> (<code>neurons/miner/</code>)</p>
+<ul dir="auto">
+<li>Worker lifecycle management via WebSocket</li>
+<li>Resource aggregation and reporting</li>
+<li>Bittensor network communication</li>
+<li>Challenge distribution and result collection</li>
+</ul>
+<p dir="auto"><strong>Shared Libraries</strong> (<code>neurons/shared/</code>)</p>
+<ul dir="auto">
+<li>Cryptographic challenge protocols</li>
+<li>Merkle tree verification system</li>
+<li>Configuration management</li>
+<li>Network communication utilities</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">License</h2><a id="user-content-license" class="anchor" aria-label="Permalink: License" href="#license"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">MIT License - see the <a href="LICENSE">LICENSE</a> file for details.</p>
+</article></div>

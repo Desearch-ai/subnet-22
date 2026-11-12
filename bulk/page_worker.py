@@ -22,6 +22,7 @@ EXTRACT = b"e"
 WIKIPEDIA = b"w"
 BLOCKED = b"k"
 BODY = b"r"
+ANCHORS = b"a"
 HIDDEN: set[str] = set()
 
 
@@ -51,6 +52,15 @@ def answer(request: bytes) -> dict:
         root = parse(f"<html><body>{data.decode()}</body></html>")
         body = root.find(".//body") if root is not None else None
         return {"lines": None if body is None else [list(line) for line in render(body)]}
+    if op == ANCHORS:
+        from lxml import html as lxml_html
+
+        try:
+            doc = lxml_html.fromstring(data)
+        except Exception as error:
+            caught = isinstance(error, (ValueError, TypeError))
+            return {"raised": {"caught": caught, "repr": repr(error), "type": type(error).__name__}}
+        return {"hrefs": [anchor.get("href") for anchor in doc.iter("a")]}
     raise ValueError(f"unknown request {op!r}")
 
 

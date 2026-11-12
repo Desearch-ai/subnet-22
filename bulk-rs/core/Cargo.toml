@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,0 +1,123 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Witness</h1><a id="user-content-witness" class="anchor" aria-label="Permalink: Witness" href="#witness"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Witness is a video-understanding subnet for Bittensor SN20. Miners serve immutable
+model weights to evaluator validators. Evaluators compare models on private,
+random audiovisual clips; CPU followers reproduce the decision from finalized
+on-chain scores. <strong>100% of each validator's weight goes to one king, with 0% burn.</strong>
+Before the first king is decided, the allocation is <strong>100% burn</strong>. An operator
+can temporarily enforce <strong>100% burn</strong> with <code>BURN_ALL=1</code>; normal consensus weights
+continue to be calculated for inspection.</p>
+<p dir="auto"><a href="https://witnessvision.io/" rel="nofollow">Website</a> · <a href="docs/miner.md">Miner guide</a> ·
+<a href="docs/validator.md">Validator guide</a> · <a href="docs/benchmark.md">Scoring</a> ·
+<a href="docs/launch.md">Activation checklist</a> · <a href="docs/evaluation-v3.md">Evaluation v3</a></p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Mainnet v2 flow</h2><a id="user-content-mainnet-v2-flow" class="anchor" aria-label="Permalink: Mainnet v2 flow" href="#mainnet-v2-flow"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<ol dir="auto">
+<li><strong>Submit:</strong> prepare an allowlisted weights-only model and publish its <code>wm2</code>
+commitment. Serve it over pinned TLS with signed requests. The default miner
+admits only permitted validators holding at least <strong>100,000 subnet alpha</strong>.
+Witness charges no challenge fee; normal network registration/transaction
+costs still apply. One hotkey binds one model permanently.</li>
+<li><strong>Queue:</strong> each evaluator keeps durable round-robin coldkey order and FIFO
+within a coldkey. <code>A1,A2,A3,B1,C1</code> becomes <code>A1,B1,C1,A2,A3</code>. Infrastructure
+failures retain the same submission for retry. A terminal evaluation consumes
+that hotkey for that evaluator.
+The candidate panel is frozen at the window's opening finalized block,
+before drawing videos. Only immutable submissions committed strictly before
+that block can run. New submissions remain queued for the next window;
+retries and compression recovery cannot add or replace a model in the panel.
+A failed miner endpoint is removed from the local queue without consuming
+its hotkey. After repairing it, publish a fresh commitment for the same
+immutable model to rejoin; admission still waits for a later window opening.
+Validator, judge and GPU failures retain their normal retry behavior.</li>
+<li><strong>Evaluate:</strong> every two actual subnet epochs, each evaluator privately samples
+<strong>10 videos from a public catalogue of 1,000</strong> (from window 12; earlier windows retain 5), then <strong>2 random 10–30 s clips per
+video</strong>. Luna supplies two references per clip. The king and all challengers
+admitted to that window share its batch. The king runs once per window. From window 13, paired attempts allow up to
+30 minutes within the same two-epoch window; the clip cap remains 60 seconds.
+Completed model answers survive interruption and scoring retries. A bounded
+background download can prepare one other admitted challenger.
+From window 9, sources missing audio/video, too short for the required clips,
+or with invalid clip bounds/duration are excluded before model evaluation.
+An independently seeded deterministic reserve supplies replacements in the
+original draw positions. Rejections persist by catalogue source identity;
+retries reuse valid clips and references. Network, labeling and evaluator
+failures retry the same source. The final window batch is immutable.
+The ten-video transition preserves windows 0–11 and their king/uses.
+An existing ledger upgrades only if affected windows have no published
+results or closed decisions; other policy changes require explicit migration.</li>
+<li><strong>Publish:</strong> publish compact per-model quality, reward and paired king scores
+through chain commitments before deciding weights. Followers replay every
+finalized block; the latest commitment alone is insufficient.</li>
+<li><strong>Crown:</strong> at window close, use stake-weighted paired reward improvement.
+A challenger must exceed the king by more than <code>0.02</code>, with aggregate quality
+above <code>0.05</code>. The bootstrap compares the first two eligible submissions on a
+common evaluator panel. With no king, weights go to the subnet-owner burn UID.</li>
+<li><strong>Display:</strong> the dashboard reads validator projections and closed-window
+reports. It shows the queue, consumed/reserved hotkeys, responses, clip/video/
+total metrics and decision/submission/applied weights. It is never a consensus
+source; private labels and sampling secrets are not published.</li>
+</ol>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Install and test</h2><a id="user-content-install-and-test" class="anchor" aria-label="Permalink: Install and test" href="#install-and-test"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Use Python 3.11+ and a repository-local environment:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -e '.[evaluator,dev]'  # evaluation and tests
+.venv/bin/python -m pytest -q"><pre>python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -e <span class="pl-s"><span class="pl-pds">'</span>.[evaluator,dev]<span class="pl-pds">'</span></span>  <span class="pl-c"><span class="pl-c">#</span> evaluation and tests</span>
+.venv/bin/python -m pytest -q</pre></div>
+<p dir="auto">Evaluators also need ffmpeg, a GPU and labeling/judging API credentials.
+A single GPU machine can run the validator and evaluation together;
+no separate CPU server or GPU service is required. API spending limits are optional
+operator configuration, independent of consensus. The follower remains the default. Chain writes require explicit
+flags. See the activation checklist before starting paid evaluation or weights.</p>
+<p dir="auto">The public repository contains protocol, scoring, validator runtime, tests, an
+empty miner template and read-only validator status/evidence endpoints.
+Website applications are installed separately. Credentials,
+non-public evaluation references and runtime outputs stay outside this repository.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Code map</h2><a id="user-content-code-map" class="anchor" aria-label="Permalink: Code map" href="#code-map"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>protocol.py</code>, <code>ledger.py</code>, <code>chain.py</code>, <code>commitments.py</code></td>
+<td>Compact records, finalized replay and deterministic consensus</td>
+</tr>
+<tr>
+<td><code>submission.py</code>, <code>p2p.py</code>, <code>miner.py</code></td>
+<td>Immutable manifests, authenticated TLS and empty miner template</td>
+</tr>
+<tr>
+<td><code>triggers.py</code>, <code>validator.py</code>, <code>evaluator.py</code></td>
+<td>Fair queue, CPU chain loop, GPU worker and durable publication</td>
+</tr>
+<tr>
+<td><code>pool.py</code>, <code>data/catalogue-v2.json</code>, <code>annotate.py</code>, <code>media.py</code></td>
+<td>Private per-window sampling and references</td>
+</tr>
+<tr>
+<td><code>reward.py</code>, <code>scoring.py</code>, <code>judge.py</code>, <code>adjudication.py</code></td>
+<td>Versioned quality and time reward</td>
+</tr>
+<tr>
+<td><code>gpu.py</code>, <code>watchdog.py</code>, <code>runner.py</code>, <code>pod_runtime.py</code>, <code>pod_env/</code></td>
+<td>GPU lifecycle, independent stop watchdog and pinned inference</td>
+</tr>
+<tr>
+<td><code>status.py</code></td>
+<td>Read-only validator status and finalized evidence export</td>
+</tr>
+<tr>
+<td><code>round.py</code>, <code>duel.py</code>, <code>simulation.py</code>, <code>cli.py</code></td>
+<td>Offline benchmark/rehearsal utilities; no mainnet coronation authority</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Paths in this table are relative to <code>witness/benchmark/</code>. Synthetic tests establish
+software behavior, not GPU compatibility, model capability or finalized live
+weight acceptance. Activation requires the separate checks in the launch guide.</p>
+</article></div>

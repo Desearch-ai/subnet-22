@@ -1,0 +1,339 @@
+[
+ {
+  "netuid": 2,
+  "listed": "https://danilabs.ai/",
+  "pages": [
+   {
+    "url": "https://danilabs.ai/",
+    "final_url": "https://danilabs.ai/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "9e100c40e08530b3.html",
+    "bytes": 9079
+   },
+   {
+    "url": "https://danilabs.ai/network",
+    "final_url": "https://danilabs.ai/network/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "d2248a33bfe2f6b2.html",
+    "bytes": 1136
+   },
+   {
+    "url": "https://danilabs.ai/docs",
+    "final_url": "https://danilabs.ai/docs/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "fb71918056d3aaba.html",
+    "bytes": 1030
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 6,
+  "listed": "https://numinouslabs.io/",
+  "pages": [
+   {
+    "url": "https://numinouslabs.io/",
+    "final_url": "https://numinouslabs.io/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "3cf1de2e990466a9.html",
+    "bytes": 19627
+   },
+   {
+    "url": "https://numinouslabs.io/blog/quos-ego",
+    "final_url": "https://numinouslabs.io/blog/quos-ego",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "8a909f39d8d6e946.html",
+    "bytes": 9837
+   },
+   {
+    "url": "https://numinouslabs.io/blog",
+    "final_url": "https://numinouslabs.io/blog",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "994c37b29c72b9bb.html",
+    "bytes": 2011
+   }
+  ],
+  "docs_links": [],
+  "removed": [
+   {
+    "url": "https://numinouslabs.io/cdn-cgi/l/email-protection",
+    "why": "gone"
+   }
+  ],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 20,
+  "listed": "https://witnessvision.io/",
+  "pages": [
+   {
+    "url": "https://witnessvision.io/",
+    "final_url": "https://witnessvision.io/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "5d2ec7902c08f8e0.html",
+    "bytes": 13453
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "none",
+  "site": "ok"
+ },
+ {
+  "netuid": 45,
+  "listed": "https://alpharidge.ai",
+  "pages": [
+   {
+    "url": "https://alpharidge.ai/",
+    "final_url": "https://alpharidge.ai/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "dfe35ff341be6933.html",
+    "bytes": 1840
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 50,
+  "listed": "https://synthdata.co",
+  "pages": [
+   {
+    "url": "https://synthdata.co/",
+    "final_url": "https://synthdata.co/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "7310e6e95fbb0801.html",
+    "bytes": 2428
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 101,
+  "listed": "http://tag101.ai",
+  "pages": [
+   {
+    "url": "http://tag101.ai/",
+    "final_url": "https://tag101.ai/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "50f7ca3f133bd2cf.html",
+    "bytes": 22719
+   },
+   {
+    "url": "https://tag101.ai/signals",
+    "final_url": "https://signalfeed.tag101.ai/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "5ddb6535fd3b0082.html",
+    "bytes": 12252
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "none",
+  "site": "ok"
+ },
+ {
+  "netuid": 120,
+  "listed": "www.affine.io",
+  "pages": [
+   {
+    "url": "https://www.affine.io/",
+    "final_url": "https://affine.io/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "7f14ad78c98bf5cf.html",
+    "bytes": 18774
+   },
+   {
+    "url": "https://affine.io/baseline",
+    "final_url": "https://affine.io/baseline",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "5f492cd281e29e1b.html",
+    "bytes": 16505
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 122,
+  "listed": "https://cookingtao.com/",
+  "pages": [
+   {
+    "url": "https://cookingtao.com/",
+    "final_url": "https://cookingtao.com/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "a9a47080293af616.html",
+    "bytes": 59914
+   }
+  ],
+  "docs_links": [],
+  "removed": [
+   {
+    "url": "https://cookingtao.com/cdn-cgi/l/email-protection",
+    "why": "gone"
+   }
+  ],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 128,
+  "listed": "ByteLeap.ai",
+  "pages": [
+   {
+    "url": "https://byteleap.ai/",
+    "final_url": "https://byteleap.ai/",
+    "status": 200,
+    "content_type": "text/html",
+    "file": "ba48e75429218bb8.html",
+    "bytes": 2005
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 900,
+  "listed": "https://refused.example",
+  "pages": [],
+  "docs_links": [],
+  "removed": [
+   {
+    "url": "https://refused.example/",
+    "why": "denied"
+   },
+   {
+    "url": "https://refused.example/old",
+    "why": "denied"
+   }
+  ],
+  "robots": "robots 403: refused",
+  "site": "denied",
+  "known": [
+   "https://refused.example/old"
+  ]
+ },
+ {
+  "netuid": 901,
+  "listed": "gone.example",
+  "pages": [],
+  "docs_links": [],
+  "removed": [
+   {
+    "url": "https://gone.example/",
+    "why": "gone"
+   }
+  ],
+  "robots": "none",
+  "site": "gone",
+  "known": []
+ },
+ {
+  "netuid": 902,
+  "listed": "https://Held.example/",
+  "pages": [
+   {
+    "url": "https://held.example/",
+    "final_url": "https://held.example/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "beb6a8809d46c370.html",
+    "bytes": 607
+   },
+   {
+    "url": "https://held.example/about",
+    "final_url": "https://held.example/about",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "db44b4fdf51093a0.html",
+    "bytes": 92
+   },
+   {
+    "url": "https://held.example/docs/start",
+    "final_url": "https://held.example/docs/start",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "01fdd2020acf3041.html",
+    "bytes": 90
+   },
+   {
+    "url": "https://held.example/private",
+    "skipped": "robots"
+   },
+   {
+    "url": "https://held.example/broken",
+    "error": "ServerDisconnectedError('Server disconnected')"
+   }
+  ],
+  "docs_links": [
+   "https://docs.held.example/intro"
+  ],
+  "removed": [
+   {
+    "url": "https://held.example/private",
+    "why": "denied"
+   }
+  ],
+  "robots": "parsed",
+  "site": "ok"
+ },
+ {
+  "netuid": 903,
+  "listed": "https://held2.example/home?x=1#top",
+  "pages": [],
+  "docs_links": [],
+  "removed": [],
+  "robots": "robots unreachable",
+  "site": "held",
+  "known": [
+   "https://held2.example/a",
+   "https://held2.example/b"
+  ]
+ },
+ {
+  "netuid": 904,
+  "listed": "badlinks.example",
+  "pages": [
+   {
+    "url": "https://badlinks.example/",
+    "final_url": "https://badlinks.example/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "file": "0610b8c3bd0ef558.html",
+    "bytes": 89,
+    "link_error": "ValueError('Invalid IPv6 URL')"
+   }
+  ],
+  "docs_links": [],
+  "removed": [],
+  "robots": "none",
+  "site": "ok"
+ }
+]

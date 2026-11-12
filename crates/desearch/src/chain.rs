@@ -33,6 +33,9 @@ const KEYS_PAGE: usize = 1000;
 /// Account ids print with the generic substrate prefix, as bittensor prints them.
 const ACCOUNT_PATH: [&str; 3] = ["sp_core", "crypto", "AccountId32"];
 
+/// A value decoded with the metadata, each part tagged with its type id.
+pub type Decoded = Value<u32>;
+
 /// One hotkey of the subnet, as the metagraph lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Neuron {
@@ -270,7 +273,8 @@ impl Chain {
         }
         let mut encoded = Vec::new();
         for (input, arg) in found.inputs.iter().zip(args) {
-            scale_value::scale::encode_as_type(arg, input.ty.id, &metadata.types, &mut encoded).map_err(|e| anyhow!("encoding {api}.{method}'s {}: {e}", input.name))?;
+            scale_value::scale::encode_as_type(arg, input.ty.id, &metadata.types, &mut encoded)
+                .map_err(|e| anyhow!("encoding {api}.{method}'s {}: {e}", input.name))?;
         }
         let output = self.state_call(&format!("{api}_{method}"), &encoded, at).await?;
         scale_value::scale::decode_as_type(&mut output.as_slice(), found.output.id, &metadata.types).map_err(|e| anyhow!("decoding {api}.{method}: {e}"))
@@ -333,8 +337,8 @@ impl Chain {
                 let decoded_key =
                     scale_value::scale::decode_as_type(&mut rest, key.id, &metadata.types).map_err(|e| anyhow!("decoding a {pallet}.{item} key: {e}"))?;
                 let raw = decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("a {pallet}.{item} value is not hex"))?;
-                let decoded =
-                    scale_value::scale::decode_as_type(&mut raw.as_slice(), value.id, &metadata.types).map_err(|e| anyhow!("decoding a {pallet}.{item} value: {e}"))?;
+                let decoded = scale_value::scale::decode_as_type(&mut raw.as_slice(), value.id, &metadata.types)
+                    .map_err(|e| anyhow!("decoding a {pallet}.{item} value: {e}"))?;
                 pairs.push((decoded_key, decoded));
             }
         }

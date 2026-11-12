@@ -10,6 +10,7 @@ use bulk_core::{py, urlparse, Batches, Counts, RunArgs};
 use indexmap::IndexSet;
 use regex::Regex;
 
+pub mod fetch;
 mod github;
 mod sites;
 mod subnets;

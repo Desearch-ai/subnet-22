@@ -1,0 +1,233 @@
+[
+ {
+  "netuid": 2,
+  "listed": "https://github.com/DaniLabsAI/subnet",
+  "repo": {
+   "full_name": "DaniLabsAI/subnet",
+   "html_url": "https://github.com/DaniLabsAI/subnet",
+   "description": "DaniLabs validator code for Bittensor: report validation, miner scoring, and chain weight submission. Miners use the separate ManagedVNetIR miner kit.",
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 1,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-11-10T21:20:50Z",
+   "created_at": "2026-10-21T19:14:34Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "DaniLabsAI__subnet.html"
+ },
+ {
+  "netuid": 6,
+  "listed": "https://github.com/numinouslabs/numinous",
+  "repo": {
+   "full_name": "numinouslabs/numinous",
+   "html_url": "https://github.com/numinouslabs/numinous",
+   "description": "Open source forecasting agent competition.",
+   "homepage": "",
+   "topics": [],
+   "stargazers_count": 20,
+   "forks_count": 15,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-11-10T18:18:23Z",
+   "created_at": "2025-11-24T03:18:15Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "numinouslabs__numinous.html"
+ },
+ {
+  "netuid": 20,
+  "listed": "https://github.com/witnessvision/witness_subnet/",
+  "repo": {
+   "full_name": "witnessvision/witness_subnet",
+   "html_url": "https://github.com/witnessvision/witness_subnet",
+   "description": null,
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 0,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-10-03T19:53:27Z",
+   "created_at": "2026-09-07T12:13:09Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "witnessvision__witness_subnet.html"
+ },
+ {
+  "netuid": 39,
+  "listed": "https://github.com/deprecated/deprecated",
+  "error": "repo: HTTP 404"
+ },
+ {
+  "netuid": 45,
+  "listed": "https://github.com/Team-Rizzo/alpharidge-ai",
+  "repo": {
+   "full_name": "Team-Rizzo/alpharidge-ai",
+   "html_url": "https://github.com/Team-Rizzo/alpharidge-ai",
+   "description": null,
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 5,
+   "forks_count": 7,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-11-12T16:36:57Z",
+   "created_at": "2025-11-07T03:23:41Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "Team-Rizzo__alpharidge-ai.html"
+ },
+ {
+  "netuid": 50,
+  "listed": "https://github.com/mode-network/synth-subnet",
+  "repo": {
+   "full_name": "synthdataco/synth-subnet",
+   "html_url": "https://github.com/synthdataco/synth-subnet",
+   "description": null,
+   "homepage": "https://synthdata.co",
+   "topics": [],
+   "stargazers_count": 101,
+   "forks_count": 47,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-11-10T14:09:34Z",
+   "created_at": "2024-11-09T18:48:33Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "synthdataco__synth-subnet.html"
+ },
+ {
+  "netuid": 101,
+  "listed": "https://github.com/tag101-ai/tag101",
+  "repo": {
+   "full_name": "tag101-ai/tag101",
+   "html_url": "https://github.com/tag101-ai/tag101",
+   "description": null,
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 0,
+   "forks_count": 6,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-10-14T02:06:53Z",
+   "created_at": "2026-06-10T04:06:20Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "tag101-ai__tag101.html"
+ },
+ {
+  "netuid": 120,
+  "listed": "https://github.com/AffineFoundation/affine",
+  "repo": {
+   "full_name": "AffineFoundation/affine",
+   "html_url": "https://github.com/AffineFoundation/affine",
+   "description": "Affine SN120: miners upload one free batch file; the validator trains one step from the head and keeps it only if the held-out gate is GREEN (gain > 0, z > 1 flat bar, pooled cap-hit < 0.33, >= 100 tasks scored; prior-v1 baseline). GREEN files are public. Docs: affine.io/llms.txt",
+   "homepage": "https://affine.io",
+   "topics": [],
+   "stargazers_count": 6,
+   "forks_count": 13,
+   "language": "Python",
+   "license": null,
+   "pushed_at": "2026-11-12T06:04:34Z",
+   "created_at": "2026-08-04T18:55:06Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "AffineFoundation__affine.html"
+ },
+ {
+  "netuid": 122,
+  "listed": "https://github.com/CookingTao",
+  "error": "not a repo url"
+ },
+ {
+  "netuid": 128,
+  "listed": "https://github.com/byteleapai/byteleap-Miner",
+  "repo": {
+   "full_name": "byteleapai/byteleap-Miner",
+   "html_url": "https://github.com/byteleapai/byteleap-Miner",
+   "description": null,
+   "homepage": null,
+   "topics": [],
+   "stargazers_count": 3,
+   "forks_count": 6,
+   "language": "Python",
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "pushed_at": "2026-08-11T02:08:13Z",
+   "created_at": "2025-09-16T15:13:20Z",
+   "archived": false,
+   "fork": false,
+   "default_branch": "main"
+  },
+  "readme_file": "byteleapai__byteleap-Miner.html"
+ },
+ {
+  "netuid": 900,
+  "listed": "https://github.com/example-org/example-repo",
+  "repo": {
+   "full_name": "example-org/example-repo",
+   "html_url": "https://github.com/example-org/example-repo",
+   "description": "Caf\u00e9 \u2014 example",
+   "homepage": null,
+   "topics": [
+    "a",
+    "b"
+   ],
+   "stargazers_count": 3,
+   "forks_count": null,
+   "language": null,
+   "license": null,
+   "pushed_at": null,
+   "created_at": null,
+   "archived": null,
+   "fork": null,
+   "default_branch": null
+  },
+  "readme_error": "HTTP 404"
+ },
+ {
+  "netuid": 904,
+  "listed": "https://github.com/orgs/example-org",
+  "error": "not a repo url"
+ }
+]
