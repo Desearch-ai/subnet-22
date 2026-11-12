@@ -274,18 +274,28 @@ impl Lane {
     }
 }
 
+pub fn sec_http(connect: &Connect, user_agent: &str) -> Result<Arc<Http>> {
+    Ok(Arc::new(Http::with_headers(connect, &[("User-Agent", user_agent), ("Accept-Encoding", "gzip, deflate")])?))
+}
+
+/// SEC's robots.txt, read once for a whole run: the daily indexes and the filings both go by it.
+pub async fn sec_rules(connect: &Connect, user_agent: &str) -> Result<Arc<Rules>> {
+    Robots::new(sec_http(connect, user_agent)?, "https").rules(ROBOTS_HOST).await.map_err(|crash| anyhow!("{} reading {ROBOTS_HOST}'s robots.txt", crash.0))
+}
+
 /// Each company's submissions, then its chosen filings' primary documents, under SEC's pace; companies open `COMPANIES_AT_ONCE` at a time in CIK order.
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_filings(
     connect: &Connect,
     user_agent: &str,
+    rules: Arc<Rules>,
     ciks: &[i64],
     since: NaiveDate,
     until: Option<NaiveDate>,
     writer: Arc<Mutex<Writer>>,
     per_second: f64,
 ) -> Result<Counts> {
-    let http = Arc::new(Http::with_headers(connect, &[("User-Agent", user_agent), ("Accept-Encoding", "gzip, deflate")])?);
-    let rules = Robots::new(http.clone(), "https").rules(ROBOTS_HOST).await.map_err(|crash| anyhow!("{} reading {ROBOTS_HOST}'s robots.txt", crash.0))?;
+    let http = sec_http(connect, user_agent)?;
     if let Some(why) = &rules.refused {
         let mut counts = Counts::default();
         counts.add(why, 1);

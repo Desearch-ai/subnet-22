@@ -14,7 +14,7 @@ use crate::sitecrawl::edgar::{self, Pace, FORMS};
 use crate::sitecrawl::fetch::{Connect, Http};
 use crate::sitecrawl::hosts::MIN_DELAY;
 use crate::sitecrawl::lists::crawl_urls;
-use crate::sitecrawl::robots::Robots;
+use crate::sitecrawl::robots::{Robots, Rules};
 use crate::sitecrawl::sites::Ctx;
 use crate::sitecrawl::store::{counts_json, Writer};
 use crate::sitecrawl::Counts;
@@ -106,12 +106,21 @@ pub fn daily_index_url(d: NaiveDate) -> String {
 }
 
 /// CIKs with a chosen form in SEC's daily indexes for each day in the range.
-pub async fn filed_ciks(connect: &Connect, user_agent: &str, since: NaiveDate, until: NaiveDate, per_second: f64) -> Result<(BTreeSet<i64>, Counts)> {
+pub async fn filed_ciks(connect: &Connect, user_agent: &str, rules: &Rules, since: NaiveDate, until: NaiveDate, per_second: f64) -> Result<(BTreeSet<i64>, Counts)> {
     let (mut counts, mut ciks, pace) = (Counts::default(), BTreeSet::new(), Pace::new(per_second)?);
-    let http = Http::with_headers(connect, &[("User-Agent", user_agent), ("Accept-Encoding", "gzip, deflate")])?;
+    if let Some(why) = &rules.refused {
+        counts.add(why, 1);
+        return Ok((ciks, counts));
+    }
+    let http = edgar::sec_http(connect, user_agent)?;
     for d in days(since, until) {
+        let url = daily_index_url(d);
+        if !rules.allowed(&url) {
+            counts.add("robots_disallowed", 1);
+            continue;
+        }
         pace.turn().await;
-        let r = http.get(&daily_index_url(d), INDEX_BYTES, false).await;
+        let r = http.get(&url, INDEX_BYTES, false).await;
         if r.status == 200 {
             ciks.extend(edgar::index_ciks(&r.text(), &FORMS));
             counts.add("index_days", 1);
@@ -196,10 +205,11 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 pub fn refresh_edgar(since: NaiveDate, until: NaiveDate, t: &Target, user_agent: &str, per_second: f64) -> Result<String> {
     let work = fresh(&t.out)?;
     let rt = runtime()?;
-    let (ciks, mut counts) = rt.block_on(filed_ciks(&t.connect, user_agent, since, until, per_second))?;
+    let rules = rt.block_on(edgar::sec_rules(&t.connect, user_agent))?;
+    let (ciks, mut counts) = rt.block_on(filed_ciks(&t.connect, user_agent, &rules, since, until, per_second))?;
     let writer = Arc::new(Mutex::new(Writer::new(&work)?));
     let ciks: Vec<i64> = ciks.into_iter().collect();
-    let fetched = rt.block_on(edgar::fetch_filings(&t.connect, user_agent, &ciks, since, Some(until), writer.clone(), per_second))?;
+    let fetched = rt.block_on(edgar::fetch_filings(&t.connect, user_agent, rules, &ciks, since, Some(until), writer.clone(), per_second))?;
     counts.update(&fetched);
     writer.lock().unwrap().close()?;
     counts.0.insert("filers".into(), ciks.len() as i64);

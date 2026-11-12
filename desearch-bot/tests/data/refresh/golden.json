@@ -52,7 +52,8 @@
    "requests": {
     "www.sec.gov": [
      "/Archives/edgar/daily-index/2026/QTR4/form.20261112.idx",
-     "/Archives/edgar/daily-index/2026/QTR4/form.20261113.idx"
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261113.idx",
+     "/robots.txt"
     ]
    },
    "rows": null,
