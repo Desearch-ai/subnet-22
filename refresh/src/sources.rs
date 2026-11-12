@@ -37,7 +37,7 @@ const HOUR: u64 = 3600;
 pub const SOURCES: &[Source] = &[
     Source {
         name: "bittensor",
-        fetch: &[&["{python}", "-m", "bulk", "bittensor-fetch", "--out", "{work}/src"]],
+        fetch: &[&[BULK, "bittensor-fetch", "--out", "{work}/src", "--python", "{python}"]],
         builds: &[
             Build {
                 name: "subnets",
