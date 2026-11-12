@@ -2563,9 +2563,10 @@ impl Planner {
             && matches!(self.state.planned_version(RECIPE_V2, &page.key), Ok(Some(planned)) if planned.page_only && planned.content_sha1 == page.record.content_sha1)
     }
 
-    /// Whether the page is planned with its page text alone, its passages left for later: never for a paper, which no lane comes back to and which keeps only its first parts.
-    fn page_first(&self, lane: Lane, record: &Record) -> bool {
-        self.settings.page_first && lane == Lane::Rest && record.page_type.as_deref() != Some(PAPER)
+    /// Whether the page is planned with its page text alone, its passages left for later: never for a paper, which no lane comes back to and which keeps only its first parts, nor, while the passage lane is on, for a bulk-feed version the bulk lane plans out of order, since the passage lane reads bulk files in order only.
+    fn page_first(&self, lane: Lane, page: &PageRow, from: Source) -> bool {
+        let out_of_order = page.change_seq < 0 && !matches!(from, Source::Bulk(_)) && self.settings.passage_texts_per_hour > 0.0;
+        self.settings.page_first && lane == Lane::Rest && page.record.page_type.as_deref() != Some(PAPER) && !out_of_order
     }
 
     /// Passages a page gets at most: more for a reference site's while the passage lane is on.
@@ -2904,17 +2905,6 @@ impl Planner {
         self.held(saving).filter_map(|buffer| buffer.bulk.keys().next().copied()).min().map_or(self.bulk_read_through, |first| (first - 1).min(self.bulk_read_through))
     }
 
-    /// The place the passage lane goes back to, before the first bulk file it read past whose reference page the input being saved plans with its page text alone, as when the bulk lane plans a page given back again.
-    fn passage_rewind(&self) -> Option<i64> {
-        if self.settings.passage_texts_per_hour <= 0.0 {
-            return None;
-        }
-        let set = self.set.as_ref()?;
-        let writing = self.writing.front()?;
-        let first = writing.buffer.pages.iter().filter(|page| page.page_only && page.seq < 0 && set.reference(&page.host)).map(|page| page.seq - BULK_ORDER).min()?;
-        (first <= self.passage_read_through).then_some(first - 1)
-    }
-
     /// Where a restart may start the passage lane, given the pages it took buffered or in inputs not yet saved.
     fn passage_cursor_after(&self, saving: bool) -> i64 {
         self.held(saving).filter_map(|buffer| buffer.passages.keys().next().copied()).min().map_or(self.passage_read_through, |first| (first - 1).min(self.passage_read_through))
@@ -3006,7 +2996,9 @@ impl Planner {
         }
         // The passage lane takes only reference pages planned with their page text alone at this version, and held nowhere yet; so does the backfill, unless it plans the page again for its template lines.
         let passage = matches!(from, Source::Passages(_));
-        let backfill_passage = from == Source::Backfill
+        // A noted bulk-feed version from a file the passage lane read past gets its passages here, as the lane never reads that file again.
+        let passed_by_lane = from == Source::Replan && page.change_seq < 0 && page.change_seq - BULK_ORDER <= self.passage_read_through;
+        let backfill_passage = (from == Source::Backfill || passed_by_lane)
             && buffered.is_none()
             && self.settings.passage_texts_per_hour > 0.0
             && self.set.as_ref().is_some_and(|set| set.reference(&record.domain))
@@ -3054,7 +3046,7 @@ impl Planner {
         }
         let max_passages = self.max_passages(record);
         if let Some((lane, at)) = buffered {
-            let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, record), false), max_passages, from);
+            let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, &page, from), false), max_passages, from);
             self.buffer_mut(lane).replace(at, planned);
             return Considered::Taken(lane);
         }
@@ -3106,7 +3098,7 @@ impl Planner {
             return Considered::Waiting;
         }
         // A page planned again for its template lines gets all its texts, as the vector it replaces may hold passages.
-        let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, record) && !restripped, parts_only), max_passages, from);
+        let planned = planned_of(&page, &cleaned, recipe, (self.page_first(lane, &page, from) && !restripped, parts_only), max_passages, from);
         if planned.texts.is_empty() {
             self.counts.unchanged += 1;
             return Considered::Passed;
@@ -3326,8 +3318,7 @@ impl Planner {
     fn save_first(&mut self) -> Result<()> {
         let cursor = Some(self.cursor_after(true)).filter(|&cursor| cursor > self.kept_cursor);
         let bulk_cursor = Some(self.bulk_cursor_after(true)).filter(|&cursor| cursor > self.kept_bulk_cursor);
-        let rewind = self.passage_rewind();
-        let passage_cursor = rewind.or_else(|| Some(self.passage_cursor_after(true)).filter(|&cursor| cursor > self.kept_passage_cursor));
+        let passage_cursor = Some(self.passage_cursor_after(true)).filter(|&cursor| cursor > self.kept_passage_cursor);
         let settled = self.late_settled(true);
         let writing = self.writing.front().expect("an input cut");
         let backfill = writing.backfill.as_ref().map(|(shard, last)| (*shard, last.as_deref()));
@@ -3337,10 +3328,6 @@ impl Planner {
         self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
         self.kept_bulk_cursor = bulk_cursor.unwrap_or(self.kept_bulk_cursor);
         self.kept_passage_cursor = passage_cursor.unwrap_or(self.kept_passage_cursor);
-        if let Some(rewind) = rewind {
-            self.passage_read_through = rewind;
-            self.passage_file = self.passage_file.take().filter(|(seq, _)| *seq <= rewind);
-        }
         self.settled.retain(|seq| !settled.contains(seq));
         let lane = self.writing.pop_front().expect("an input cut").lane;
         self.pending[lane as usize] += 1;
