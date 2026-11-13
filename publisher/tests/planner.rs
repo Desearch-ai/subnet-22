@@ -2271,10 +2271,12 @@ async fn a_failed_write_holds_back_the_inputs_cut_after_it_and_is_written_again_
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
     let urls = three_files(&pages).await;
     // The first write is answered late and by then fails every try; the other two are written meanwhile.
-    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_secs(1));
+    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_secs(5));
     let failing = stub.state.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        while failing.keys("subnet-22", "embed/inputs/").len() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         failing.fail("PUT", "subnet-22/embed/inputs/", 5);
     });
     let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
