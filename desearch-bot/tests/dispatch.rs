@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
-    allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
+    allot, allot_first, batch_id, fresh_first, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, STOCK_WORKERS, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
@@ -618,6 +618,16 @@ fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
 }
 
 #[test]
+fn news_sites_whose_lists_grew_take_their_turns_before_the_rest_go_round() {
+    let want = |rank: i64, ready: u64| Want { rank, ready, allowance: 1_000, share: 1.0, weight: 1 };
+    let wants = [want(50_000, 3), want(1, 100), want(500, 100)];
+    assert_eq!(allot_first(&wants, 5, 0, 1), (vec![3, 2, 0], 1), "the grown news site goes first even at a lower rank, then the rest from where they stopped");
+    assert_eq!(allot_first(&wants, 5, 1, 1).0, [3, 0, 2], "the rest resume among themselves");
+    assert_eq!(allot_first(&wants, 2, 0, 1).0, [2, 0, 0], "a short pass serves the news site alone");
+    assert_eq!(allot_first(&wants, 13, 0, 0), allot(&wants, 13, 0), "with none first it is the plain round");
+}
+
+#[test]
 fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes() {
     let counted = |ok: f64, failed: f64| Some(Yield { ok, failed, at: 1000 });
     assert_eq!(yield_share(None, 1000), 1.0, "nothing judged yet");
@@ -976,6 +986,19 @@ fn each_lane_takes_its_quota_and_an_empty_lane_leaves_its_part_to_the_others() {
     quotas[CHANGED] = 40;
     let rest = store.take_ready("example.com", quotas).unwrap();
     assert_eq!(rest.len(), 30, "what refreshes cannot fill, new pages do");
+}
+
+#[test]
+fn a_news_sites_take_goes_to_its_new_pages_first_and_what_they_leave_to_its_refreshes() {
+    let dir = Dir::new("ready-news-first");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 10)).collect(), 100).unwrap();
+    let sent = take(&store, 20);
+    store.mark_sent(&sent, 150, &rules()).unwrap();
+    store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 50)).chain((0..3).map(|i| page(&format!("new{i:02}"), 60))).collect(), 200).unwrap();
+    let picks = store.take_ready("example.com", fresh_first(10)).unwrap();
+    let count = |reason| picks.iter().filter(|p| p.reason == reason).count();
+    assert_eq!((count(Reason::Fresh), count(Reason::Changed)), (3, 7), "every new story goes, and refreshes fill the rest");
 }
 
 #[test]

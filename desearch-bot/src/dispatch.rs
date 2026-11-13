@@ -123,13 +123,17 @@ fn share_from(counted: Option<Yield>, judged_at_least: f64) -> f64 {
 
 /// Each domain's share of one pass and where the next pass starts: turns go round the domains, sorted best first, from `start`, each taking its slots.
 pub fn allot(wants: &[Want], budget: u64, start: usize) -> (Vec<u64>, usize) {
+    allot_first(wants, budget, start, 0)
+}
+
+/// As `allot`, with the first `first` wants taking their turns before the rest, whose turns go round from `start` among them; the place returned is among the rest.
+pub fn allot_first(wants: &[Want], budget: u64, start: usize, first: usize) -> (Vec<u64>, usize) {
     let mut given = vec![0u64; wants.len()];
-    if wants.is_empty() {
-        return (given, 0);
-    }
+    let first = first.min(wants.len());
+    let rest = wants.len() - first;
     let cap = |i: usize| wants[i].ready.min(wants[i].allowance);
-    let start = start % wants.len();
-    let mut turns: VecDeque<usize> = (start..wants.len()).chain(0..start).filter(|&i| cap(i) > 0).collect();
+    let start = if rest == 0 { 0 } else { start % rest };
+    let mut turns: VecDeque<usize> = (0..first).chain(first + start..wants.len()).chain(first..first + start).filter(|&i| cap(i) > 0).collect();
     let mut left = budget;
     let mut next = start;
     while left > 0 {
@@ -140,7 +144,9 @@ pub fn allot(wants: &[Want], budget: u64, start: usize) -> (Vec<u64>, usize) {
         let take = earned.min(cap(i) - given[i]).min(left);
         given[i] += take;
         left -= take;
-        next = (i + 1) % wants.len();
+        if i >= first {
+            next = (i - first + 1) % rest;
+        }
         if given[i] < cap(i) {
             turns.push_back(i);
         }
@@ -168,6 +174,13 @@ pub fn split(credit: &mut [f64; LANES], shares: &[f64; LANES], want: usize) -> [
         quotas[lane] += 1;
         credit[lane] -= 1.0;
     }
+    quotas
+}
+
+/// A news site's take: its new pages first, what they leave going to its refreshes and retries.
+pub fn fresh_first(want: usize) -> [usize; LANES] {
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = want;
     quotas
 }
 
@@ -609,6 +622,8 @@ pub struct Dispatcher {
     list_version: u64,
     /// The domain whose turn comes first next pass, as (rank, domain).
     resume: Option<(i64, String)>,
+    /// News sites whose lists grew since the last pick, which take their turns first in the next.
+    news_first: HashSet<String>,
     /// The batches in flight, kept so a restart sends them again unchanged.
     pending: Vec<Pending>,
     progress: Arc<Progress>,
@@ -686,6 +701,7 @@ impl Dispatcher {
             pace: Pace::new(0, 0),
             domains,
             resume: None,
+            news_first: HashSet::new(),
             pending,
             progress,
             ranks_read: Instant::now(),
@@ -904,6 +920,9 @@ impl Dispatcher {
         }
         let ranks: HashMap<String, (i64, f64, u8)> = ranks.into_iter().map(|(domain, rank, share, weight, _)| (domain, (rank, share, weight))).collect();
         for (domain, added) in grown {
+            if self.buckets.terms(&domain).news {
+                self.news_first.insert(domain.clone());
+            }
             let (rank, share, weight) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0, 1));
             self.domains.entry(domain).or_insert(Domain { rank, ready: 0, share, weight }).ready += added;
         }
@@ -932,6 +951,12 @@ impl Dispatcher {
             .map(|(name, d)| (d.rank, name.clone()))
             .collect();
         order.sort_unstable();
+        // News sites whose lists just grew take their turns first; the rest go round from where the last pass stopped.
+        let (first, rest): (Vec<_>, Vec<_>) = order.into_iter().partition(|(_, name)| self.news_first.contains(name));
+        self.news_first.clear();
+        let start = self.resume.as_ref().map_or(0, |resume| rest.partition_point(|key| key <= resume));
+        let ahead = first.len();
+        let order: Vec<(i64, String)> = first.into_iter().chain(rest).collect();
         let wants: Vec<Want> = order
             .iter()
             .map(|(rank, name)| {
@@ -941,14 +966,17 @@ impl Dispatcher {
                 Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
-        let start = self.resume.as_ref().map_or(0, |resume| order.partition_point(|key| key <= resume));
-        let (given, next) = allot(&wants, budget, start);
-        self.resume = order.get(next.checked_sub(1).unwrap_or(order.len().saturating_sub(1))).cloned();
+        let (given, next) = allot_first(&wants, budget, start, ahead);
+        let rest = &order[ahead..];
+        self.resume = rest.get(next.checked_sub(1).unwrap_or(rest.len().saturating_sub(1))).cloned();
         let asks: Vec<(String, [usize; LANES])> = order
             .iter()
             .zip(&given)
             .filter(|(_, &n)| n > 0)
-            .map(|((_, name), &n)| (name.clone(), split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize)))
+            .map(|((_, name), &n)| {
+                let quotas = if self.buckets.terms(name).news { fresh_first(n as usize) } else { split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize) };
+                (name.clone(), quotas)
+            })
             .collect();
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {

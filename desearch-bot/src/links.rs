@@ -43,6 +43,10 @@ impl LinkQueue {
         self.due.remove(host);
     }
 
+    pub fn contains(&self, host: &str) -> bool {
+        self.due.contains_key(host)
+    }
+
     /// The site due earliest, if it is due by `now`.
     pub fn pop_due(&mut self, now: i64) -> Option<Arc<str>> {
         while let Some(Reverse((at, _))) = self.heap.peek() {

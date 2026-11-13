@@ -44,6 +44,10 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--heavy-slots` | 16 | visits at once to domains with more than 2,000 sitemap records |
 | `--follow-links` | `thin` | which listed sites have their links followed: `off`, `thin` (sitemaps listing under 1,000 pages, or none) or `all` (those, and every whole or news site) |
 | `--links-slots` | 32 | link runs at once; 0, like `--follow-links off`, turns them off |
+| `--news-lane` | off | poll listed news sites' Google News sitemaps, feeds and files of newest stories apart from their visits |
+| `--news-slots` | 32 | news lane polls at once |
+| `--news-fetch-slots` | 16 | lane files fetched or parsed at once, apart from the visits' sitemap slots |
+| `--news-fast-hosts` | 300 | news sites polled every 2 minutes, those whose lane files find the most new pages; the rest every 12 |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--urls-per-hour` | 0 | URLs sent in an hour at most, at a steady pace; 0 sends what the task API has room for |
@@ -126,7 +130,24 @@ name within the host's registrable domain.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
-are read again within 30 minutes.
+are read again within 30 minutes. A visit reads at most 40 files: a news site's Google News sitemaps
+first, then the files due longest. An active site whose roots read on a visit are gone stays active
+while another sitemap it holds answered when last read; a listed site set aside as gone while one does
+is due again when the list loads.
+
+With `--news-lane`, a listed news site's lane files are polled on their own: Google News sitemaps, RSS
+and Atom feeds, and files of up to 5,000 entries whose newest entry is under two days old. A poll reads
+the one lane file due first, with the validators of its last read, on fetch slots of its own, and leaves
+the site's standing and its next visit as they were; robots.txt, read by the site's visits within the
+last two days, and the site's Crawl-delay apply, and polls of one site are at least 10 seconds apart. The
+sites whose lane files find the most new pages are polled every 2 minutes, the rest every 12; a lane
+file that did not change waits half as long again each time, up to five times that, and a site's visits
+come when its other files are due. The pages a news site's lists gain go out first in the
+next dispatch pass. A news site whose lane files' newest story is over two hours old has its homepage
+read in the lane as a list of the links shaped like the articles its lane files list (`/post/123`,
+`/2026/11/10/a-story/`), not its sections or tags; a read that finds new ones brings the homepage back in
+5 minutes, and one that does not doubles the wait, up to 6 hours. Feeds the homepage names are read on the
+site's next visit.
 
 A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
 the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap

@@ -14,6 +14,23 @@ pub const NEWS_INTERVAL: i64 = HOUR;
 /// A listed news site's root index and Google News sitemaps are read again at least this often: ~1 h of fixed waits follow a find, against a 2-hour target.
 pub const NEWS_REREAD: i64 = 30 * MINUTE;
 
+/// The news lane polls a lane file this often on the news sites that publish most, and this often on the rest.
+pub const NEWS_FAST: i64 = 2 * MINUTE;
+pub const NEWS_SLOW: i64 = 12 * MINUTE;
+/// A lane file lists a site's newest stories: a Google News sitemap, a feed, or a small file with an entry dated this recently.
+pub const LANE_RECENT: i64 = 2 * DAY;
+pub const LANE_MOST_ENTRIES: usize = 5_000;
+
+pub fn lane_file(kind: &str, google_news: bool, feed: bool, newest: Option<i64>, entries: usize, now: i64) -> bool {
+    kind == "urlset" && entries <= LANE_MOST_ENTRIES && (google_news || feed || newest.is_some_and(|at| now - at <= LANE_RECENT))
+}
+
+/// A lane file's interval: its tier's, moved by up to a tenth either way by `spread` (-1 to 1), so the polls of many sites never line up.
+pub fn lane_interval(fast: bool, spread: f64) -> i64 {
+    let base = if fast { NEWS_FAST } else { NEWS_SLOW };
+    (base as f64 * (1.0 + 0.1 * spread.clamp(-1.0, 1.0))).round() as i64
+}
+
 /// The interval a sitemap keeps: a listed news site's root index and its Google News files never wait longer than `NEWS_REREAD`; a re-read index sends its changed children, and a root that lists pages keeps its own pace.
 pub fn reread_within(interval: i64, listed_news: bool, depth: i64, index: bool, google_news: bool) -> i64 {
     if listed_news && ((depth == 0 && index) || google_news) {
@@ -130,6 +147,20 @@ mod tests {
         assert_eq!(reread_within(DAY, true, 1, true, false), DAY, "a child index keeps its pace; its parent sends it when it changes");
         assert_eq!(reread_within(DAY, false, 0, true, true), DAY, "so does any site off the news list");
         assert_eq!(reread_within(MIN_INTERVAL, true, 0, true, false), MIN_INTERVAL);
+    }
+
+    #[test]
+    fn the_news_lane_takes_small_files_of_newest_stories_and_polls_them_by_tier() {
+        let now = 1_700_000_000 * SECOND;
+        assert!(lane_file("urlset", true, false, None, 1_000, now), "a Google News sitemap");
+        assert!(lane_file("urlset", false, true, None, 50, now), "a feed");
+        assert!(lane_file("urlset", false, false, Some(now - DAY), 3_000, now), "a small file with yesterday's stories");
+        assert!(!lane_file("urlset", false, false, Some(now - 3 * DAY), 3_000, now), "one whose newest entry is older");
+        assert!(!lane_file("urlset", true, false, None, LANE_MOST_ENTRIES + 1, now), "a big file, whatever it is");
+        assert!(!lane_file("index", true, false, Some(now), 10, now), "an index sends its children instead");
+        assert_eq!(lane_interval(true, 0.0), NEWS_FAST);
+        assert_eq!(lane_interval(false, 1.0), NEWS_SLOW + NEWS_SLOW / 10);
+        assert_eq!(lane_interval(false, -5.0), NEWS_SLOW - NEWS_SLOW / 10);
     }
 
     #[test]

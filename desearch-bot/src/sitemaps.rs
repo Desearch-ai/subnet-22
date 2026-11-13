@@ -234,6 +234,11 @@ pub fn is_news(body: &[u8]) -> bool {
     NEWS_NAMESPACE.is_match(&body[..body.len().min(4096)])
 }
 
+/// Whether the file is an RSS or Atom feed.
+pub fn is_feed(body: &[u8]) -> bool {
+    FEED_ROOT.is_match(&body[..body.len().min(4096)])
+}
+
 pub fn has_time(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.contains('T'))
 }

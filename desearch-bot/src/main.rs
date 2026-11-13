@@ -478,6 +478,18 @@ struct RunArgs {
     /// Which listed sites have their links followed: off; thin, those whose sitemaps list under 1,000 pages or none, weekly; or all, those and every whole or news site monthly.
     #[arg(long, value_enum, default_value_t = FollowLinks::Thin)]
     follow_links: FollowLinks,
+    /// Poll listed news sites' Google News sitemaps, feeds and files of newest stories apart from their visits, on slots of their own.
+    #[arg(long, default_value_t = false)]
+    news_lane: bool,
+    /// News lane polls at once.
+    #[arg(long, default_value_t = 32)]
+    news_slots: usize,
+    /// Lane files the news lane fetches or parses at once, apart from the visits' sitemap slots.
+    #[arg(long, default_value_t = 16)]
+    news_fetch_slots: usize,
+    /// News sites polled every two minutes, those whose lane files find the most new pages; the rest are polled every twelve.
+    #[arg(long, default_value_t = 300)]
+    news_fast_hosts: usize,
     /// Percent of the visit slots kept for domains never checked; slots one kind of work leaves unused go to the others.
     #[arg(long, default_value_t = 30)]
     discovery_share: usize,
@@ -661,6 +673,9 @@ async fn run(args: RunArgs) -> Result<()> {
         follow_links: args.follow_links,
         resolver: Some(Arc::new(resolver)),
         links_cpu: Slots::new(args.links_cpu),
+        news_lane: args.news_lane,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(args.news_fetch_slots),
     });
     if args.compact {
         let stores = buckets.clone();
@@ -677,7 +692,8 @@ async fn run(args: RunArgs) -> Result<()> {
     let mut crawl = Loop::new(buckets.clone(), visitor, args.concurrency, registry, excluded)
         .with_min_free_disk(args.min_free_gb << 30)
         .with_shares(args.discovery_share, args.backlog_share)
-        .with_links(args.links_per_hour, args.links_first_days * 86_400);
+        .with_links(args.links_per_hour, args.links_first_days * 86_400)
+        .with_news(args.news_slots, args.news_fast_hosts, desearch_bot::schedule::NEWS_SLOW / desearch_bot::schedule::SECOND);
     let scheduled = crawl.load()?;
     println!("[rs] {scheduled} domains in {} buckets", owned.len());
 
