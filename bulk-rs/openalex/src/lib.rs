@@ -44,8 +44,8 @@ pub struct Args {
     pub held: Option<PathBuf>,
     #[arg(long = "min-cited", default_value_t = 20)]
     pub min_cited: i64,
-    /// Close the run folder after the file that takes it to this many pages and go on in `<out>-02`, `<out>-03`, ...,
-    /// run `<run>-02`, ...; 0 keeps one folder.
+    /// Close a run folder after the file that takes it to this many pages: `<out>-01`, `<out>-02`, ..., runs
+    /// `<run>-01`, ...; 0 keeps one folder, `<out>`.
     #[arg(long = "chunk-pages", default_value_t = 0)]
     pub chunk_pages: u64,
     /// Snapshot files read at once.
@@ -159,8 +159,8 @@ struct Chunks<'a> {
 impl Chunks<'_> {
     fn folder(&self) -> (PathBuf, String) {
         let run = if self.args.run.is_empty() { utc_format(self.as_of_us, "%Y%m%d") } else { self.args.run.clone() };
-        if self.every == 0 || self.number == 1 {
-            return (self.args.out.clone(), if self.every == 0 { run } else { format!("{run}-01") });
+        if self.every == 0 {
+            return (self.args.out.clone(), run);
         }
         (PathBuf::from(format!("{}-{:02}", self.args.out.display(), self.number)), format!("{run}-{:02}", self.number))
     }
