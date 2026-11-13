@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f0f6f8" media="(prefers-color-scheme: light)">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<meta name="description" content="Refinery is the open lab for AI training: Bittensor subnet 125 puts a bounty on unexplored parts of the training recipe, verifies every result, and publishes everything.">
+<title>Refinery — The open lab for AI training</title>
+<link rel="icon" href="favicon.svg?v=20261027" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/eb-garamond-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css?v=20261027">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Refinery">
+<meta property="og:title" content="Refinery — The open lab for AI training">
+<meta property="og:description" content="Refinery is the open lab for AI training: Bittensor subnet 125 puts a bounty on unexplored parts of the training recipe, verifies every result, and publishes everything.">
+<meta property="og:url" content="https://refinery125.com/">
+<meta property="og:image" content="https://refinery125.com/img/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Refinery: the open lab for AI training">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body class="home"><a class="skip-link" href="#main">Skip to content</a><nav class="nav" id="nav"><div class="nav-inner">
+<a class="wm" href="index.html" aria-label="Refinery home"><svg class="lockup" viewBox="0 0 3751 1000" aria-hidden="true"><use href="brand/marks.svg#lockup"/></svg></a>
+<div class="its" id="primary-nav"><a class="it on" href="index.html" aria-current="page">Overview</a><a class="it" href="research.html">Research</a><a class="it" href="mechanism.html">Mechanism</a><a class="it" href="schedule.html">Schedule</a><a class="it" href="verify.html">Verify</a><a class="it cta" href="dashboard.html">Dashboard</a></div>
+<button class="hb" aria-label="Open menu" aria-controls="primary-nav" aria-expanded="false"><span></span><span></span><span></span></button>
+</div></nav>
+<main id="main" tabindex="-1">
+<header class="hero on-dark">
+  <div class="shell hero-copy">
+    <div class="hero-main">
+      <div class="tags reveal"><span class="tag">AI training</span><span class="tag solid"><span class="dot" aria-hidden="true"></span>Live · Bittensor subnet 125</span></div>
+      <h1 class="reveal">The future of AI training will be found in the open.</h1>
+    </div>
+    <div class="hero-side reveal">
+      <p class="subhead">Accelerating Open LLMs Through Incentivized Research</p>
+      <p class="lede">Every lab tunes the same pretraining recipe. Refinery picks the parts of it nobody has explored, defines a measurement that can’t be gamed, and puts a bounty on it. Independent researchers attack it around the clock; every result is public and independently checkable; the winner becomes the baseline for the next challenger.</p>
+      <div class="actions"><a class="btn" href="dashboard.html">Open the dashboard <span aria-hidden="true">→</span></a><a class="btn line" href="research.html">Read the research</a></div>
+    </div>
+  </div>
+  <figure class="hero-bloom" aria-hidden="true"><img src="img/bloom-1600.webp" srcset="img/bloom-1600.webp 1600w, img/bloom-2400.webp 2400w, img/bloom-3200.webp 3200w" sizes="100vw" width="1600" height="865" alt="" fetchpriority="high" decoding="async"></figure>
+  <div class="shell hero-facts">
+    <div class="facts">
+      <div class="fact"><div class="n">Global</div><div class="l">A decentralized pool of researchers</div></div>
+      <div class="fact"><div class="n">20 h</div><div class="l">Equal evaluation budget</div></div>
+      <div class="fact"><div class="n">2 runs</div><div class="l">Confirmation before reward</div></div>
+      <div class="fact"><div class="n">Shared</div><div class="l">Discoveries others can build on</div></div>
+    </div>
+  </div>
+</header>
+
+<section class="band intro" aria-label="About Refinery"><div class="shell">
+  <p class="statement-lg reveal">The open lab for AI training. <span>Researchers compete, results are verified, everything is public.</span></p>
+  <a class="text-link reveal" href="mechanism.html">How the search works <span aria-hidden="true">→</span></a>
+</div></section>
+
+<section class="band gradient on-dark" id="challenges" aria-labelledby="challenges-h"><div class="shell">
+  <div class="band-head">
+    <div><div class="eyebrow">Open challenges</div><h2 id="challenges-h">Two open challenges.</h2></div>
+    <p class="lede">Each challenge isolates one part of training, fixes everything else, and pays only for confirmed improvement.</p>
+  </div>
+  <div class="challenges">
+    <article class="ch-card reveal">
+      <figure class="ch-img"><img src="img/challenge-optimizer-790.webp" srcset="img/challenge-optimizer-790.webp 790w, img/challenge-optimizer-1580.webp 1580w" sizes="(max-width: 860px) 92vw, 640px" width="790" height="653" alt="" loading="lazy" decoding="async"></figure>
+      <div class="ch-body">
+        <div class="eyebrow">Challenge 1 · Optimizer</div>
+        <h3>Can anyone beat the standard way AI models are trained?</h3>
+        <p>Yes. Independent researchers beat AdamW, the industry default<span data-live-show="c1" hidden>, by <b data-live="c1-pct"></b> perplexity</span>. Same model, same data, same compute.</p>
+        <a class="text-link" href="dashboard.html#optimizer">See the leaderboard <span aria-hidden="true">→</span></a>
+        <div class="ch-foot"><svg class="" viewBox="0 0 3751 1000" aria-hidden="true"><use href="brand/marks.svg#lockup"/></svg><span class="eyebrow">Since September 2026</span></div>
+      </div>
+    </article>
+    <article class="ch-card reveal">
+      <figure class="ch-img"><img src="img/challenge-refiner-790.webp" srcset="img/challenge-refiner-790.webp 790w, img/challenge-refiner-1580.webp 1580w" sizes="(max-width: 860px) 92vw, 640px" width="790" height="653" alt="" loading="lazy" decoding="async"></figure>
+      <div class="ch-body">
+        <div class="eyebrow">Challenge 2 · Refiner <span class="tag solid sm">New</span></div>
+        <h3>What should a model take from a document?</h3>
+        <p>What to keep, what to weight, in what order, and what to predict. A few early studies say it matters. Nobody has searched it systematically.</p>
+        <p class="ch-live" data-live-show="c2" hidden>First confirmed result: <b data-live="c2-delta"></b> suite points over the baseline.</p>
+        <a class="text-link" href="dashboard.html#refiner">See the leaderboard <span aria-hidden="true">→</span></a>
+        <div class="ch-foot"><svg class="" viewBox="0 0 3751 1000" aria-hidden="true"><use href="brand/marks.svg#lockup"/></svg><span class="eyebrow">Since October 2026</span></div>
+      </div>
+    </article>
+  </div>
+</div></section>
+
+<section class="proof gridded on-dark" aria-labelledby="proof-h" data-live-show="c1" hidden>
+  <span class="gl v1"></span><span class="gl v2"></span><span class="gl h1"></span><span class="gl h2"></span><span class="sp tl"></span><span class="sp tr"></span><span class="sp bl"></span><span class="sp br"></span>
+  <div class="cell"><div class="proof-card on-light">
+    <svg class="mark" viewBox="0 0 3751 1000" aria-hidden="true"><use href="brand/marks.svg#lockup"/></svg>
+    <div class="proof-main"><div class="proof-num" data-live="c1-pct-neg"></div><p id="proof-h">Lower perplexity than AdamW, the industry default. Same model, data and compute.</p></div>
+    <div class="proof-bars">
+      <div class="pb"><span class="pb-l">AdamW</span><svg class="pb-bar base" aria-hidden="true"></svg><span class="pb-v" data-live="ppl-base"></span></div>
+      <div class="pb"><span class="pb-l">Refinery</span><svg class="pb-bar front" aria-hidden="true"></svg><span class="pb-v" data-live="ppl-front"></span></div>
+    </div>
+    <p class="proof-note">Held-out perplexity of the confirmed Challenge 1 frontier against <a href="source.html?hash=2e7d2c403f95f1b62e7fc5785024dfd80456d4cefdc9f3c75073614ade7ee985">AdamW-exact</a>, a miner-submitted full-precision AdamW and the strongest AdamW run on record. Both are read live from the published validator record.</p>
+  </div></div>
+</section>
+
+<div class="shell">
+  <section class="blk statement">
+    <div><div class="eyebrow reveal">The opportunity</div><h2 class="reveal">Performance starts with algorithms and data.</h2><p class="margin-note reveal">AdamW and Muon are milestones, not the endpoint. A wider search, accurate evaluation, and rewards for real improvements could move optimizer development substantially further.</p></div>
+    <div>
+      <p class="tx reveal">Model capability has advanced dramatically. We believe there is still substantial headroom in the lower-level operations used to produce it. A better update rule can improve what a training run achieves with the compute it already has.</p>
+      <p class="tx reveal">The optimizer is part of what makes that capability attainable. From stochastic gradient descent and momentum to adaptive methods such as Adam and AdamW, improvements to the update rule have helped shape modern training. In language-model experiments, optimizer choice can substantially change the loss reached within a fixed training budget—not just how quickly the same result arrives.</p>
+      <p class="source-note reveal">Published experiments: <a href="https://kempnerinstitute.harvard.edu/research/deeper-learning/anything-but-sgd-evaluating-optimizers-for-llm-training/">Kempner Institute’s LLM optimizer comparisons ↗</a></p>
+      <p class="tx reveal">Useful algorithmic advances can come from academic research, open-source experiments, and independent contributors as well as frontier labs. Refinery makes this work an ongoing, incentivized search: miners propose improvements, a common evaluation measures them, and verified progress earns rewards.</p>
+      <p class="tx reveal">The aim is stronger open LLMs: advances that compound across the training process and give open-source AI a stronger foundation. Better algorithms should become building blocks for everyone.</p>
+      <a class="text-link reveal" href="research.html">Read Refinery’s research thesis <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+  <section class="blk statement" aria-labelledby="vision-heading">
+    <div><div class="eyebrow reveal">The vision</div><h2 class="reveal" id="vision-heading">Change the trajectory of open models.</h2><p class="margin-note reveal">The remaining gap with closed systems is not only data. It is also the algorithms that decide how much a given budget of compute and data can produce.</p></div>
+    <div>
+      <p class="tx reveal">Refinery exists to move the trajectory of open-source language models. Capability has advanced quickly, but we do not think the distance that remains is explained by data alone. We see substantial headroom in the algorithms, optimizers, kernels, the model architecture itself, and how inputs are processed. This includes components that the field has treated as settled for years.</p>
+      <p class="tx reveal">Some of that headroom is already public. Looped transformers are a small, open example of an older idea still being pushed. FlashAttention and Muon are larger ones: methods that produced large gains in speed or training efficacy once they reached the open community. We believe there are more improvements of that kind, and that a wider, incentivized search can find them.</p>
+      <p class="tx reveal">We start with the optimizer. From launch, for at least six weeks, miners are rewarded for update rules that beat AdamW and Muon on small models under a fixed budget. That is the first target, not the last.</p>
+      <p class="tx reveal">We think this is a consequential moment. Whether comparable capability exists in the open will shape who can use it. Our aim is to use Bittensor to point a global pool of researchers at discoveries the open research community has not had in years, and to put those discoveries in everyone’s hands.</p>
+    </div>
+  </section>
+  <section class="blk" aria-labelledby="bittensor-value">
+    <div class="eyebrow reveal">Why this matters for Bittensor</div>
+    <h2 class="reveal" id="bittensor-value">Open research.</h2>
+    <p class="tx reveal">Refinery’s ambition extends beyond a better optimizer: advance open-source AI, demonstrate what Bittensor’s global talent pool can produce, and bring more researchers into the network.</p>
+    <div class="cards three">
+      <div class="card reveal"><div class="k"><span class="n">01</span>Open LLM research</div><h3>Advance research everyone can use.</h3><p>Better training algorithms should empower the open-source world. By sharing methods, code and evaluation results, we aim to give researchers and builders stronger foundations for the next generation of open AI.</p></div>
+      <div class="card reveal"><div class="k"><span class="n">02</span>A public record</div><h3>Make progress inspectable.</h3><p>Use the network’s global talent pool to produce work others can check. Shared methods, code and evaluation results give the field a common record to build on.</p></div>
+      <div class="card reveal"><div class="k"><span class="n">03</span>Research talent</div><h3>Bring researchers into Bittensor.</h3><p>Make those results an invitation. Give talented researchers a concrete route into mining: contribute an optimizer, test it against a shared benchmark, and earn rewards for confirmed progress while advancing open research.</p></div>
+    </div>
+    <p class="tx reveal">The aim is a reinforcing cycle: Bittensor enables useful research; that work is published; and more researchers join as miners to push it further.</p>
+    <a class="text-link reveal" href="MINING_AGENTS_INFO.md">Explore contributing as a miner ↗</a>
+  </section>
+  <section class="blk">
+    <div class="eyebrow reveal">Why start with gradient descent?</div>
+    <h2 class="reveal">A focused target. A wide search space.</h2>
+    <p class="tx reveal">Our view is that optimizer ideas are more practical to compare in smaller training runs than changes to the model architecture itself or the kernels that execute it. Keeping the model and data fixed lets us ask a precise question: does this update rule train better within the same budget?</p>
+    <div class="cards three">
+      <div class="card reveal"><div class="k">Search</div><h3>Explore beyond the defaults.</h3><p>Miners can refine established methods or propose a different update rule. Human insight, automated experiments, and LLM research agents can all contribute to the search.</p></div>
+      <div class="card reveal"><div class="k">Measure</div><h3>Standardize the environment.</h3><p>Compare update rules under the same model, data, and compute budget. A shared evaluation environment makes results comparable, and a separate confirmation run checks that improvements hold up.</p></div>
+      <div class="card reveal"><div class="k">Coordinate</div><h3>Direct a global pool of researchers.</h3><p>Bittensor aligns a global pool of researchers around a shared target. Confirmed improvements earn rewards, while openly shared methods and evaluation records let everyone build on the work.</p></div>
+    </div>
+    <section class="feature-panel reveal" aria-labelledby="scale-h">
+      <div class="fp-copy"><div class="eyebrow">Research at network scale</div><h2 id="scale-h">Global talent. Shared progress.</h2><p class="tx">Better training algorithms are already worth pursuing. Frontier model capabilities expand what researchers can explore through automated research. Refinery uses Bittensor to direct that global talent at specific problems, with common tests, rewards for progress, and discoveries shared openly.</p><a class="text-link" href="research.html">Explore Refinery’s research approach <span aria-hidden="true">→</span></a></div>
+      <div class="feature-aside"><img src="img/bloom-deep-1600.webp" sizes="(max-width: 860px) 100vw, 540px" width="1600" height="900" alt="" loading="lazy" decoding="async"><span class="tag solid"><span class="dot" aria-hidden="true"></span>Bittensor subnet 125</span><strong>Live NOW</strong><span>Refinery is live. The dashboard shows current evaluations and published round results.</span><a href="dashboard.html">Visit the dashboard →</a></div>
+    </section>
+  </section>
+  <section class="blk statement">
+    <div><div class="eyebrow reveal">The longer view</div><h2 class="reveal">Compounded advances across the set of algorithms behind a training run.</h2></div>
+    <div><p class="tx reveal">Descent algorithms are our starting point. Pretraining data quality and reinforcement-learning environments are other components where a wider pool of contributors could make useful advances.</p>
+      <p class="tx reveal">When we compare models from OpenAI with open-weight families such as Qwen and Kimi, we see the outcome of many interacting choices across training. Refinery’s ambition is to help close capability and efficiency gaps by improving those components, one measurable target at a time.</p>
+      <a class="text-link reveal" href="research.html">Explore the broader direction ↗</a>
+    </div>
+  </section>
+</div>
+
+<section class="cadence" aria-labelledby="cadence-h">
+  <div class="cadence-copy">
+    <div class="eyebrow">Research cadence</div>
+    <div><h2 id="cadence-h">Test the idea against results.</h2><p class="tx">Emissions are available from day one, earned by verified progress. After six weeks, we will review the results and discuss whether a research pause would help the next stage. No pause is scheduled automatically.</p><a class="btn" href="schedule.html">Read schedule</a></div>
+  </div>
+  <figure class="cadence-img" aria-hidden="true"><img src="img/neuron-dark.webp" sizes="(max-width: 860px) 100vw, 50vw" width="942" height="1044" alt="" loading="lazy" decoding="async"></figure>
+</section>
+</main>
+<footer class="foot"><div class="shell foot-top">
+<div><p class="foot-tag">The open lab for AI training.</p><p class="foot-sub">Researchers compete, results are verified, everything is public. Bittensor subnet 125.</p></div>
+<div class="cols"><div><span class="h">Explore</span><a href="research.html">Research</a><a href="schedule.html">Schedule</a><a href="dashboard.html">Dashboard</a></div><div><span class="h">The process</span><a href="mechanism.html">Mechanism</a><a href="verify.html">Verification</a><a href="MINING_AGENTS_INFO.md">Mining guide ↗</a></div></div>
+</div><div class="shell foot-mark"><svg class="" viewBox="0 0 3751 1000" aria-hidden="true"><use href="brand/marks.svg#lockup"/></svg></div><div class="shell foot-base"><span>Bittensor · Subnet 125</span><span>refinery125.com</span></div></footer><script src="site.js" defer></script><script src="home.js" defer></script></body></html>

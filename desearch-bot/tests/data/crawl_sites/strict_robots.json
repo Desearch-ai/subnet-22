@@ -1,0 +1,10 @@
+{
+ "about": "Where crawl-sites differs from the Python crawler on purpose: a robots.txt 401/402/403/451 refuses the host, a 429 is asked again after the pause and then keeps us off.",
+ "runs": {
+  "a": {
+   "robots401.test": {"counts": {"robots_401": 1}, "requests": ["/robots.txt"]},
+   "robots403.test": {"counts": {"robots_403": 1}, "requests": ["/robots.txt"]},
+   "robots429.test": {"counts": {"robots_429": 1}, "requests": ["/robots.txt", "/robots.txt"]}
+  }
+ }
+}

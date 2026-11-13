@@ -1,0 +1,17 @@
+[package]
+name = "bulk-ecfr"
+description = "The eCFR as a page per section at its ecfr.gov address, from govinfo's title XML"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+roxmltree.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

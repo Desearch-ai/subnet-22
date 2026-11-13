@@ -51,7 +51,8 @@ them at once to the temporary bucket. Inputs are saved in the order cut, each on
 `PLANNER_WRITES` are unsaved and another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs
 or the pass ends. A failed write or save fails the pass, and the same input is tried again before any later one
 is saved. Saved inputs go to the API while it has room, the fresh lane's first, then oldest first, no faster
-than `PLANNER_PAGES_PER_HOUR` and, with the fresh lane on, `PLANNER_FRESH_PER_HOUR` together allow. A starting
+than the task budget allows, an input a task (with the task budget off, no faster than the page budgets together
+allow). A starting
 planner goes on with the budgets it had banked when it stopped, refilled for the time it was down, and holds the
 fresh lane's two minutes; budget left unspent is kept for two minutes at most, so an hour's count stays even
 across a restart and neither a restart nor a stretch without room plans or hands over a backlog at once. A restart reads
@@ -88,6 +89,14 @@ on input writes and writing its state.
   and an empty rest lane hold no input's worth beyond it, so a quiet log holds nothing back. Without a set, every page is of the
   last class. The report line counts the log's pages that asked for a place, and the pages planned outside the
   fresh lane, by class.
+- **Task budget** (`PLANNER_EMBED_TASKS_PER_HOUR`, 2,500 by default; 0 turns it off): an input is one embed task,
+  so the planner budgets in tasks, whatever its pages are like. A page is charged what it adds to its input (the
+  larger of its share of the 1,000 pages, the 3M characters or the text cap), and the input is settled to exactly one
+  task when it is cut, full or not. The bulk feed, with the passage lane, pays from `PLANNER_BULK_TASK_SHARE` (0.25)
+  of the budget and every other page from the rest; each share banks up to two minutes of the whole, and what one
+  cannot bank goes to the other, so neither starves while the other is idle. Fresh pages are charged to the crawl's
+  share but never wait on it. `PLANNER_PAGES_PER_HOUR` and `PLANNER_BULK_PAGES_PER_HOUR` are then ceilings, none
+  unless set; the bulk lane is on while its share is above 0.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the

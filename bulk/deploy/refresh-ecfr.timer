@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of the eCFR from govinfo's title XML
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Unit=refresh@ecfr.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

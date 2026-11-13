@@ -1,0 +1,17 @@
+{
+ "source": "subnet-github",
+ "run": "fixture",
+ "as_of": "2026-11-11T08:45:08Z",
+ "files": [
+  "subnet-github-000001.parquet"
+ ],
+ "removed": "removed.txt",
+ "rows": 7,
+ "counts": {
+  "pages": 7,
+  "no_repo": 2,
+  "duplicate": 1,
+  "no_readme": 1,
+  "removed": 1
+ }
+}

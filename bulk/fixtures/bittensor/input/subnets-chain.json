@@ -1,0 +1,431 @@
+{
+ "block": 9481913,
+ "taken_at": "2026-11-11T08:45:00+00:00",
+ "network": "finney",
+ "total_networks": 129,
+ "subnets": [
+  {
+   "netuid": 0,
+   "name": "root",
+   "symbol": "\u03a4",
+   "owner_hotkey": "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM",
+   "owner_coldkey": "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM",
+   "owner_identity": {
+    "name": "Polychain",
+    "url": "https://polychain.capital/",
+    "github": "",
+    "image": "",
+    "discord": "",
+    "description": "",
+    "additional": ""
+   },
+   "identity": null,
+   "tempo": 100,
+   "registered_block": 0,
+   "registered_at": null,
+   "neurons": 64,
+   "max_neurons": 64,
+   "tao_in_emission": 0.0,
+   "emission_share": 0.0
+  },
+  {
+   "netuid": 7,
+   "name": "Allways",
+   "symbol": "\u03b7",
+   "owner_hotkey": "5ChTwrqwqeHpX8rLw73oDWXRjTfz83U4p3kRuKgvEfAEt8EE",
+   "owner_coldkey": "5CAc19iETJmWD2rYVX1ht58ghCpyHq86MoBNdx5TzLfinzcx",
+   "owner_identity": {
+    "name": "Owner7",
+    "url": "",
+    "github": "",
+    "image": "",
+    "discord": "",
+    "description": "",
+    "additional": ""
+   },
+   "identity": {
+    "subnet_name": "Allways",
+    "github_repo": "https://github.com/entrius/allways",
+    "subnet_contact": " ",
+    "subnet_url": "https://all-ways.io/",
+    "discord": " ",
+    "description": "universal transaction layer",
+    "logo_url": " https://allways-905418005698-us-east-2-an.s3.us-east-2.amazonaws.com/sn7-light.png",
+    "additional": " "
+   },
+   "tempo": 360,
+   "registered_block": 2627691,
+   "registered_at": "2024-03-24T17:51:00+00:00",
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 0.0,
+   "emission_share": 0.0
+  },
+  {
+   "netuid": 8,
+   "name": "Vanta",
+   "symbol": "\u03b8",
+   "owner_hotkey": "5F6tnxzAAxbhaWRmeUmB63JEM3VXBNSmqb3AwYJVDStQjw8y",
+   "owner_coldkey": "5F6tnxzAAxbhaWRmeUmB63JEM3VXBNSmqb3AwYJVDStQjw8y",
+   "owner_identity": {
+    "name": "\u03c4aoshi validator",
+    "url": "https://www.taoshi.io/",
+    "github": "",
+    "image": "",
+    "discord": "",
+    "description": "",
+    "additional": ""
+   },
+   "identity": {
+    "subnet_name": "Vanta",
+    "github_repo": "https://github.com/taoshidev/vanta-network",
+    "subnet_contact": "",
+    "subnet_url": "https://www.vantanetwork.io/",
+    "discord": "tl_arrash",
+    "description": "The first decentralized & trustless liquidity and execution engine for prop firms and traders",
+    "logo_url": "https://website-git-ken-vanta-taoshi.vercel.app/black-white.png",
+    "additional": "Vanta Network is the first decentralized, trustless liquidity and execution engine for prop firms and traders. It live-trades top-performing miners who deposit alpha for funding, rewards them based on verifiable performance, and uses profits to buy back alpha, creating a transparent, risk-adjusted, and incentive-aligned trading ecosystem."
+   },
+   "tempo": 360,
+   "registered_block": 1477264,
+   "registered_at": "2023-10-12T21:19:48+00:00",
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 0.004695128,
+   "emission_share": 0.031418284617928845
+  },
+  {
+   "netuid": 16,
+   "name": "bitads",
+   "symbol": "\u03c0",
+   "owner_hotkey": "5HWKh7AvatCNBPniViEsjazCTqwwiMiRD5qdVbJ7kB8BAuY1",
+   "owner_coldkey": "5FsQNTj3fKULW29shnqwCiK72PPnJsZvbmPPJfTpnixxqi6r",
+   "owner_identity": null,
+   "identity": null,
+   "tempo": 360,
+   "registered_block": 9392863,
+   "registered_at": "2026-10-29T23:52:24+00:00",
+   "neurons": 83,
+   "max_neurons": 256,
+   "tao_in_emission": 1.9982e-05,
+   "emission_share": 0.000133713109256117
+  },
+  {
+   "netuid": 22,
+   "name": "Desearch",
+   "symbol": "\u03c7",
+   "owner_hotkey": "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP",
+   "owner_coldkey": "5DFuaMasyQtPhXcsuoYEyJmCVSRtzKxsTKFTA4SrpcGXBxJn",
+   "owner_identity": {
+    "name": "Owner22",
+    "url": "",
+    "github": "",
+    "image": "",
+    "discord": "",
+    "description": "",
+    "additional": ""
+   },
+   "identity": {
+    "subnet_name": "Desearch",
+    "github_repo": "https://github.com/datura-ai/desearch",
+    "subnet_contact": "giga@desearch.ai",
+    "subnet_url": "https://desearch.ai",
+    "discord": "https://discord.gg/P44zrJmdFy",
+    "description": "Decentralized search engine",
+    "logo_url": "https://desearch.ai/assets/logo-icon-C18R0lAC.png",
+    "additional": ""
+   },
+   "tempo": 360,
+   "registered_block": 2009702,
+   "registered_at": "2023-12-26T00:06:12.001000+00:00",
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 1.4251e-05,
+   "emission_share": 9.536310279295984e-05
+  },
+  {
+   "netuid": 35,
+   "name": "Jacob Robert Steeves",
+   "symbol": "\u05da",
+   "owner_hotkey": "5CXfRtzxX31cChrw732dcscMafD5m82Do6WBBH99dj98wRuJ",
+   "owner_coldkey": "5FjUeckLxMbRud6sHU127ZTFkqoAHmsdapD5s5hvmyLhruTZ",
+   "owner_identity": null,
+   "identity": {
+    "subnet_name": "Jacob Robert Steeves",
+    "github_repo": "",
+    "subnet_contact": "",
+    "subnet_url": "",
+    "discord": "",
+    "description": "SEC investigation incoming for Price manipulation by centralised power",
+    "logo_url": "",
+    "additional": ""
+   },
+   "tempo": 360,
+   "registered_block": 9046691,
+   "registered_at": "2026-09-11T20:23:36+00:00",
+   "neurons": 5,
+   "max_neurons": 256,
+   "tao_in_emission": 6e-08,
+   "emission_share": 4.0150067837889204e-07
+  },
+  {
+   "netuid": 50,
+   "name": "Synth",
+   "symbol": "\u05e9",
+   "owner_hotkey": "5DxyiWpGqN5xXiczXcEGph51BcgTqcYKD5GKZqoACuc2sJkD",
+   "owner_coldkey": "5DxyiWpGqN5xXiczXcEGph51BcgTqcYKD5GKZqoACuc2sJkD",
+   "owner_identity": {
+    "name": "Synth",
+    "url": "https://synthdata.co",
+    "github": "https://github.com/mode-network/synth-subnet",
+    "image": "https://taostats.io/images/subnets/50.webp?w=96&q=75",
+    "discord": "",
+    "description": "Predictive intelligence for financial markets and beyond",
+    "additional": ""
+   },
+   "identity": {
+    "subnet_name": "Synth",
+    "github_repo": "https://github.com/mode-network/synth-subnet",
+    "subnet_contact": "",
+    "subnet_url": "https://synthdata.co",
+    "discord": "",
+    "description": "Predictive intelligence for financial markets and beyond",
+    "logo_url": "https://taostats.io/images/subnets/50.webp?w=96&q=75",
+    "additional": ""
+   },
+   "tempo": 360,
+   "registered_block": 4763204,
+   "registered_at": null,
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 3.3918e-05,
+   "emission_share": 0.00022696833348758767
+  },
+  {
+   "netuid": 65,
+   "name": "True Performance Network",
+   "symbol": "\u0635",
+   "owner_hotkey": "5DAmVrUgpTX9xmRyZ7R3UUFNSzh7ZNY6qYxv9N4VeCq6mHHL",
+   "owner_coldkey": "5GxEEHxLWpvcAGghL8LG7xNjrxZk4SEPW1VT43hGPZ2TP9mZ",
+   "owner_identity": {
+    "name": "True Performance Network",
+    "url": "https://www.trueperformancenetwork.com",
+    "github": "https://github.com/taofu-labs/true-performance-network",
+    "image": "https://taofu-labs.github.io/truepn-branding/assets/img/logo-mark.png",
+    "discord": "https://discord.com/invite/GRVZyPYd6G",
+    "description": "Distributed AI model compression & optimization engine",
+    "additional": "404 page not found!"
+   },
+   "identity": {
+    "subnet_name": "True Performance Network",
+    "github_repo": "https://github.com/taofu-labs/true-performance-network",
+    "subnet_contact": "info@trueperformancenetwork.com",
+    "subnet_url": "https://www.trueperformancenetwork.com/",
+    "discord": "https://discord.com/invite/GRVZyPYd6G",
+    "description": "Distributed AI model compression & optimization engine",
+    "logo_url": "https://taofu-labs.github.io/truepn-branding/assets/img/logo-mark.png",
+    "additional": "404 page not found!"
+   },
+   "tempo": 360,
+   "registered_block": 4950813,
+   "registered_at": "2025-02-18T03:15:12+00:00",
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 2.32e-07,
+   "emission_share": 1.5524692897317158e-06
+  },
+  {
+   "netuid": 88,
+   "name": "Investing",
+   "symbol": "\u16c9",
+   "owner_hotkey": "5HK4vbGgLQdFKarN3hLVqNRbgQtQR5w3WTZ2tTnFHHLPgXpY",
+   "owner_coldkey": "5FhMsGJS7WYdwBzcgsTWxEtY7UCYLZdmBVLcNPmCxr3ppiKS",
+   "owner_identity": {
+    "name": "88",
+    "url": "https://Investing88.ai",
+    "github": "https://github.com/mobiusfund/investing",
+    "image": "https://Investing88.ai/logo.png",
+    "discord": "",
+    "description": "Decentralized AUM",
+    "additional": "https://x.com/Investing88ai"
+   },
+   "identity": {
+    "subnet_name": "Investing",
+    "github_repo": "https://github.com/mobiusfund/investing",
+    "subnet_contact": "",
+    "subnet_url": "https://Investing88.ai",
+    "discord": "",
+    "description": "Decentralized AUM",
+    "logo_url": "https://Investing88.ai/logo.png",
+    "additional": "https://x.com/Investing88ai"
+   },
+   "tempo": 360,
+   "registered_block": 5299805,
+   "registered_at": "2025-04-07T14:34:36+00:00",
+   "neurons": 256,
+   "max_neurons": 256,
+   "tao_in_emission": 3.6305e-05,
+   "emission_share": 0.00024294136880909458
+  },
+  {
+   "netuid": 108,
+   "name": "ChipForge",
+   "symbol": "\u30e2",
+   "owner_hotkey": "5HjH8ZqfoWG6SS6UTvLHEmQVBA6gjTCdpcy7wveoDGWSPZwk",
+   "owner_coldkey": "5FBwsAvvKjhe7bGSdtVSAaxm7huJAcWFZRb9WRpJJmrVUvoB",
+   "owner_identity": {
+    "name": "Owner108 (ChipForge)",
+    "url": "chipforge.io",
+    "github": "",
+    "image": "",
+    "discord": "",
+    "description": "",
+    "additional": ""
+   },
+   "identity": {
+    "subnet_name": "ChipForge",
+    "github_repo": "https://github.com/TatsuProject/ChipForge_SN108",
+    "subnet_contact": "hi@chipforge.io",
+    "subnet_url": "https://www.chipforge.io/",
+    "discord": "https://discord.com/channels/799672011265015819/1408463235082092564",
+    "description": "ChipForge decentralizes silicon design. Miners anywhere compete to build chips that accelerate AI, scored on real AI models.",
+    "logo_url": "https://raw.githubusercontent.com/TatsuProject/ChipForge_SN108/master/assets/logo.png",
+    "additional": ""
+   },
+   "tempo": 360,
+   "registered_block": 9111253,
+   "registered_at": "2026-09-20T20:51:36+00:00",
+   "neurons": 197,
+   "max_neurons": 256,
+   "tao_in_emission": 3.75e-07,
+   "emission_share": 2.509379239868075e-06
+  },
+  {
+   "netuid": 117,
+   "name": "everyframe.studio",
+   "symbol": "\u2c80",
+   "owner_hotkey": "5G9K4zDrdcAE8F1MaaZNxLGXuhMApR5ENZGTs2wAEhiptHEf",
+   "owner_coldkey": "5FFDV7LGKVsVvyVbzSduzxQDPfBuJYHBM2QJPia5ikDivsXd",
+   "owner_identity": {
+    "name": "Owner",
+    "url": "~",
+    "github": "~",
+    "image": "~",
+    "discord": "",
+    "description": "~",
+    "additional": "~"
+   },
+   "identity": {
+    "subnet_name": "everyframe.studio",
+    "github_repo": "https://github.com/everyframe-studios/everyframe-miner",
+    "subnet_contact": "contact@everyframe.studio",
+    "subnet_url": "https://everyframe.studio/",
+    "discord": "https://discord.com/channels/799672011265015819/1544011415692644444",
+    "description": "Every frame gets craft",
+    "logo_url": "https://avatars.githubusercontent.com/u/327085870?s=200&v=4",
+    "additional": ""
+   },
+   "tempo": 360,
+   "registered_block": 5710859,
+   "registered_at": "2025-06-05T00:48:24+00:00",
+   "neurons": 199,
+   "max_neurons": 256,
+   "tao_in_emission": 0.001251085,
+   "emission_share": 0.008371857936827602
+  },
+  {
+   "netuid": 200,
+   "name": "Fallback",
+   "symbol": "",
+   "owner_hotkey": "5HotkeyExample200",
+   "owner_coldkey": "5ColdkeyExample200",
+   "owner_identity": {
+    "name": "Owner7\n",
+    "url": "https://owner.example",
+    "github": "",
+    "discord": "owner#1",
+    "description": "Builds things",
+    "additional": "x"
+   },
+   "identity": {
+    "subnet_name": "  Spaced Name  ",
+    "github_repo": "  https://github.com/example/repo  ",
+    "subnet_contact": "  ",
+    "subnet_url": "https://spaced.example",
+    "discord": "",
+    "description": " Error 404: Not Found ",
+    "logo_url": null,
+    "additional": "  More on chain.  "
+   },
+   "tempo": 360.0,
+   "registered_block": 1234567.0,
+   "registered_at": "2024-02-03T04:05:06+00:00",
+   "neurons": 0,
+   "max_neurons": 0,
+   "emission_share": 0.5
+  },
+  {
+   "netuid": 201,
+   "name": "  ",
+   "owner_hotkey": "5HotkeyExample201",
+   "owner_coldkey": "5ColdkeyExample201",
+   "owner_identity": null,
+   "identity": {},
+   "tempo": 99,
+   "registered_block": 0,
+   "registered_at": null,
+   "neurons": null,
+   "max_neurons": 64,
+   "emission_share": null
+  },
+  {
+   "netuid": 202,
+   "name": "ignored",
+   "symbol": "\u00df",
+   "owner_hotkey": "5HotkeyExample202",
+   "owner_coldkey": "5ColdkeyExample202",
+   "owner_identity": {
+    "name": "Owner\u0663",
+    "url": "",
+    "github": "https://github.com/owner"
+   },
+   "identity": {
+    "subnet_name": "\u00dcmlaut \u0131 \u0130",
+    "description": "Page not found on this server",
+    "additional": "Error 404x not found here, and HTTP 404 \u2014 the resource was not found",
+    "subnet_url": "https://x.example/404-page-not-found",
+    "discord": "https://discord.gg/example"
+   },
+   "tempo": 360,
+   "registered_block": 5000000,
+   "registered_at": "2025-01-01",
+   "neurons": 12,
+   "max_neurons": 256,
+   "emission_share": 0.0001
+  },
+  {
+   "netuid": 35.0,
+   "name": "For sale",
+   "symbol": "\u03b6",
+   "owner_hotkey": "5HotkeyExample35",
+   "owner_coldkey": "5ColdkeyExample35",
+   "owner_identity": {
+    "name": "Seller"
+   },
+   "identity": {
+    "subnet_name": "Buy this subnet",
+    "description": "Contact us"
+   },
+   "tempo": 360,
+   "registered_block": 42,
+   "registered_at": "2024-06-01T00:00:00+00:00",
+   "neurons": 1,
+   "max_neurons": 1,
+   "emission_share": 5e-05
+  }
+ ],
+ "removed_netuids": [
+  5,
+  6
+ ]
+}

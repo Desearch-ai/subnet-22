@@ -1,0 +1,1 @@
+input/: the folder bulk/pmc/tests/page.rs writes, one version of every kind a run counts. expected-<limit>/ and pmids-<limit>.txt: the golden runs of it with --limit 0 and 2. Read by bulk/pmc/tests/page.rs.

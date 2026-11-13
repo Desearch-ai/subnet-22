@@ -1,12 +1,4 @@
-validators/state.json
-bittensor_subnet_template.egg-info/
-
-desearch_template.egg-info/
 desearch.egg-info/
-smart-scrape_template.egg-info/
-smart-scrape.egg-info/
-datura/__pycache__/
-desearch/__pycache__/
 __pycache__/
 *.pyc
 wandb/
@@ -16,25 +8,13 @@ wandb/
 venv/
 .idea/
 
-state.json
-
 app.config.js
 neurons/miners/.env
 neurons/validators/.env
 
 .DS_Store
-Makefile
-pyrightconfig.json
 
 .claude/
 .pytest_cache/
-.state/
-devnet/runs/
-# desearch-bot working data
-build/
-bot-data/
-build-smoke*/
-.venv-bot/
-frontier/
 sandbox/runs/
 sandbox/cache/

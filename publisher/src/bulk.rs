@@ -1,4 +1,4 @@
-//! Bulk sources as pages: the batch files `python -m bulk` writes, published into the bulk feed as rows built exactly as crawled pages are, each under an id no task holds.
+//! Bulk sources as pages: the batch files `bulk` writes, published into the bulk feed as rows built exactly as crawled pages are, each under an id no task holds.
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -21,7 +21,7 @@ pub const MANIFEST: &str = "manifest.json";
 /// The batch files of a run already published, one `<file> <first seq> <last seq>` line each, so a run picks up where it stopped.
 pub const PUBLISHED: &str = "published.txt";
 
-/// What `python -m bulk` writes beside a run's batch files once the run is complete.
+/// What `bulk` writes beside a run's batch files once the run is complete.
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub source: String,

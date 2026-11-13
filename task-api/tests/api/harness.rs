@@ -1,4 +1,4 @@
-//! The task API served in process against Redis db 13 and the R2 stand-in, with signed clients for each role.
+//! The task API served in process against Redis db 13 and the storage stand-in, with signed clients for each role.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -211,7 +211,7 @@ impl Harness {
     pub async fn with(tune: impl FnOnce(&mut Settings)) -> Harness {
         let serial = SERIAL.lock().await;
         let dir = TempDir(std::env::temp_dir().join(format!("task-api-test-{}", uuid::Uuid::new_v4().simple())));
-        let stub = stub::start(dir.0.join("r2"), "127.0.0.1:0").await.expect("the R2 stand-in starts");
+        let stub = stub::start(dir.0.join("r2"), "127.0.0.1:0").await.expect("the storage stand-in starts");
         let endpoint = format!("http://{}", stub.addr);
         let mut settings = settings(dir.0.join("data"), &endpoint);
         tune(&mut settings);
@@ -300,7 +300,7 @@ impl Harness {
     }
 
     pub async fn put(&self, url: &str, body: Vec<u8>) {
-        let response = self.http.put(url).header("content-type", "application/vnd.apache.parquet").body(Bytes::from(body)).send().await.expect("R2 answers");
+        let response = self.http.put(url).header("content-type", "application/vnd.apache.parquet").body(Bytes::from(body)).send().await.expect("stub answers");
         assert!(response.status().is_success(), "upload: {}", response.status());
     }
 

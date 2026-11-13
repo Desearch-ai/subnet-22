@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
 use desearch_bot::allowed::Allowed;
-use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Escaped, Resources, BUCKETS};
+use desearch_bot::buckets::{bucket_of, Buckets, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
@@ -40,10 +40,6 @@ struct Cli {
 enum Command {
     /// Crawl the buckets this process owns, around the clock.
     Run(Box<RunArgs>),
-    /// Delete pages and sitemaps kept with a sitemap's XML escapes; counts them unless given `--backup-dir`. Run it with the crawl loop stopped.
-    RemoveEscaped(RemoveEscapedArgs),
-    /// Put back what `remove-escaped` deleted, from its backup folder. Run it with the crawl loop stopped.
-    RestoreEscaped(RestoreEscapedArgs),
     /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
     DropDomains(DropDomainsArgs),
     /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
@@ -52,6 +48,211 @@ enum Command {
     Unresend(UnresendArgs),
     /// Run simulated hours of passes on copied stores against a fake task API, outcomes drawn from a real day's and sitemap reads simulated.
     Replay(ReplayArgs),
+    /// Fetch records into a bulk run folder for `publisher bulk`, extraction in Python worker processes.
+    Build(BuildArgs),
+    /// Crawl hosts from their home pages by links and sitemaps into a record folder.
+    CrawlSites(CrawlSitesArgs),
+    /// Read each host's robots.txt and sitemaps and say whether the bot can make miner tasks from them, as JSON lines.
+    SitemapCheck(SitemapCheckArgs),
+    /// Fetch a source again into a finished run folder for the bulk refresh runner.
+    #[command(infer_long_args = true)]
+    Refresh(RefreshArgs),
+}
+
+#[derive(clap::Args)]
+struct RefreshArgs {
+    #[command(subcommand)]
+    source: RefreshSource,
+}
+
+#[derive(Subcommand)]
+enum RefreshSource {
+    /// Filings filed in a date range, from SEC's daily indexes.
+    #[command(infer_long_args = true)]
+    Edgar(RefreshEdgarArgs),
+    /// The admitted FRED series pages.
+    #[command(infer_long_args = true)]
+    Fred(RefreshFredArgs),
+}
+
+#[derive(clap::Args)]
+struct RefreshEdgarArgs {
+    #[arg(long, value_parser = desearch_bot::refresh::iso_date)]
+    since: chrono::NaiveDate,
+    #[arg(long, value_parser = desearch_bot::refresh::iso_date)]
+    until: chrono::NaiveDate,
+    /// SEC requests a second, all SEC jobs on this IP together under 10.
+    #[arg(long, default_value = "8", value_parser = desearch_bot::refresh::per_second)]
+    per_second: f64,
+    /// Forms to fetch, comma-separated; the daily refresh's six by default.
+    #[arg(long, value_delimiter = ',')]
+    forms: Vec<String>,
+    #[command(flatten)]
+    target: RefreshTargetArgs,
+}
+
+#[derive(clap::Args)]
+struct RefreshFredArgs {
+    /// One URL per line, without the held daily price series; `~/crawl/fred/refresh-urls.txt` by default.
+    #[arg(long)]
+    urls: Option<PathBuf>,
+    #[command(flatten)]
+    target: RefreshTargetArgs,
+}
+
+#[derive(clap::Args)]
+struct RefreshTargetArgs {
+    /// A new run folder.
+    #[arg(long)]
+    out: PathBuf,
+    /// The run's name in its row ids; the folder name by default.
+    #[arg(long)]
+    run: Option<String>,
+    /// `~/crawl/v1-set-current.json.gz` by default.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// A subnet-22 checkout with `desearch/`, `~/subnet-22` by default.
+    #[arg(long)]
+    subnet22: Option<PathBuf>,
+    /// The Python the extraction workers run with.
+    #[arg(long, default_value = "python3")]
+    python: String,
+    /// The extraction worker script; the one built into this binary by default.
+    #[arg(long)]
+    worker: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
+    /// Address-space cap for each worker, in MB; 0 sets none.
+    #[arg(long, default_value_t = 0)]
+    worker_memory_mb: u64,
+    /// Tests only: every name resolves to this address, never the public resolver.
+    #[arg(long, hide = true)]
+    test_resolve_all: Option<std::net::SocketAddr>,
+    /// Tests only: a PEM certificate to trust beside the public roots.
+    #[arg(long, hide = true)]
+    test_ca_cert: Option<PathBuf>,
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(std::env::home_dir).unwrap_or_default()
+}
+
+fn refresh(args: RefreshArgs) -> Result<()> {
+    use desearch_bot::refresh::{self, RefreshFailed, Target};
+    use desearch_bot::sitecrawl::fetch::Connect;
+    let t = match &args.source {
+        RefreshSource::Edgar(a) => &a.target,
+        RefreshSource::Fred(a) => &a.target,
+    };
+    let mut connect = Connect { resolve_all: t.test_resolve_all, root_certificate: None };
+    if let Some(path) = &t.test_ca_cert {
+        connect = connect.with_certificate_file(path)?;
+    }
+    let target = Target {
+        out: t.out.clone(),
+        run: t.run.clone().filter(|r| !r.is_empty()).unwrap_or_else(|| refresh::py_name(&t.out)),
+        set: t.set.clone().unwrap_or_else(|| home().join("crawl/v1-set-current.json.gz")),
+        subnet22: t.subnet22.clone().unwrap_or_else(|| home().join("subnet-22")),
+        python: t.python.clone(),
+        worker: t.worker.clone(),
+        workers: t.workers,
+        worker_memory_mb: t.worker_memory_mb,
+        connect,
+    };
+    let done = match &args.source {
+        RefreshSource::Edgar(a) => {
+            let forms = if a.forms.is_empty() { desearch_bot::sitecrawl::edgar::FORMS.map(String::from).to_vec() } else { a.forms.clone() };
+            refresh::refresh_edgar(a.since, a.until, &forms, &target, refresh::SEC_AGENT, a.per_second)
+        }
+        RefreshSource::Fred(a) => {
+            let urls = a.urls.clone().unwrap_or_else(|| home().join("crawl/fred/refresh-urls.txt"));
+            refresh::read_lines(&urls).and_then(|urls| refresh::refresh_fred(&urls, &target))
+        }
+    };
+    match done {
+        Ok(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        Err(e) => match e.downcast_ref::<RefreshFailed>() {
+            Some(why) => {
+                println!("{}", refresh::failed_line(why));
+                std::process::exit(1)
+            }
+            None => Err(e),
+        },
+    }
+}
+
+#[derive(clap::Args)]
+struct CrawlSitesArgs {
+    /// Hosts, one per line; then, tab-separated if wanted, its own --max-pages, its requests in flight, and space-separated paths to fetch first.
+    hosts_file: PathBuf,
+    /// More hosts, crawled before the file's, e.g. www.house.gov.
+    #[arg(long = "host")]
+    hosts: Vec<String>,
+    /// A new folder for this run's records.
+    #[arg(long)]
+    out: PathBuf,
+    /// Extra start URLs.
+    #[arg(long)]
+    seed: Vec<String>,
+    /// Only paths starting so.
+    #[arg(long)]
+    prefix: Vec<String>,
+    /// Pages kept per host.
+    #[arg(long, default_value_t = 1_000)]
+    max_pages: i64,
+    #[arg(long, default_value_t = 6)]
+    max_depth: i64,
+    #[arg(long)]
+    no_sitemaps: bool,
+    #[arg(long, default_value_t = 8)]
+    hosts_at_once: usize,
+    /// URLs to leave out, one per line (from `held`).
+    #[arg(long)]
+    skip: Option<PathBuf>,
+    /// v1-set.json(.gz): follow only URLs it can admit.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// Write URLs found but not fetched here.
+    #[arg(long)]
+    found: Option<PathBuf>,
+    /// More start URLs, each for the host it names.
+    #[arg(long)]
+    seeds_file: Option<PathBuf>,
+    /// Tests only: every name resolves to this address, never the public resolver.
+    #[arg(long, hide = true)]
+    test_resolve_all: Option<std::net::SocketAddr>,
+    /// Tests only: a PEM certificate to trust beside the public roots.
+    #[arg(long, hide = true)]
+    test_ca_cert: Option<PathBuf>,
+}
+
+fn crawl_sites(args: CrawlSitesArgs) -> Result<()> {
+    use desearch_bot::sitecrawl::{fetch::Connect, run};
+    let mut connect = Connect { resolve_all: args.test_resolve_all, root_certificate: None };
+    if let Some(path) = &args.test_ca_cert {
+        connect = connect.with_certificate_file(path)?;
+    }
+    let mut options = run::Options::new(args.out);
+    options.hosts = args.hosts;
+    options.hosts_file = Some(args.hosts_file);
+    options.seed = args.seed;
+    options.prefix = args.prefix;
+    options.max_pages = args.max_pages;
+    options.max_depth = args.max_depth;
+    options.no_sitemaps = args.no_sitemaps;
+    options.hosts_at_once = args.hosts_at_once;
+    options.skip = args.skip;
+    options.set = args.set;
+    options.found = args.found;
+    options.seeds_file = args.seeds_file;
+    options.connect = connect;
+    let progress = std::sync::Arc::new(|line: &str| eprintln!("{line}"));
+    let total = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run::run_sites(&options, progress))?;
+    println!("{}", run::total_line(&total));
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -63,6 +264,84 @@ struct CopyBucketsArgs {
     /// Buckets to copy, as ranges such as `0-13,20`.
     #[arg(long)]
     buckets: String,
+}
+
+#[derive(clap::Args)]
+struct SitemapCheckArgs {
+    /// Hosts, one a line.
+    hosts: PathBuf,
+    #[arg(long, default_value_t = 64)]
+    at_once: usize,
+    #[arg(long, default_value_t = 20)]
+    read_timeout_s: u64,
+}
+
+#[derive(clap::Args)]
+struct BuildArgs {
+    /// Record folders or files.
+    #[arg(required = true)]
+    records: Vec<PathBuf>,
+    /// A new run folder.
+    #[arg(long)]
+    out: PathBuf,
+    /// The run's name in its row ids, unique per run.
+    #[arg(long)]
+    run: String,
+    /// The run's time, ISO with a zone; now by default.
+    #[arg(long)]
+    as_of: Option<String>,
+    /// A subnet-22 checkout whose `desearch` package the workers extract with.
+    #[arg(long)]
+    subnet22: PathBuf,
+    /// v1-set.json(.gz): keep only pages it admits.
+    #[arg(long)]
+    set: Option<PathBuf>,
+    /// URLs to leave out, one per line.
+    #[arg(long)]
+    skip: Option<PathBuf>,
+    /// Leave out pages the evals harness reads as benchmark copies.
+    #[arg(long)]
+    drop_mirrors: bool,
+    #[arg(long, default_value = "python3")]
+    python: String,
+    /// An extraction worker script; the one built into this binary by default.
+    #[arg(long)]
+    worker: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
+    /// Address-space cap for each worker, in MB; 0 sets none.
+    #[arg(long, default_value_t = 0)]
+    worker_memory_mb: u64,
+    /// Seconds added to every row's fetch time, so a rebuild of a published run sorts after it.
+    #[arg(long, default_value_t = 0)]
+    fetched_later_s: i64,
+}
+
+fn build_run(args: BuildArgs) -> Result<()> {
+    use chrono::Timelike;
+    let as_of = match &args.as_of {
+        Some(t) => chrono::DateTime::parse_from_rfc3339(t).with_context(|| format!("--as-of {t:?} needs a time zone"))?,
+        None => chrono::Utc::now().with_nanosecond(0).expect("zero nanoseconds").fixed_offset(),
+    };
+    let skip = args.skip.as_deref().map(desearch_bot::pagebuild::read_urls).transpose()?.unwrap_or_default();
+    let options = desearch_bot::pagebuild::Options {
+        records: args.records,
+        out: args.out,
+        run: args.run,
+        as_of,
+        set: args.set,
+        skip,
+        drop_mirrors: args.drop_mirrors,
+        python: args.python,
+        worker: args.worker,
+        subnet22: args.subnet22,
+        workers: args.workers,
+        worker_memory_mb: args.worker_memory_mb,
+        fetched_later_s: args.fetched_later_s,
+    };
+    let counts = desearch_bot::pagebuild::build(&options)?;
+    println!("{}", desearch_bot::uploads::counts_json(&counts));
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -136,27 +415,6 @@ struct DropDomainsArgs {
 }
 
 #[derive(clap::Args)]
-struct RemoveEscapedArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    buckets_dir: PathBuf,
-    #[arg(long, default_value = "0-255")]
-    buckets: String,
-    /// Delete, after saving every deleted entry here, one file per store; without it nothing is deleted.
-    #[arg(long)]
-    backup_dir: Option<PathBuf>,
-}
-
-#[derive(clap::Args)]
-struct RestoreEscapedArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    buckets_dir: PathBuf,
-    #[arg(long, default_value = "0-255")]
-    buckets: String,
-    #[arg(long)]
-    backup_dir: PathBuf,
-}
-
-#[derive(clap::Args)]
 struct RunArgs {
     /// Visits in flight at once.
     #[arg(long, default_value_t = 840)]
@@ -194,6 +452,18 @@ struct RunArgs {
     /// Which listed sites have their links followed: off; thin, those whose sitemaps list under 1,000 pages or none, weekly; or all, those and every whole or news site monthly.
     #[arg(long, value_enum, default_value_t = FollowLinks::Thin)]
     follow_links: FollowLinks,
+    /// Poll listed news sites' Google News sitemaps, feeds and files of newest stories apart from their visits, on slots of their own.
+    #[arg(long, default_value_t = false)]
+    news_lane: bool,
+    /// News lane polls at once.
+    #[arg(long, default_value_t = 32)]
+    news_slots: usize,
+    /// Lane files the news lane fetches or parses at once, apart from the visits' sitemap slots.
+    #[arg(long, default_value_t = 16)]
+    news_fetch_slots: usize,
+    /// News sites polled every two minutes, those whose lane files find the most new pages; the rest are polled every twelve.
+    #[arg(long, default_value_t = 300)]
+    news_fast_hosts: usize,
     /// Percent of the visit slots kept for domains never checked; slots one kind of work leaves unused go to the others.
     #[arg(long, default_value_t = 30)]
     discovery_share: usize,
@@ -263,9 +533,6 @@ struct RunArgs {
     /// Pages listed per second to go once more for listed domains whose `resend_before` changed; 0 turns resend walks off.
     #[arg(long, default_value_t = 20_000)]
     resend_per_sec: u64,
-    /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
-    #[arg(long)]
-    backfill_sent: Option<PathBuf>,
     /// Only these domains' pages are queued for the task API: a JSON list of names or of {host, rank}, read again when it changes.
     #[arg(long)]
     domains: Option<PathBuf>,
@@ -276,12 +543,19 @@ struct RunArgs {
 
 fn main() -> Result<()> {
     let args = match Cli::parse().command {
+        Command::Refresh(args) => return refresh(args),
         Command::Run(args) => *args,
-        Command::RemoveEscaped(args) => return remove_escaped(args),
-        Command::RestoreEscaped(args) => return restore_escaped(args),
         Command::DropDomains(args) => return drop_domains(args),
         Command::CopyBuckets(args) => return copy_buckets(args),
         Command::Unresend(args) => return unresend(args),
+        Command::Build(args) => return build_run(args),
+        Command::CrawlSites(args) => return crawl_sites(args),
+        Command::SitemapCheck(args) => {
+            let text = std::fs::read_to_string(&args.hosts)?;
+            let hosts: Vec<String> = text.lines().map(str::trim).filter(|h| !h.is_empty()).map(str::to_string).collect();
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
+            return rt.block_on(desearch_bot::sitemapcheck::run(hosts, args.at_once, Duration::from_secs(args.read_timeout_s)));
+        }
         Command::Replay(args) => {
             let args = desearch_bot::replay::ReplayArgs {
                 buckets_dir: args.buckets_dir,
@@ -368,6 +642,9 @@ async fn run(args: RunArgs) -> Result<()> {
         follow_links: args.follow_links,
         resolver: Some(Arc::new(resolver)),
         links_cpu: Slots::new(args.links_cpu),
+        news_lane: args.news_lane,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(args.news_fetch_slots),
     });
     if args.compact {
         let stores = buckets.clone();
@@ -384,7 +661,8 @@ async fn run(args: RunArgs) -> Result<()> {
     let mut crawl = Loop::new(buckets.clone(), visitor, args.concurrency, registry, excluded)
         .with_min_free_disk(args.min_free_gb << 30)
         .with_shares(args.discovery_share, args.backlog_share)
-        .with_links(args.links_per_hour, args.links_first_days * 86_400);
+        .with_links(args.links_per_hour, args.links_first_days * 86_400)
+        .with_news(args.news_slots, args.news_fast_hosts, desearch_bot::schedule::NEWS_SLOW / desearch_bot::schedule::SECOND);
     let scheduled = crawl.load()?;
     println!("[rs] {scheduled} domains in {} buckets", owned.len());
 
@@ -427,19 +705,10 @@ async fn run(args: RunArgs) -> Result<()> {
         })
     });
     let backfill = args.backfill_ready.then(|| {
-        let (buckets, progress, halt, sent) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_sent.clone());
-        let per_second = args.backfill_per_sec;
-        std::thread::spawn(move || {
-            if let Some(path) = sent {
-                match dispatch::import_sent(&buckets, &path) {
-                    Ok(known) => println!("[rs] marked {known} pages the earlier feeder sent"),
-                    Err(error) => eprintln!("[rs] importing sent pages failed: {error:#}"),
-                }
-            }
-            match dispatch::backfill(&buckets, per_second, &progress, &halt) {
-                Ok(()) => println!("[rs] ready-list backfill stopped or done"),
-                Err(error) => eprintln!("[rs] ready-list backfill failed: {error:#}"),
-            }
+        let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_per_sec);
+        std::thread::spawn(move || match dispatch::backfill(&buckets, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] ready-list backfill stopped or done"),
+            Err(error) => eprintln!("[rs] ready-list backfill failed: {error:#}"),
         })
     });
     let inbox = args.inbox.clone().map(|dir| {
@@ -550,39 +819,6 @@ async fn run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
-    if let Some(dir) = &args.backup_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-    let owned = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
-    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let stores: Vec<&BucketStore> = buckets.stores().collect();
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
-    let backup_dir = args.backup_dir.as_deref();
-    let found = std::thread::scope(|scope| {
-        let handles: Vec<_> = stores
-            .chunks(stores.len().div_ceil(threads).max(1))
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk.iter().try_fold(Escaped::default(), |sum, store| {
-                        let backup = backup_dir.map(|dir| dir.join(format!("{}.bin", store.name())));
-                        let found = store.remove_escaped(backup.as_deref())?;
-                        anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
-                    })
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().expect("a store pass panicked")).try_fold(Escaped::default(), |sum, found| {
-            let found = found?;
-            anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
-        })
-    })?;
-    let done = if backup_dir.is_some() { "deleted" } else { "found" };
-    println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
-    Ok(())
-}
-
 fn unresend(args: UnresendArgs) -> Result<()> {
     let owned = parse_buckets(&args.buckets)?;
     let resources = Resources::new(1 << 30, 512 << 20, owned.len());
@@ -610,21 +846,6 @@ fn drop_domains(args: DropDomainsArgs) -> Result<()> {
         let done = if args.delete { format!("deleted in {:.0}s", started.elapsed().as_secs_f64()) } else { "nothing deleted without --delete".into() };
         println!("{domain}: {} ready pages, {} URLs in its last sitemaps; {done}", found.ready, found.urls);
     }
-    Ok(())
-}
-
-fn restore_escaped(args: RestoreEscapedArgs) -> Result<()> {
-    let owned = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
-    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let mut restored = 0;
-    for store in buckets.stores() {
-        let backup = args.backup_dir.join(format!("{}.bin", store.name()));
-        if backup.exists() {
-            restored += store.restore(&backup)?;
-        }
-    }
-    println!("restored {restored} entries");
     Ok(())
 }
 

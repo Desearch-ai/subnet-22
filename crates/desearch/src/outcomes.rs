@@ -1,4 +1,4 @@
-//! What became of every URL, in the rows `app.outcomes` writes for the bot that queued it.
+//! What became of every URL, in rows written for the bot that queued it.
 
 use std::sync::{Arc, LazyLock};
 
@@ -11,7 +11,6 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
 pub const PUBLISHED: &str = "published";
-pub const UNCHANGED: &str = "unchanged";
 pub const FAILED: &str = "failed";
 pub const DROPPED: &str = "dropped";
 
@@ -54,9 +53,4 @@ pub fn encode(rows: &[Outcome], at: i64) -> Result<Vec<u8>> {
     writer.write(&batch)?;
     writer.close()?;
     Ok(file)
-}
-
-/// Where a numbered feed file's index lives, as `app.feeds.Feed.seq_key` names it.
-pub fn seq_key(feed: &str, seq: u64) -> String {
-    format!("{feed}/seq/{seq:012}.json")
 }

@@ -1,0 +1,2759 @@
+{
+ "index_ciks": [
+  [
+   "Form Type   Company Name                CIK         Date Filed  File Name\n------------------------------------------------------------------------------\n10-K        APPLE INC                   320193      2025-10-31  edgar/data/320193/0000320193-25-000079.txt\n10-Q        MICROSOFT CORP              789019      2025-10-29  edgar/data/789019/0000950170-25-000123.txt\n10-K/A      SOME CO                     111111      2025-03-01  edgar/data/111111/0000111111-25-000001.txt\n",
+   null,
+   [
+    320193,
+    789019
+   ]
+  ],
+  [
+   "Form Type   Company Name                CIK         Date Filed  File Name\n------------------------------------------------------------------------------\n10-K        APPLE INC                   320193      2025-10-31  edgar/data/320193/0000320193-25-000079.txt\n10-Q        MICROSOFT CORP              789019      2025-10-29  edgar/data/789019/0000950170-25-000123.txt\n10-K/A      SOME CO                     111111      2025-03-01  edgar/data/111111/0000111111-25-000001.txt\n",
+   [
+    "10-K"
+   ],
+   [
+    320193
+   ]
+  ],
+  [
+   "Form Type   Company Name                CIK         Date Filed  File Name\n------------------------------------------------------------------------------\n10-K        APPLE INC                   320193      2025-10-31  edgar/data/320193/0000320193-25-000079.txt\n10-Q        MICROSOFT CORP              789019      2025-10-29  edgar/data/789019/0000950170-25-000123.txt\n10-K/A      SOME CO                     111111      2025-03-01  edgar/data/111111/0000111111-25-000001.txt\n",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   [
+    320193,
+    789019
+   ]
+  ],
+  [
+   "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\r\nLast Data Received:    November 10, 2026\r\nComments:              webmaster@sec.gov\r\n\r\nForm Type   Company Name                                                  CIK         Date Filed  File Name\r\n---------------------------------------------------------------------------------------------------------------------------------------------\r\n10-K        ACME CORP                                                     0000012345  20261110    edgar/data/12345/0000012345-26-000001.txt\r\n10-Q        BETA HOLDINGS INC                                             67890       20261110    edgar/data/67890/0000067890-26-000002.txt\r\n8-K         GAMMA  CO                                                     555         20261110    edgar/data/555/0000000555-26-000003.txt\r\nDEF 14A     DELTA TRUST                                                   4444        20261110    edgar/data/4444/0000004444-26-000004.txt\r\nS-1         EPSILON INC                                                   3333        20261110    edgar/data/3333/0000003333-26-000005.txt\r\n20-F        ZETA PLC                                                      2222        20261110    edgar/data/2222/0000002222-26-000006.txt\r\n4           SOMEONE                                                       999         20261110    edgar/data/999/y.txt\r\n10-K/A      AMENDED CO                                                    1111        20261110    edgar/data/1111/z.txt\r\n10-K        LETTERS IN CIK                                                12a4        20261110    edgar/data/1/a.txt\r\n10-K        TOO FEW COLUMNS                                               777\r\n   10-K     LEADING SPACES CO                                             8888        20261110    edgar/data/8888/b.txt   \r\n10-K\tTABS ONLY\t9999\t20261110\tedgar/data/9999/c.txt\r\n10-K\t\tTWO TABS CO\t\t7777\t\t20261110\t\tedgar/data/7777/d.txt\r\n10-Q　　WIDE SPACE CO　　6666　　20261110　　edgar/data/6666/e.txt\r\n10-Q  NBSP CO  5555  20261110  edgar/data/5555/f.txt\r\n10-Q\u001f\u001fUNIT SEP CO\u001f\u001f4321\u001f\u001f20261110\u001f\u001fedgar/data/4321/g.txt\n10-Q  SPLITLINE CO  1234  20261110  edgar/data/1234/h.txt\n10-K        ONE SPACE BETWEEN CIK 31415 20261110    edgar/data/31415/i.txt\n",
+   null,
+   [
+    2222,
+    3333,
+    4321,
+    4444,
+    5555,
+    6666,
+    7777,
+    8888,
+    12345,
+    67890
+   ]
+  ],
+  [
+   "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\r\nLast Data Received:    November 10, 2026\r\nComments:              webmaster@sec.gov\r\n\r\nForm Type   Company Name                                                  CIK         Date Filed  File Name\r\n---------------------------------------------------------------------------------------------------------------------------------------------\r\n10-K        ACME CORP                                                     0000012345  20261110    edgar/data/12345/0000012345-26-000001.txt\r\n10-Q        BETA HOLDINGS INC                                             67890       20261110    edgar/data/67890/0000067890-26-000002.txt\r\n8-K         GAMMA  CO                                                     555         20261110    edgar/data/555/0000000555-26-000003.txt\r\nDEF 14A     DELTA TRUST                                                   4444        20261110    edgar/data/4444/0000004444-26-000004.txt\r\nS-1         EPSILON INC                                                   3333        20261110    edgar/data/3333/0000003333-26-000005.txt\r\n20-F        ZETA PLC                                                      2222        20261110    edgar/data/2222/0000002222-26-000006.txt\r\n4           SOMEONE                                                       999         20261110    edgar/data/999/y.txt\r\n10-K/A      AMENDED CO                                                    1111        20261110    edgar/data/1111/z.txt\r\n10-K        LETTERS IN CIK                                                12a4        20261110    edgar/data/1/a.txt\r\n10-K        TOO FEW COLUMNS                                               777\r\n   10-K     LEADING SPACES CO                                             8888        20261110    edgar/data/8888/b.txt   \r\n10-K\tTABS ONLY\t9999\t20261110\tedgar/data/9999/c.txt\r\n10-K\t\tTWO TABS CO\t\t7777\t\t20261110\t\tedgar/data/7777/d.txt\r\n10-Q　　WIDE SPACE CO　　6666　　20261110　　edgar/data/6666/e.txt\r\n10-Q  NBSP CO  5555  20261110  edgar/data/5555/f.txt\r\n10-Q\u001f\u001fUNIT SEP CO\u001f\u001f4321\u001f\u001f20261110\u001f\u001fedgar/data/4321/g.txt\n10-Q  SPLITLINE CO  1234  20261110  edgar/data/1234/h.txt\n10-K        ONE SPACE BETWEEN CIK 31415 20261110    edgar/data/31415/i.txt\n",
+   [
+    "10-K"
+   ],
+   [
+    7777,
+    8888,
+    12345
+   ]
+  ],
+  [
+   "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\r\nLast Data Received:    November 10, 2026\r\nComments:              webmaster@sec.gov\r\n\r\nForm Type   Company Name                                                  CIK         Date Filed  File Name\r\n---------------------------------------------------------------------------------------------------------------------------------------------\r\n10-K        ACME CORP                                                     0000012345  20261110    edgar/data/12345/0000012345-26-000001.txt\r\n10-Q        BETA HOLDINGS INC                                             67890       20261110    edgar/data/67890/0000067890-26-000002.txt\r\n8-K         GAMMA  CO                                                     555         20261110    edgar/data/555/0000000555-26-000003.txt\r\nDEF 14A     DELTA TRUST                                                   4444        20261110    edgar/data/4444/0000004444-26-000004.txt\r\nS-1         EPSILON INC                                                   3333        20261110    edgar/data/3333/0000003333-26-000005.txt\r\n20-F        ZETA PLC                                                      2222        20261110    edgar/data/2222/0000002222-26-000006.txt\r\n4           SOMEONE                                                       999         20261110    edgar/data/999/y.txt\r\n10-K/A      AMENDED CO                                                    1111        20261110    edgar/data/1111/z.txt\r\n10-K        LETTERS IN CIK                                                12a4        20261110    edgar/data/1/a.txt\r\n10-K        TOO FEW COLUMNS                                               777\r\n   10-K     LEADING SPACES CO                                             8888        20261110    edgar/data/8888/b.txt   \r\n10-K\tTABS ONLY\t9999\t20261110\tedgar/data/9999/c.txt\r\n10-K\t\tTWO TABS CO\t\t7777\t\t20261110\t\tedgar/data/7777/d.txt\r\n10-Q　　WIDE SPACE CO　　6666　　20261110　　edgar/data/6666/e.txt\r\n10-Q  NBSP CO  5555  20261110  edgar/data/5555/f.txt\r\n10-Q\u001f\u001fUNIT SEP CO\u001f\u001f4321\u001f\u001f20261110\u001f\u001fedgar/data/4321/g.txt\n10-Q  SPLITLINE CO  1234  20261110  edgar/data/1234/h.txt\n10-K        ONE SPACE BETWEEN CIK 31415 20261110    edgar/data/31415/i.txt\n",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   [
+    4321,
+    5555,
+    6666,
+    7777,
+    8888,
+    12345,
+    67890
+   ]
+  ],
+  [
+   "",
+   null,
+   []
+  ],
+  [
+   "",
+   [
+    "10-K"
+   ],
+   []
+  ],
+  [
+   "",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   []
+  ],
+  [
+   "\n\n",
+   null,
+   []
+  ],
+  [
+   "\n\n",
+   [
+    "10-K"
+   ],
+   []
+  ],
+  [
+   "\n\n",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   []
+  ],
+  [
+   "10-K  A  1  2  3",
+   null,
+   [
+    1
+   ]
+  ],
+  [
+   "10-K  A  1  2  3",
+   [
+    "10-K"
+   ],
+   [
+    1
+   ]
+  ],
+  [
+   "10-K  A  1  2  3",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   [
+    1
+   ]
+  ],
+  [
+   "10-K  A  1  2",
+   null,
+   []
+  ],
+  [
+   "10-K  A  1  2",
+   [
+    "10-K"
+   ],
+   []
+  ],
+  [
+   "10-K  A  1  2",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   []
+  ],
+  [
+   "x\r\n10-K  A  0042  2  3\r\n",
+   null,
+   [
+    42
+   ]
+  ],
+  [
+   "x\r\n10-K  A  0042  2  3\r\n",
+   [
+    "10-K"
+   ],
+   [
+    42
+   ]
+  ],
+  [
+   "x\r\n10-K  A  0042  2  3\r\n",
+   [
+    "10-K",
+    "10-Q"
+   ],
+   [
+    42
+   ]
+  ]
+ ],
+ "filings": [
+  [
+   {
+    "cik": "320193",
+    "name": "Apple Inc.",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "8-K",
+       "4",
+       "10-Q",
+       "10-K",
+       "S-1"
+      ],
+      "filingDate": [
+       "2025-10-31",
+       "2025-10-30",
+       "2025-10-01",
+       "2025-08-01",
+       "2019-11-01",
+       "2025-01-02"
+      ],
+      "accessionNumber": [
+       "0000320193-25-000079",
+       "0000320193-25-000077",
+       "0001-25-1",
+       "0000320193-25-000070",
+       "0000320193-19-000119",
+       "0000320193-25-000001"
+      ],
+      "primaryDocument": [
+       "aapl-20250927.htm",
+       "aapl-8k.htm",
+       "xslF345X05/wk-form4.xml",
+       "R2.htm",
+       "a10-k2019.htm",
+       ""
+      ]
+     }
+    }
+   },
+   "2020-11-10",
+   null,
+   [
+    [
+     320193,
+     "Apple Inc.",
+     "10-K",
+     "2025-10-31",
+     "0000320193-25-000079",
+     "aapl-20250927.htm",
+     "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"
+    ],
+    [
+     320193,
+     "Apple Inc.",
+     "8-K",
+     "2025-10-30",
+     "0000320193-25-000077",
+     "aapl-8k.htm",
+     "https://www.sec.gov/Archives/edgar/data/320193/000032019325000077/aapl-8k.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "320193",
+    "name": "Apple Inc.",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "8-K",
+       "4",
+       "10-Q",
+       "10-K",
+       "S-1"
+      ],
+      "filingDate": [
+       "2025-10-31",
+       "2025-10-30",
+       "2025-10-01",
+       "2025-08-01",
+       "2019-11-01",
+       "2025-01-02"
+      ],
+      "accessionNumber": [
+       "0000320193-25-000079",
+       "0000320193-25-000077",
+       "0001-25-1",
+       "0000320193-25-000070",
+       "0000320193-19-000119",
+       "0000320193-25-000001"
+      ],
+      "primaryDocument": [
+       "aapl-20250927.htm",
+       "aapl-8k.htm",
+       "xslF345X05/wk-form4.xml",
+       "R2.htm",
+       "a10-k2019.htm",
+       ""
+      ]
+     }
+    }
+   },
+   "2025-10-01",
+   "2025-10-30",
+   [
+    [
+     320193,
+     "Apple Inc.",
+     "8-K",
+     "2025-10-30",
+     "0000320193-25-000077",
+     "aapl-8k.htm",
+     "https://www.sec.gov/Archives/edgar/data/320193/000032019325000077/aapl-8k.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "320193",
+    "name": "Apple Inc.",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "8-K",
+       "4",
+       "10-Q",
+       "10-K",
+       "S-1"
+      ],
+      "filingDate": [
+       "2025-10-31",
+       "2025-10-30",
+       "2025-10-01",
+       "2025-08-01",
+       "2019-11-01",
+       "2025-01-02"
+      ],
+      "accessionNumber": [
+       "0000320193-25-000079",
+       "0000320193-25-000077",
+       "0001-25-1",
+       "0000320193-25-000070",
+       "0000320193-19-000119",
+       "0000320193-25-000001"
+      ],
+      "primaryDocument": [
+       "aapl-20250927.htm",
+       "aapl-8k.htm",
+       "xslF345X05/wk-form4.xml",
+       "R2.htm",
+       "a10-k2019.htm",
+       ""
+      ]
+     }
+    }
+   },
+   "2025-10-31",
+   "2025-10-31",
+   [
+    [
+     320193,
+     "Apple Inc.",
+     "10-K",
+     "2025-10-31",
+     "0000320193-25-000079",
+     "aapl-20250927.htm",
+     "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "320193",
+    "name": "Apple Inc.",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "8-K",
+       "4",
+       "10-Q",
+       "10-K",
+       "S-1"
+      ],
+      "filingDate": [
+       "2025-10-31",
+       "2025-10-30",
+       "2025-10-01",
+       "2025-08-01",
+       "2019-11-01",
+       "2025-01-02"
+      ],
+      "accessionNumber": [
+       "0000320193-25-000079",
+       "0000320193-25-000077",
+       "0001-25-1",
+       "0000320193-25-000070",
+       "0000320193-19-000119",
+       "0000320193-25-000001"
+      ],
+      "primaryDocument": [
+       "aapl-20250927.htm",
+       "aapl-8k.htm",
+       "xslF345X05/wk-form4.xml",
+       "R2.htm",
+       "a10-k2019.htm",
+       ""
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "0000012345",
+    "name": "ACME CORP",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "10-Q",
+       "10-Q",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "S-1",
+       "S-1",
+       "DEF 14A",
+       "def 14a",
+       "20-F",
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-09",
+       "2026-11-11",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000012345-26-000001",
+       "0000012345-26-000002",
+       "0000012345-26-000003",
+       "0000012345-26-000004",
+       "0000012345-26-000005",
+       "0000012345-26-000006",
+       "0000012345-26-000007",
+       "0000012345-26-000008",
+       "0000012345-26-000009",
+       "000001234526000010",
+       "0000012345-26-000011",
+       "0000012345-26-000012",
+       "0000012345-26-000013",
+       "0000012345-26-000014",
+       "0000012345-26-000015"
+      ],
+      "primaryDocument": [
+       "acme-10k.htm",
+       "R12.HTM",
+       "R12.html",
+       "xsl/R3.htm",
+       "dir/exhibit.HTML",
+       "notice.txt\n",
+       "data.xml",
+       "page.htm?x=1",
+       "scan.pdf",
+       "s1.htm",
+       "s1b.htm",
+       "proxy.htm",
+       "lower.htm",
+       "R7.htm\n",
+       "Rx1.htm"
+      ]
+     }
+    }
+   },
+   "2026-11-10",
+   "2026-11-10",
+   [
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000001",
+     "acme-10k.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000001/acme-10k.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-Q",
+     "2026-11-10",
+     "0000012345-26-000003",
+     "R12.html",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000003/R12.html"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000005",
+     "dir/exhibit.HTML",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000005/dir/exhibit.HTML"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000006",
+     "notice.txt\n",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000006/notice.txt\n"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "DEF 14A",
+     "2026-11-10",
+     "0000012345-26-000012",
+     "proxy.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000012/proxy.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000015",
+     "Rx1.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000015/Rx1.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "0000012345",
+    "name": "ACME CORP",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "10-Q",
+       "10-Q",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "S-1",
+       "S-1",
+       "DEF 14A",
+       "def 14a",
+       "20-F",
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-09",
+       "2026-11-11",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000012345-26-000001",
+       "0000012345-26-000002",
+       "0000012345-26-000003",
+       "0000012345-26-000004",
+       "0000012345-26-000005",
+       "0000012345-26-000006",
+       "0000012345-26-000007",
+       "0000012345-26-000008",
+       "0000012345-26-000009",
+       "000001234526000010",
+       "0000012345-26-000011",
+       "0000012345-26-000012",
+       "0000012345-26-000013",
+       "0000012345-26-000014",
+       "0000012345-26-000015"
+      ],
+      "primaryDocument": [
+       "acme-10k.htm",
+       "R12.HTM",
+       "R12.html",
+       "xsl/R3.htm",
+       "dir/exhibit.HTML",
+       "notice.txt\n",
+       "data.xml",
+       "page.htm?x=1",
+       "scan.pdf",
+       "s1.htm",
+       "s1b.htm",
+       "proxy.htm",
+       "lower.htm",
+       "R7.htm\n",
+       "Rx1.htm"
+      ]
+     }
+    }
+   },
+   "2026-11-09",
+   "2026-11-11",
+   [
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000001",
+     "acme-10k.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000001/acme-10k.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-Q",
+     "2026-11-10",
+     "0000012345-26-000003",
+     "R12.html",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000003/R12.html"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000005",
+     "dir/exhibit.HTML",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000005/dir/exhibit.HTML"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000006",
+     "notice.txt\n",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000006/notice.txt\n"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "S-1",
+     "2026-11-09",
+     "000001234526000010",
+     "s1.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000010/s1.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "S-1",
+     "2026-11-11",
+     "0000012345-26-000011",
+     "s1b.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000011/s1b.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "DEF 14A",
+     "2026-11-10",
+     "0000012345-26-000012",
+     "proxy.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000012/proxy.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000015",
+     "Rx1.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000015/Rx1.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "0000012345",
+    "name": "ACME CORP",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "10-Q",
+       "10-Q",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "8-K",
+       "S-1",
+       "S-1",
+       "DEF 14A",
+       "def 14a",
+       "20-F",
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-09",
+       "2026-11-11",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000012345-26-000001",
+       "0000012345-26-000002",
+       "0000012345-26-000003",
+       "0000012345-26-000004",
+       "0000012345-26-000005",
+       "0000012345-26-000006",
+       "0000012345-26-000007",
+       "0000012345-26-000008",
+       "0000012345-26-000009",
+       "000001234526000010",
+       "0000012345-26-000011",
+       "0000012345-26-000012",
+       "0000012345-26-000013",
+       "0000012345-26-000014",
+       "0000012345-26-000015"
+      ],
+      "primaryDocument": [
+       "acme-10k.htm",
+       "R12.HTM",
+       "R12.html",
+       "xsl/R3.htm",
+       "dir/exhibit.HTML",
+       "notice.txt\n",
+       "data.xml",
+       "page.htm?x=1",
+       "scan.pdf",
+       "s1.htm",
+       "s1b.htm",
+       "proxy.htm",
+       "lower.htm",
+       "R7.htm\n",
+       "Rx1.htm"
+      ]
+     }
+    }
+   },
+   "2026-11-10",
+   null,
+   [
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000001",
+     "acme-10k.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000001/acme-10k.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-Q",
+     "2026-11-10",
+     "0000012345-26-000003",
+     "R12.html",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000003/R12.html"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000005",
+     "dir/exhibit.HTML",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000005/dir/exhibit.HTML"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "8-K",
+     "2026-11-10",
+     "0000012345-26-000006",
+     "notice.txt\n",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000006/notice.txt\n"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "S-1",
+     "2026-11-11",
+     "0000012345-26-000011",
+     "s1b.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000011/s1b.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "DEF 14A",
+     "2026-11-10",
+     "0000012345-26-000012",
+     "proxy.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000012/proxy.htm"
+    ],
+    [
+     12345,
+     "ACME CORP",
+     "10-K",
+     "2026-11-10",
+     "0000012345-26-000015",
+     "Rx1.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000001234526000015/Rx1.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": 12345,
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     12345,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "  0000012345 ",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     12345,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/12345/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "3_20193",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     320193,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/320193/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": true,
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": 3.7,
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     3,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/3/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": [],
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     0,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/0/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": 0,
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     0,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/0/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     0,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/0/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": null,
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     0,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/0/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "abc",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "ValueError"
+   }
+  ],
+  [
+   {
+    "cik": "1__0",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "ValueError"
+   }
+  ],
+  [
+   {
+    "cik": [
+     1
+    ],
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": {
+     "a": 1
+    },
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": "-5",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     -5,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/-5/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "name": "NO CIK",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     0,
+     "NO CIK",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/0/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": null,
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": 5,
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     5,
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": [
+     "a"
+    ],
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     [
+      "a"
+     ],
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "Ünïcode Co",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "0000000001-26-000001"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "Ünïcode Co",
+     "10-K",
+     "2026-11-10",
+     "0000000001-26-000001",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": null
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {}
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": []
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": [
+     1
+    ]
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": "x"
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": null
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": []
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": [
+      1
+     ]
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "other": 1
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X"
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "10-Q",
+       "8-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a-1",
+       "b-2",
+       "c-3"
+      ],
+      "primaryDocument": [
+       "a.htm",
+       "b.htm",
+       "c.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "a-1",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/a1/a.htm"
+    ],
+    [
+     1,
+     "X",
+     "10-Q",
+     "2026-11-10",
+     "b-2",
+     "b.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/b2/b.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       null,
+       5,
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a",
+       "b",
+       "c"
+      ],
+      "primaryDocument": [
+       "a.htm",
+       "b.htm",
+       "c.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "c",
+     "c.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/c/c.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       [
+        "10-K"
+       ]
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "4",
+       "10-K"
+      ],
+      "filingDate": [
+       null,
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a",
+       "b"
+      ],
+      "primaryDocument": [
+       "a.htm",
+       "b.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "b",
+     "b.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/b/b.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       null
+      ],
+      "accessionNumber": [
+       "a"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K",
+       "10-K",
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10",
+       "2026-11-10",
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a",
+       "b",
+       "c"
+      ],
+      "primaryDocument": [
+       null,
+       0,
+       []
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a"
+      ],
+      "primaryDocument": [
+       5
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": [
+       "10-K"
+      ],
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       null
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": "10-K",
+      "filingDate": "2026-11-10",
+      "accessionNumber": "abcd",
+      "primaryDocument": "a.htm"
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": {
+       "10-K": 1
+      },
+      "filingDate": {
+       "2026-11-10": 1
+      },
+      "accessionNumber": {
+       "a": 1
+      },
+      "primaryDocument": {
+       "a.htm": 1
+      }
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   [
+    [
+     1,
+     "X",
+     "10-K",
+     "2026-11-10",
+     "a",
+     "a.htm",
+     "https://www.sec.gov/Archives/edgar/data/1/a/a.htm"
+    ]
+   ]
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": null,
+      "filingDate": [],
+      "accessionNumber": [],
+      "primaryDocument": []
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "form": 5,
+      "filingDate": [],
+      "accessionNumber": [],
+      "primaryDocument": []
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   {
+    "error": "TypeError"
+   }
+  ],
+  [
+   {
+    "cik": "1",
+    "name": "X",
+    "filings": {
+     "recent": {
+      "filingDate": [
+       "2026-11-10"
+      ],
+      "accessionNumber": [
+       "a"
+      ],
+      "primaryDocument": [
+       "a.htm"
+      ]
+     }
+    }
+   },
+   "2026-01-01",
+   null,
+   []
+  ],
+  [
+   [
+    1,
+    2
+   ],
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   "text",
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   5,
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ],
+  [
+   null,
+   "2026-01-01",
+   null,
+   {
+    "error": "AttributeError"
+   }
+  ]
+ ],
+ "pace": [
+  [
+   8,
+   [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    0.125,
+    0.25,
+    0.375,
+    0.5,
+    0.625,
+    0.75,
+    0.875,
+    1.0,
+    1.125,
+    1.25,
+    1.375,
+    1.5,
+    1.625,
+    1.75,
+    1.875,
+    2.0
+   ]
+  ],
+  [
+   4,
+   [
+    0.0,
+    0.0,
+    0.5,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.05,
+    0.3,
+    0.0
+   ],
+   [
+    0.0,
+    0.25,
+    0.75,
+    1.0,
+    1.25,
+    2.25,
+    2.5,
+    2.75,
+    3.05,
+    3.3
+   ]
+  ],
+  [
+   3,
+   [
+    0.1,
+    0.2,
+    0.0,
+    0.0,
+    2.0,
+    0.0
+   ],
+   [
+    0.1,
+    0.433333333,
+    0.766666667,
+    1.1,
+    3.1,
+    3.433333333
+   ]
+  ],
+  [
+   10.5,
+   [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.01,
+    0.01,
+    0.01,
+    0.01,
+    0.01,
+    0.01
+   ],
+   [
+    0.0,
+    0.095238095,
+    0.19047619,
+    0.285714286,
+    0.380952381,
+    0.476190476,
+    0.571428571,
+    0.666666667,
+    0.761904762,
+    0.857142857,
+    0.952380952,
+    1.047619048
+   ]
+  ]
+ ],
+ "check_edgar": [
+  [
+   [
+    [
+     "form_10-K",
+     100
+    ],
+    [
+     "document_404",
+     2
+    ]
+   ],
+   null
+  ],
+  [
+   [
+    [
+     "form_10-K",
+     100
+    ],
+    [
+     "submissions_403",
+     1
+    ]
+   ],
+   "refused: {'form_10-K': 100, 'submissions_403': 1}"
+  ],
+  [
+   [
+    [
+     "form_10-K",
+     100
+    ],
+    [
+     "document_403",
+     1
+    ]
+   ],
+   "refused: {'form_10-K': 100, 'document_403': 1}"
+  ],
+  [
+   [
+    [
+     "form_10-K",
+     10
+    ],
+    [
+     "document_TimeoutError",
+     5
+    ]
+   ],
+   "too many fetch errors: {'form_10-K': 10, 'document_TimeoutError': 5}"
+  ],
+  [
+   [
+    [
+     "index_days",
+     1
+    ],
+    [
+     "robots_403",
+     1
+    ],
+    [
+     "filers",
+     0
+    ]
+   ],
+   "refused: {'index_days': 1, 'robots_403': 1, 'filers': 0}"
+  ],
+  [
+   [
+    [
+     "refused_401",
+     1
+    ]
+   ],
+   "refused: {'refused_401': 1}"
+  ],
+  [
+   [
+    [
+     "rate_limited",
+     1
+    ]
+   ],
+   "refused: {'rate_limited': 1}"
+  ],
+  [
+   [
+    [
+     "server_errors_503",
+     1
+    ]
+   ],
+   "refused: {'server_errors_503': 1}"
+  ],
+  [
+   [
+    [
+     "refused_403",
+     0
+    ]
+   ],
+   "refused: {'refused_403': 0}"
+  ],
+  [
+   [
+    [
+     "index_days",
+     1
+    ],
+    [
+     "filers",
+     0
+    ]
+   ],
+   null
+  ],
+  [
+   [
+    [
+     "no_index_weekday",
+     2
+    ],
+    [
+     "filers",
+     0
+    ]
+   ],
+   null
+  ],
+  [
+   [
+    [
+     "form_10-K",
+     95
+    ],
+    [
+     "document_404",
+     5
+    ]
+   ],
+   null
+  ],
+  [
+   [
+    [
+     "form_10-K",
+     94
+    ],
+    [
+     "document_404",
+     5
+    ]
+   ],
+   "too many fetch errors: {'form_10-K': 94, 'document_404': 5}"
+  ],
+  [
+   [
+    [
+     "form_8-K",
+     50
+    ],
+    [
+     "submissions_unreadable",
+     3
+    ],
+    [
+     "skipped",
+     40
+    ]
+   ],
+   "too many fetch errors: {'form_8-K': 50, 'submissions_unreadable': 3, 'skipped': 40}"
+  ],
+  [
+   [
+    [
+     "form_8-K",
+     20
+    ],
+    [
+     "submissions_404",
+     1
+    ],
+    [
+     "document_too_large",
+     1
+    ]
+   ],
+   "too many fetch errors: {'form_8-K': 20, 'submissions_404': 1, 'document_too_large': 1}"
+  ],
+  [
+   [
+    [
+     "submissions_ClientConnectorError",
+     1
+    ]
+   ],
+   "too many fetch errors: {'submissions_ClientConnectorError': 1}"
+  ],
+  [
+   [
+    [
+     "form_10-Q",
+     1
+    ],
+    [
+     "document_it's",
+     1
+    ],
+    [
+     "document_a\"b'c",
+     1
+    ],
+    [
+     "document_x\\y\n",
+     1
+    ]
+   ],
+   "too many fetch errors: {'form_10-Q': 1, \"document_it's\": 1, 'document_a\"b\\'c': 1, 'document_x\\\\y\\n': 1}"
+  ],
+  [
+   [],
+   null
+  ]
+ ],
+ "check_fred": [
+  [
+   [
+    [
+     "page",
+     95
+    ]
+   ],
+   100,
+   null
+  ],
+  [
+   [
+    [
+     "page",
+     95
+    ],
+    [
+     "rate_limited",
+     1
+    ]
+   ],
+   100,
+   "refused: {'page': 95, 'rate_limited': 1}"
+  ],
+  [
+   [
+    [
+     "page",
+     50
+    ]
+   ],
+   100,
+   "only 50 of 100 pages: {'page': 50}"
+  ],
+  [
+   [
+    [
+     "page",
+     90
+    ]
+   ],
+   100,
+   null
+  ],
+  [
+   [
+    [
+     "page",
+     89
+    ],
+    [
+     "status_404",
+     11
+    ]
+   ],
+   100,
+   "only 89 of 100 pages: {'page': 89, 'status_404': 11}"
+  ],
+  [
+   [],
+   0,
+   null
+  ],
+  [
+   [
+    [
+     "robots_unreachable",
+     300
+    ]
+   ],
+   300,
+   "refused: {'robots_unreachable': 300}"
+  ],
+  [
+   [
+    [
+     "page",
+     299
+    ],
+    [
+     "crashed_ValueError",
+     1
+    ]
+   ],
+   300,
+   null
+  ],
+  [
+   [
+    [
+     "status_404",
+     3
+    ]
+   ],
+   3,
+   "only 0 of 3 pages: {'status_404': 3}"
+  ],
+  [
+   [
+    [
+     "page",
+     270
+    ],
+    [
+     "redirect",
+     4
+    ],
+    [
+     "noindex",
+     30
+    ]
+   ],
+   300,
+   null
+  ]
+ ],
+ "groups": [
+  [
+   [
+    "https://fred.stlouisfed.org/series/GDP",
+    "https://news.example/a",
+    "https://fred.stlouisfed.org/series/GDP?utm_source=x",
+    "  https://FRED.stlouisfed.org/data/GDP.txt  ",
+    "https://fred.stlouisfed.org/series/GDP#notes",
+    "ftp://fred.stlouisfed.org/x",
+    "not a url",
+    "",
+    "http://[broken/",
+    "https://news.example:443/b",
+    "https://news.example:8443/c",
+    "https://fred.stlouisfed.org/series/UNRATE?b=2&a=1&fbclid=z",
+    "http://fred.stlouisfed.org/series/CPI",
+    "https://news.example/a",
+    "https://out.example/x",
+    "https://listed.example/only-this",
+    "https://listed.example/other",
+    "https://fred.stlouisfed.org/graph/GDP",
+    "https://held.example/h"
+   ],
+   [
+    "https://held.example/h",
+    "https://news.example/b"
+   ],
+   null,
+   {
+    "refused": [
+     [
+      "bad_url",
+      4
+     ],
+     [
+      "skipped_held",
+      2
+     ],
+     [
+      "robots_fred.stlouisfed.org",
+      7
+     ],
+     [
+      "robots_news.example",
+      2
+     ],
+     [
+      "robots_news.example:8443",
+      1
+     ],
+     [
+      "robots_out.example",
+      1
+     ],
+     [
+      "robots_listed.example",
+      2
+     ]
+    ],
+    "opened": [
+     [
+      "bad_url",
+      4
+     ],
+     [
+      "skipped_held",
+      2
+     ],
+     [
+      "status_404",
+      10
+     ]
+    ],
+    "fetched": [
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/series/GDP"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/data/GDP.txt"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/series/UNRATE?b=2&a=1"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "http://fred.stlouisfed.org/series/CPI"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/graph/GDP"
+     ],
+     [
+      "news.example",
+      "https://news.example/a"
+     ],
+     [
+      "news.example:8443",
+      "https://news.example:8443/c"
+     ],
+     [
+      "out.example",
+      "https://out.example/x"
+     ],
+     [
+      "listed.example",
+      "https://listed.example/only-this"
+     ],
+     [
+      "listed.example",
+      "https://listed.example/other"
+     ]
+    ]
+   }
+  ],
+  [
+   [
+    "https://fred.stlouisfed.org/series/GDP",
+    "https://news.example/a",
+    "https://fred.stlouisfed.org/series/GDP?utm_source=x",
+    "  https://FRED.stlouisfed.org/data/GDP.txt  ",
+    "https://fred.stlouisfed.org/series/GDP#notes",
+    "ftp://fred.stlouisfed.org/x",
+    "not a url",
+    "",
+    "http://[broken/",
+    "https://news.example:443/b",
+    "https://news.example:8443/c",
+    "https://fred.stlouisfed.org/series/UNRATE?b=2&a=1&fbclid=z",
+    "http://fred.stlouisfed.org/series/CPI",
+    "https://news.example/a",
+    "https://out.example/x",
+    "https://listed.example/only-this",
+    "https://listed.example/other",
+    "https://fred.stlouisfed.org/graph/GDP",
+    "https://held.example/h"
+   ],
+   [
+    "https://held.example/h",
+    "https://news.example/b"
+   ],
+   {
+    "sites": [
+     {
+      "host": "fred.stlouisfed.org",
+      "rule": "whole",
+      "paths": [
+       "/series/",
+       "/data/"
+      ]
+     },
+     {
+      "host": "news.example",
+      "rule": "news"
+     },
+     {
+      "host": "out.example",
+      "rule": "out"
+     }
+    ]
+   },
+   {
+    "refused": [
+     [
+      "bad_url",
+      4
+     ],
+     [
+      "skipped_held",
+      2
+     ],
+     [
+      "out_of_set",
+      4
+     ],
+     [
+      "robots_fred.stlouisfed.org",
+      6
+     ],
+     [
+      "robots_news.example",
+      2
+     ],
+     [
+      "robots_news.example:8443",
+      1
+     ]
+    ],
+    "opened": [
+     [
+      "bad_url",
+      4
+     ],
+     [
+      "skipped_held",
+      2
+     ],
+     [
+      "out_of_set",
+      4
+     ],
+     [
+      "status_404",
+      6
+     ]
+    ],
+    "fetched": [
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/series/GDP"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/data/GDP.txt"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "https://fred.stlouisfed.org/series/UNRATE?b=2&a=1"
+     ],
+     [
+      "fred.stlouisfed.org",
+      "http://fred.stlouisfed.org/series/CPI"
+     ],
+     [
+      "news.example",
+      "https://news.example/a"
+     ],
+     [
+      "news.example:8443",
+      "https://news.example:8443/c"
+     ]
+    ]
+   }
+  ]
+ ]
+}

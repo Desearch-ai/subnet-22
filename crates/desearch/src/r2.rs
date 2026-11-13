@@ -1,4 +1,4 @@
-//! Cloudflare R2 over the S3 API: SigV4-signed HEAD, ranged GET, PUT, COPY, DELETE and multipart uploads, retried with backoff, and presigned URLs.
+//! An S3-compatible object store: SigV4-signed HEAD, ranged GET, PUT, COPY, DELETE and multipart uploads, retried with backoff, and presigned URLs.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,7 +67,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A stored object's size, entity tag (quotes included, as R2 sends it) and when it was last written.
+/// A stored object's size, entity tag (quotes included, as the store sends it) and when it was last written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Head {
     pub size: u64,
@@ -157,13 +157,6 @@ impl Bucket {
         Ok(body)
     }
 
-    /// The last `bytes` bytes of an object.
-    pub async fn get_tail(&self, key: &str, bytes: u64) -> Result<Bytes, Error> {
-        let mut headers = HeaderMap::new();
-        headers.insert(reqwest::header::RANGE, value(&format!("bytes=-{bytes}")));
-        Ok(self.call(Method::GET, Some(key), &[], headers, Bytes::new(), READ).await?.1)
-    }
-
     pub async fn get(&self, key: &str) -> Result<Bytes, Error> {
         self.get_matching(key, None).await
     }
@@ -247,7 +240,7 @@ impl Bucket {
         }
     }
 
-    /// A large object as parts sent `at_once`, since one stream to R2 tops out far below the link.
+    /// A large object as parts sent `at_once`, since one stream to the store tops out far below the link.
     pub async fn put_in_parts(&self, key: &str, body: Bytes, content_type: &str, part_bytes: usize, at_once: usize) -> Result<(), Error> {
         if body.len() <= part_bytes {
             return self.put(key, body, content_type, None).await;
@@ -295,7 +288,7 @@ impl Bucket {
         Ok(headers.get("etag").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string())
     }
 
-    /// A part sent again when the first copy is slow; R2 tags a part with the MD5 of its bytes, so either copy completes the upload.
+    /// A part sent again when the first copy is slow; the store tags a part with the MD5 of its bytes, so either copy completes the upload.
     async fn send_part(&self, key: &str, upload_id: &str, number: u32, part: Bytes) -> Result<String, Error> {
         let first = self.upload_part(key, upload_id, number, part.clone());
         tokio::pin!(first);
@@ -426,7 +419,7 @@ fn value(text: &str) -> HeaderValue {
     HeaderValue::from_str(text).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
-/// A copy's entity tag with its quotes, which R2 escapes as `&quot;` and MinIO as `&#34;`.
+/// A copy's entity tag with its quotes, which stores escape as `&quot;` or `&#34;`.
 fn copy_etag(body: &[u8]) -> Option<String> {
     xml_field(body, "ETag").map(|etag| etag.replace("&quot;", "\"").replace("&#34;", "\""))
 }

@@ -469,21 +469,11 @@ fn batches(file: Bytes) -> Result<Vec<Columns>> {
     reader.map(|batch| Columns::new(batch?)).collect()
 }
 
-/// Every row of a change file in file order, from the Rust publisher or the Python one before it.
+/// Every row of a change file in file order.
 pub fn decode_changes(file: Bytes, change_seq: i64) -> Result<Vec<ChangeRow>> {
-    Ok(decode_changes_where(file, change_seq, |_| true)?.into_iter().map(|(_, row)| row).collect())
-}
-
-/// The rows of a change file whose position `keep` accepts, with their positions; the others are not decoded.
-pub fn decode_changes_where(file: Bytes, change_seq: i64, keep: impl Fn(usize) -> bool) -> Result<Vec<(usize, ChangeRow)>> {
     let mut rows = Vec::new();
-    let mut at = 0;
     for columns in batches(file)? {
         for row in 0..columns.rows {
-            let position = at + row;
-            if !keep(position) {
-                continue;
-            }
             let kind = columns.text("kind", row).unwrap_or_default();
             let decoded = match kind.as_str() {
                 "task_withdrawn" => ChangeRow::TaskWithdrawn(columns.text("task_id", row).context("a task_withdrawn row without a task id")?),
@@ -501,9 +491,8 @@ pub fn decode_changes_where(file: Bytes, change_seq: i64, keep: impl Fn(usize) -
                 }
                 other => bail!("a change row of kind {other:?}"),
             };
-            rows.push((position, decoded));
+            rows.push(decoded);
         }
-        at += columns.rows;
     }
     Ok(rows)
 }

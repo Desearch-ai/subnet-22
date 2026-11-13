@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd">
+<responseDate>2026-11-10T10:00:00Z</responseDate>
+<request verb="ListRecords" metadataPrefix="arXiv" from="2026-11-01" until="2026-11-02">http://oaipmh.arxiv.org/oai</request>
+<ListRecords>
+<record><header><identifier>oai:arXiv.org:2611.00001</identifier><datestamp>2026-11-01</datestamp><setSpec>physics:cond-mat</setSpec></header><metadata><arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ http://arxiv.org/OAI/arXiv.xsd"><id>2611.00001</id><created>2026-11-01</created><authors><author><keyname>Müller</keyname><forenames>Jürgen</forenames></author></authors><title>Spin liquids — a review</title><categories>cond-mat.str-el</categories><license>http://creativecommons.org/licenses/by/4.0/</license><abstract>  An abstract with α and β.
+</abstract></arXiv></metadata></record>
+<record><header><identifier>oai:arXiv.org:2611.00002</identifier><datestamp>2026-11-01</datestamp><setSpec>physics:cond-mat</setSpec></header><metadata><arXiv xmlns="http://arxiv.org/OAI/arXiv/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://arxiv.org/OAI/arXiv/ http://arxiv.org/OAI/arXiv.xsd"><id>2611.00002</id><created>2026-11-01</created><authors><author><keyname>Müller</keyname><forenames>Jürgen</forenames></author></authors><title>Kagome magnets</title><categories>cond-mat.str-el</categories><license>http://creativecommons.org/licenses/by/4.0/</license><abstract>  An abstract with α and β.
+</abstract></arXiv></metadata></record>
+<resumptionToken cursor="0" completeListSize="3">6960524|1001</resumptionToken>
+</ListRecords>
+</OAI-PMH>

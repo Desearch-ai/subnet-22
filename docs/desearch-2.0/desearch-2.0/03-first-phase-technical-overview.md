@@ -1,6 +1,6 @@
 # Desearch 2.0: first-phase technical overview
 
-This chapter explains the first-phase design for miners, validators and technical readers. Crawling runs today as described in [how it works](../../architecture.md) and the [miner](../../miner.md) and [validator](../../validator.md) guides; embedding and the index build described here are planned. [Direction and first phase](02-direction-and-first-phase.md) explains the scope and what comes later.
+This chapter explains the first-phase design for miners, validators and technical readers. Crawling and embedding run as described in [how it works](../../architecture.md), [embedding tasks](../../embedding-tasks.md) and the [miner](../../miner.md) and [validator](../../validator.md) guides. [Direction and first phase](02-direction-and-first-phase.md) explains the scope and what comes later.
 
 ## Two paths: building the collection and answering queries
 
@@ -21,7 +21,7 @@ Customer search
   Query → active, tested index and models → ranked sources and supporting text
 ```
 
-Validators assess both crawling and embedding work; the checks at each step are described below. The team would initially operate the queue, stored collection, index and API. Ordinary indexed queries would use an approved version without waiting for new miner work or a validator decision. This separation is intended to reduce waiting; the resulting speed and quality still need measurement.
+Validators assess both crawling and embedding work; the checks at each step are described below. The team operates the queue, stored collection, index and API. Ordinary indexed queries use an approved version without waiting for new miner work or a validator decision, so preparing the collection stays out of the query path.
 
 ## What a miner receives and returns
 
@@ -34,30 +34,30 @@ The initial task families are `CRAWL` and `EMBED`. A task identifies its inputs,
 
 A chunk is a piece of source text prepared for retrieval. An embedding represents that text numerically so search can match meaning, not only exact words. First-phase embedding miners run the selected model; they do not train a replacement or submit vectors from arbitrary models.
 
-The [hardware notice](05-participation-and-progress.md#hardware-planning-for-the-first-phase) sets out GPU needs for embedding miners and validators checking embeddings, and when tested configurations will be published.
+The [hardware notes](05-participation-and-progress.md#hardware) set out GPU needs for embedding miners and validators checking embeddings.
 
-## What validators would check
+## What validators check
 
-For **crawling**, checks would cover the requested source, fetch outcome, required fields, extraction settings and consistency with permitted source evidence. A changed or inaccessible page must be handled under the task's rules, not automatically treated as misconduct.
+For **crawling**, validators re-extract a sample of the uploaded pages from their HTML, fetch the same pages themselves and compare the text, and check a sample of the pages the miner reported as failed. A page the validator cannot load either is not held against the miner.
 
-For **embeddings**, checks would cover the input identities and order, selected model/configuration, vector count, dimensions and valid numerical values. Validators would use GPU compute to reproduce outputs under the announced checking procedure. Checks must account for permitted numerical variation across supported hardware, rather than assume every valid result is byte-identical.
+For **embeddings**, the task API refuses a file without exactly one vector per text, and validators embed a sample of the texts again with the same model. Each vector must have finite values and length 1 and come close enough to theirs by cosine similarity, which allows for numerical differences across GPUs rather than requiring identical bytes.
 
-The first-phase release documentation must specify the actual checking scope, tolerances and handling of unavailable or disputed evidence. A sampled check must be described as sampled; it does not establish that every item was independently verified.
+The exact sampling, tolerances and handling of pages that cannot be loaded are in [emission](../../emission.md) and [embedding tasks](../../embedding-tasks.md#how-it-is-checked). A sampled check does not establish that every item was independently verified.
 
-Task assessment and customer deployment remain separate. [Incentives and rewards](04-incentives-and-rewards.md#from-completed-work-to-rewards) explains the proposed path from checked work to weights and rewards; the team would separately approve versions for customer traffic.
+Task assessment and customer deployment remain separate. [Incentives and rewards](04-incentives-and-rewards.md#from-completed-work-to-rewards) explains the path from checked work to weights and rewards; the team separately approves versions for customer traffic.
 
 ## How accepted work becomes searchable
 
-The team would oversee content preparation: filtering low-value content, removing duplicates and splitting accepted text into chunks. Individual operator responsibilities will be specified in the release guide. The collection would retain permitted source text, URLs, observation times and version references independently of embeddings. Replacing a model should not mean losing the information used to create its vectors.
+The team oversees content preparation: filtering low-value content, removing duplicates and splitting accepted text into page texts and passages. The collection keeps source text, URLs, fetch times and version references independently of embeddings, so replacing a model does not lose the information used to create its vectors.
 
-The working design combines keyword retrieval for exact terms with vector retrieval for meaning. Ranking combines and orders candidate results. A search version binds the collection and text preparation to compatible document/query models, indexes and ranking settings. Vectors from unrelated models cannot simply be mixed because their sizes match.
+Search combines keyword retrieval for exact terms with vector retrieval for meaning. Ranking combines and orders candidate results. A search version binds the collection and text preparation to compatible document/query models, indexes and ranking settings. Vectors from unrelated models cannot simply be mixed because their sizes match.
 
-Accepted work enters a candidate version for evaluation, not directly into live search. Before promotion, the team would test useful results, response time, data quality and operating cost. Refreshes and model changes must preserve source/version links and support rollback without restoring deleted material.
+Accepted work enters a candidate version for evaluation, not directly into live search. Before promotion, the team tests useful results, response time, data quality and operating cost. Refreshes and model changes must preserve source/version links and support rollback without restoring deleted material.
 
-## What the release documentation will add
+## Operator guides
 
-Before requesting participation, the first-phase release must provide a versioned operator guide: installation and configuration, task and submission formats, selected model, tested requirements, validation procedure and transition instructions. Eligibility and reward terms must also be available under the [program-opening requirements](05-participation-and-progress.md#before-a-program-opens).
+Installation, configuration, task formats, the model, hardware and the checks are in the [miner](../../miner.md) and [validator](../../validator.md) guides, [embedding tasks](../../embedding-tasks.md) and [emission](../../emission.md).
 
-This overview does not select endpoints, GPU models, batch sizes, reward weights or an activation date. Training, fine-tuning and competitions for better retrieval methods belong to the [wider direction](02-direction-and-first-phase.md#how-the-networks-work-can-expand). They are not part of the initial CRAWL/EMBED tasks.
+Training, fine-tuning and competitions for better retrieval methods belong to the [wider direction](02-direction-and-first-phase.md#how-the-networks-work-can-expand). They are not part of the CRAWL and EMBED tasks.
 
-Continue to [incentives and rewards](04-incentives-and-rewards.md) for how assessed work would count toward rewards.
+Continue to [incentives and rewards](04-incentives-and-rewards.md) for how assessed work counts toward rewards.

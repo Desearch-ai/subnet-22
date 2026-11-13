@@ -1,4 +1,4 @@
-//! Page URLs canonicalised and keyed exactly as `app.canonical` does with Python's urllib.
+//! Page URLs canonicalised and keyed, split, quoted and parsed exactly as Python's urllib does.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -276,7 +276,7 @@ pub fn quote_plus(s: &str, out: &mut String) {
     }
 }
 
-/// The query names `TRACKING` in `app.canonical` matches, with Python's case-insensitive `^` and `$`.
+/// A tracking query name: `utm_*` or one of `TRACKING`, matched like a case-insensitive Python regex with `^` and `$`.
 fn tracking(name: &str) -> bool {
     let folded: String = name.chars().map(text::fold).collect();
     if folded.starts_with("utm_") {

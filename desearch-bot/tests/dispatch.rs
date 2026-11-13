@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
-    allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
+    allot, allot_first, batch_id, fresh_first, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, STOCK_WORKERS, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, HourlySpread, Next, OutcomeFeed, OutcomeReader, OutcomeRow, ResentPages};
-use desearch_bot::ready::{Order, Outcome, Pick, Reason, Requeued, Scheduled, SentPage, Why, Yield, CHANGED, FRESH, LANES, REQUEUED, YIELD_HALF_LIFE_S};
+use desearch_bot::ready::{Entry, Order, Outcome, Pick, Reason, Requeued, Scheduled, Why, Yield, CHANGED, FRESH, LANES, REQUEUED, YIELD_HALF_LIFE_S};
 use desearch_bot::recrawl::{Recrawl, DAY};
 use desearch_bot::records;
 use desearch_bot::states::State;
@@ -301,7 +301,7 @@ fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
 }
 
 #[test]
-fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
+fn the_sent_record_counts_a_failure_when_its_retry_comes_due() {
     let dir = Dir::new("ready-fails-rollback");
     let buckets = known(&dir, &["example.com"]);
     let store = buckets.store("example.com");
@@ -309,10 +309,10 @@ fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
     store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
     OutcomeReader::new(rules(), 1000).apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
     let failures = || store.sent("example.com", &rest("a")).unwrap().unwrap().failures;
-    assert_eq!(failures(), 0, "an earlier version counts the failure when the retry comes due, so it must not be counted here too");
+    assert_eq!(failures(), 0, "the sent record counts the failure when the retry comes due, not when the outcome comes");
     assert_eq!(store.failed_sends("example.com", &rest("a")).unwrap(), 1);
     assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
-    assert_eq!(failures(), 1, "the retry counts it, as an earlier version would");
+    assert_eq!(failures(), 1, "the retry counts it");
 }
 
 #[test]
@@ -556,27 +556,25 @@ fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
     let dir = Dir::new("ready-backfill");
     {
         let db = rocksdb::DB::open_default(&dir.0).unwrap();
-        let put = |key: String, lastmod: u32| {
-            let record = Record { sitemap_id: 1, lastmod, first_seen: 50, last_seen: 50, flags: HTTPS, ..Record::default() };
+        let put = |key: String, lastmod: u32, sent_with: Option<u32>| {
+            let pushed_at = if sent_with.is_some() { 60 } else { 0 };
+            let record = Record { sitemap_id: 1, lastmod, first_seen: 50, last_seen: 50, pushed_at, flags: HTTPS, ..Record::default() };
             db.put([b"U", key.as_bytes()].concat(), record.pack()).unwrap();
+            if let Some(sent) = sent_with {
+                db.put([b"P", key.as_bytes()].concat(), [&sent.to_le_bytes()[..], &[0, 0]].concat()).unwrap();
+            }
         };
         for i in 0..5 {
-            put(format!("example.com\0example.com/old-{i}"), 10 + i);
+            put(format!("example.com\0example.com/old-{i}"), 10 + i, None);
         }
-        put("example.com\0example.com/tag/old".into(), 10);
-        put("example.com\0example.com/sent-same".into(), 30);
-        put("example.com\0example.com/sent-moved".into(), 40);
+        put("example.com\0example.com/tag/old".into(), 10, None);
+        put("example.com\0example.com/sent-same".into(), 30, Some(30));
+        put("example.com\0example.com/sent-moved".into(), 40, Some(35));
         for i in 0..100 {
-            put(format!("big.org\0big.org/p{i:03}"), 100 + i);
+            put(format!("big.org\0big.org/p{i:03}"), 100 + i, (i < 60).then_some(0));
         }
     }
     let store = open(&dir);
-    let sent_page = |domain: &str, rest: Vec<u8>, lastmod: u32| SentPage { domain: domain.into(), rest, lastmod, at: 60 };
-    let mut sent = vec![sent_page("example.com", rest("sent-same"), 30), sent_page("example.com", rest("sent-moved"), 35)];
-    sent.extend((0..60).map(|i| sent_page("big.org", format!("big.org/p{i:03}").into_bytes(), 0)));
-    sent.push(sent_page("example.com", rest("never-listed"), 1));
-    assert_eq!(store.import_sent(&sent).unwrap(), 62);
-    assert_eq!(record(&store, "sent-same").pushed_at, 60);
 
     let mut state = store.backfill_state(1000).unwrap();
     store.backfill_step(&mut state, 3).unwrap();
@@ -618,6 +616,16 @@ fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
 }
 
 #[test]
+fn news_sites_whose_lists_grew_take_their_turns_before_the_rest_go_round() {
+    let want = |rank: i64, ready: u64| Want { rank, ready, allowance: 1_000, share: 1.0, weight: 1 };
+    let wants = [want(50_000, 3), want(1, 100), want(500, 100)];
+    assert_eq!(allot_first(&wants, 5, 0, 1), (vec![3, 2, 0], 1), "the grown news site goes first even at a lower rank, then the rest from where they stopped");
+    assert_eq!(allot_first(&wants, 5, 1, 1).0, [3, 0, 2], "the rest resume among themselves");
+    assert_eq!(allot_first(&wants, 2, 0, 1).0, [2, 0, 0], "a short pass serves the news site alone");
+    assert_eq!(allot_first(&wants, 13, 0, 0), allot(&wants, 13, 0), "with none first it is the plain round");
+}
+
+#[test]
 fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes() {
     let counted = |ok: f64, failed: f64| Some(Yield { ok, failed, at: 1000 });
     assert_eq!(yield_share(None, 1000), 1.0, "nothing judged yet");
@@ -643,7 +651,7 @@ fn outcomes_tally_each_domains_yield_once_per_file_under_the_domain_its_host_was
     let rows = [
         outcome("https://example.com/a", Outcome::Published, 2000),
         outcome("https://www.example.com/b", Outcome::Failed, 2001),
-        outcome("http://blog.example.com/c", Outcome::Unchanged, 2002),
+        outcome("http://blog.example.com/c", Outcome::Published, 2002),
         outcome("https://example.com/d", Outcome::Dropped, 2003),
         outcome("https://shop.example.org/e", Outcome::Failed, 2004),
         outcome("https://unknown.net/f", Outcome::Published, 2005),
@@ -785,10 +793,10 @@ fn a_batch_id_depends_only_on_the_batch() {
 fn outcome_files_parse_with_the_host_each_url_was_queued_under() {
     let data = std::fs::read(format!("{}/tests/data/outcomes.parquet", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rows = outcomes::read_parquet(data.into()).unwrap();
-    assert_eq!(rows.len(), 4, "an outcome this bot does not know is skipped");
+    assert_eq!(rows.len(), 3, "an outcome this bot does not know is skipped");
     assert_eq!(rows[0], OutcomeRow { url: "https://example.com/news/a".into(), host: "example.com".into(), outcome: Outcome::Published, at: 1_759_400_000_500_000 });
-    assert_eq!(rows.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Published, Outcome::Unchanged, Outcome::Failed, Outcome::Dropped]);
-    assert_eq!(rows.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["example.com", "example.com", "blog.example.com", "example.com"]);
+    assert_eq!(rows.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Published, Outcome::Failed, Outcome::Dropped]);
+    assert_eq!(rows.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["example.com", "blog.example.com", "example.com"]);
 
     let dir = Dir::new("outcome-files");
     let buckets = known(&dir, &["example.com"]);
@@ -797,7 +805,7 @@ fn outcome_files_parse_with_the_host_each_url_was_queued_under() {
     store.record_listing("example.com", 7, listed.iter().map(|u| (urls::parse(u, "example.com").unwrap(), 10, false)).collect(), 100).unwrap();
     store.mark_sent(&take(store, 10), 1_759_399_000, &rules()).unwrap();
     let counted = OutcomeReader::new(rules(), 1000).apply(&buckets, &rows, 1_759_400_100).unwrap();
-    assert_eq!((counted.published, counted.failed, counted.dropped, counted.dropped_now, counted.unknown), (2, 1, 1, 1, 0));
+    assert_eq!((counted.published, counted.failed, counted.dropped, counted.dropped_now, counted.unknown), (1, 1, 1, 1, 0));
     assert_eq!(store.next_send("example.com", b"blog.example.com/c").unwrap().map(|n| (n.why, n.due)), Some((Why::Failed, 1_759_400_002 + RECRAWL)));
     assert_eq!(store.next_send("example.com", b"example.com/d").unwrap().map(|n| (n.why, n.due)), Some((Why::Dropped, 1_759_400_100)));
     assert_eq!(store.url(&urls::parse(listed[0], "example.com").unwrap()).unwrap().unwrap().crawled_at, 0, "a published page is not looked up");
@@ -979,6 +987,19 @@ fn each_lane_takes_its_quota_and_an_empty_lane_leaves_its_part_to_the_others() {
 }
 
 #[test]
+fn a_news_sites_take_goes_to_its_new_pages_first_and_what_they_leave_to_its_refreshes() {
+    let dir = Dir::new("ready-news-first");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 10)).collect(), 100).unwrap();
+    let sent = take(&store, 20);
+    store.mark_sent(&sent, 150, &rules()).unwrap();
+    store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 50)).chain((0..3).map(|i| page(&format!("new{i:02}"), 60))).collect(), 200).unwrap();
+    let picks = store.take_ready("example.com", fresh_first(10)).unwrap();
+    let count = |reason| picks.iter().filter(|p| p.reason == reason).count();
+    assert_eq!((count(Reason::Fresh), count(Reason::Changed)), (3, 7), "every new story goes, and refreshes fill the rest");
+}
+
+#[test]
 fn small_wants_still_split_by_the_shares_over_many_passes() {
     let shares = shares(50, 10);
     let mut credit = [0.0; LANES];
@@ -1017,7 +1038,6 @@ fn a_sent_page_with_no_outcome_is_not_sent_again_a_day_later() {
     assert!(store.waiting().unwrap().is_empty());
     assert_eq!(requeue(&store, 1000 + 2 * DAY), Requeued::default());
     assert!(take(&store, 10).is_empty(), "a page with a lastmod goes again when it moves, not when an outcome is late");
-    assert!(!store.forget_expecting().unwrap(), "no deadline is kept for a send");
 }
 
 #[tokio::test]
@@ -1085,8 +1105,8 @@ async fn the_outcome_feed_is_read_from_its_newest_file_and_skips_ahead_when_an_h
     let read: Vec<u64> = fake.lock().unwrap().asked.iter().filter_map(|p| p.strip_prefix("/outcomes/f")?.strip_suffix(".parquet")?.parse().ok()).collect();
     assert_eq!(read, [5, 6, 7, 8, 9, 10, 11, 12, 13, 40], "the newest file first, one run of eight, then a jump to the newest");
     assert_eq!(progress.skipped.load(std::sync::atomic::Ordering::Relaxed), 26);
-    assert_eq!(progress.outcomes.load(std::sync::atomic::Ordering::Relaxed), 40);
-    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(30.0), "three judged rows a file, ten files");
+    assert_eq!(progress.outcomes.load(std::sync::atomic::Ordering::Relaxed), 30);
+    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(20.0), "two judged rows a file, ten files");
 }
 
 /// A list file the test rewrites, read again on demand.
@@ -1108,7 +1128,8 @@ fn a_domain_joining_the_list_queues_its_stored_pages_never_sent_newest_first_up_
     for (i, name) in ["a", "b", "c", "d", "e", "tag/x"].iter().enumerate() {
         store.record_listing("example.com", 7, vec![page(name, 10)], 100 + 10 * i as u32).unwrap();
     }
-    store.import_sent(&[SentPage { domain: "example.com".into(), rest: rest("a"), lastmod: 10, at: 150 }]).unwrap();
+    let sent = Pick { entry: Entry { domain: "example.com".into(), rest: rest("a"), order: Order::Fresh { first_seen: 100, lastmod: 10 } }, url: "https://example.com/a".into(), lastmod: 10, reason: Reason::Fresh, failures: 0 };
+    store.mark_sent(&[sent], 150, &rules()).unwrap();
     assert!(ready(&store).is_empty(), "pages of a domain not on the list wait in the store");
 
     relist(&path, &list, r#"[{"host": "example.com", "weight": 4, "send_cap": 3}]"#);

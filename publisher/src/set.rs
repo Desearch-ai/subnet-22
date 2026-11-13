@@ -21,6 +21,8 @@ pub enum Rule {
     },
     /// Pages from a bulk source, and the site's crawled pages too.
     Bulk,
+    /// Pages from a bulk source only; the site's crawled pages are out.
+    BulkOnly,
     /// The host's own homepage and pages at most `depth` levels down, never the hosts under it.
     Landing {
         depth: usize,
@@ -38,6 +40,8 @@ pub enum Refusal {
     Undated,
     BeforeSince,
     OffPaths,
+    /// A crawled page of a site the set takes from bulk sources only.
+    Crawled,
 }
 
 /// How much a site's pages are worth embedding while the budget is short, best first.
@@ -153,6 +157,7 @@ impl Set {
                     },
                 },
                 Some("bulk") => Rule::Bulk,
+                Some("bulk_only") => Rule::BulkOnly,
                 Some("landing") => Rule::Landing {
                     depth: match &entry["depth"] {
                         Value::Null => LANDING_DEPTH,
@@ -218,8 +223,13 @@ impl Set {
         }
     }
 
-    /// Whether the page at `url` is in, by the rule of its host's entry, and how.
+    /// Whether the crawled page at `url` is in, by the rule of its host's entry, and how.
     pub fn admit(&self, url: &str, published: &str, page_type: Option<&str>) -> Result<Admitted, Refusal> {
+        self.admit_from(url, published, page_type, false)
+    }
+
+    /// Whether the page at `url`, from the bulk feed or crawled, is in, by the rule of its host's entry, and how.
+    pub fn admit_from(&self, url: &str, published: &str, page_type: Option<&str>, bulk: bool) -> Result<Admitted, Refusal> {
         let (host, path) = split_url(url);
         let Some((listed, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
         match rule {
@@ -236,7 +246,8 @@ impl Set {
             },
             Rule::Whole { own: true, .. } if !own_host(host, listed) => Err(Refusal::Unlisted),
             Rule::Whole { paths, .. } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
-            Rule::Whole { .. } | Rule::Bulk => Ok(Admitted::ByRule),
+            Rule::BulkOnly if !bulk => Err(Refusal::Crawled),
+            Rule::Whole { .. } | Rule::Bulk | Rule::BulkOnly => Ok(Admitted::ByRule),
         }
     }
 
@@ -411,6 +422,27 @@ mod tests {
         assert_eq!(landing.admit("https://shop.vendor.example/", "", None), Err(Refusal::Unlisted), "landing takes its own host only");
         assert!(!landing_page("https://vendor.example/fr-fr/", 1) && !landing_page("https://vendor.example?p=1", 1) && landing_page("https://vendor.example/a#b?c", 1));
         assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news", "since": "soon"}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_bulk_only_site_takes_bulk_rows_and_refuses_its_crawled_pages() {
+        let set = Set::parse(
+            br#"{"sites": [
+                {"host": "uniprot.org", "rule": "bulk_only", "source": "uniprot-swissprot", "type": "reference"},
+                {"host": "sec.gov", "rule": "bulk", "source": "edgar"}
+            ]}"#,
+        )
+        .unwrap();
+        let entry = "https://www.uniprot.org/uniprotkb/P69905/entry";
+        assert_eq!(set.admit_from(entry, "", Some("reference"), true), Ok(Admitted::ByRule));
+        assert_eq!(set.admit_from(entry, "", Some("other"), false), Err(Refusal::Crawled));
+        assert_eq!(set.admit("https://rest.uniprot.org/uniprotkb/P69905/publications", "", Some("listing")), Err(Refusal::Crawled), "the hosts under it too");
+        assert!(set.reference("www.uniprot.org"));
+        assert_eq!(set.class("uniprot.org"), Class::Reference);
+        for bulk in [true, false] {
+            assert_eq!(set.admit_from("https://www.sec.gov/Archives/edgar/data/1/a.htm", "", None, bulk), Ok(Admitted::ByRule), "bulk takes crawled pages too");
+        }
+        assert!(Set::parse(br#"{"sites": [{"host": "uniprot.org", "rule": "bulk-only"}]}"#).is_err(), "an unknown rule fails the set");
     }
 
     #[test]

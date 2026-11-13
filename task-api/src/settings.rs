@@ -1,4 +1,4 @@
-//! Everything the task API is told through its environment, with the same names and defaults the Python service had.
+//! Everything the task API is told through its environment.
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -25,7 +25,7 @@ pub enum SeedsMode {
     Local { block_seconds: f64, genesis: f64 },
 }
 
-/// The pages bucket's own endpoint and keys, when it is not on the R2 endpoint.
+/// The pages bucket's own endpoint and keys, when it is not on `CF_R2_ENDPOINT`.
 #[derive(Clone, Debug)]
 pub struct PagesStore {
     pub endpoint: String,

@@ -1,0 +1,6 @@
+{
+  "operators": ["shinhan"],
+  "not_blocked": ["kakushinhan.org", "marushinhanten.com", "tenshinhanten.com"],
+  "domains": ["shfg.com", "jejubank.co.kr"],
+  "networks": ["106.249.55.0/24"]
+}

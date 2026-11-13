@@ -1,0 +1,3297 @@
+{
+ "html": [
+  [
+   "",
+   null
+  ],
+  [
+   "  ",
+   null
+  ],
+  [
+   "\f",
+   null
+  ],
+  [
+   " ",
+   null
+  ],
+  [
+   "<!-- x -->",
+   null
+  ],
+  [
+   "<!DOCTYPE html>",
+   null
+  ],
+  [
+   "</p>",
+   null
+  ],
+  [
+   "</div></html>",
+   null
+  ],
+  [
+   "<?php x ?>",
+   null
+  ],
+  [
+   "hello",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "&amp;",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "​",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "\u0000",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<!-- c --> ",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<?xml version='1.0' encoding='utf-8'?><html><a href=x>",
+   null
+  ],
+  [
+   "<?xml  encoding='x'?><a href=y>",
+   null
+  ],
+  [
+   "<?xml encoding='x'?><a href=y>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/y"
+    ]
+   }
+  ],
+  [
+   "<?XML version='1.0' encoding='utf-8'?><a href=x>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ],
+  [
+   " <?xml version='1.0' encoding='utf-8'?><a href=x>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ],
+  [
+   "<?xml version='1.0'?><html lang=fr>",
+   {
+    "lang": "fr",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<html lang=en><html lang=fr dir=x>",
+   {
+    "lang": "en",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<p>x</p><html lang=fr>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "hello<html lang=fr>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<!-- c --><html lang=fr>",
+   {
+    "lang": "fr",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "﻿<html lang=en>",
+   {
+    "lang": "en",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<html lang=' EN-us '>",
+   {
+    "lang": "en-us",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<HTML LANG=fr>",
+   {
+    "lang": "fr",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<html LANG=\"en\" lang=fr>",
+   {
+    "lang": "en",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<html xml:lang='fr'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<head><html lang=fr>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "</p><html lang=fr>",
+   {
+    "lang": "fr",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<script><a href=s></script><a href=1>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1"
+    ]
+   }
+  ],
+  [
+   "<script>if (a<b) { x='</scr'+'ipt>'; }</script><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/2"
+    ]
+   }
+  ],
+  [
+   "<script><!-- <script> </script> --> <a href=esc></script><a href=after>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/after"
+    ]
+   }
+  ],
+  [
+   "<noscript><a href=ns></noscript>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/ns"
+    ]
+   }
+  ],
+  [
+   "<style><a href=st></style>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<title><a href=t></title><a href=u>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/u"
+    ]
+   }
+  ],
+  [
+   "<textarea><a href=ta></textarea>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<xmp><a href=x></xmp>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<iframe><a href=if></iframe>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<noembed><a href=ne></noembed>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<noframes><a href=nf></noframes>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<template><a href=tp></template>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/tp"
+    ]
+   }
+  ],
+  [
+   "<plaintext><a href=pt>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<script/><a href=sc>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/sc"
+    ]
+   }
+  ],
+  [
+   "<svg><style><a href=svgstyle></style></svg><a href=z>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/z"
+    ]
+   }
+  ],
+  [
+   "<math><a href=m></math>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/m"
+    ]
+   }
+  ],
+  [
+   "<a href='a&amp;b&nbsp;c&notit;d&#x41;&#0;&ampx&lt'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/a&b c&notit;dA�&ampx<"
+    ]
+   }
+  ],
+  [
+   "<a href=a&amp>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/a&"
+    ]
+   }
+  ],
+  [
+   "<a href=&#x110000;>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/�"
+    ]
+   }
+  ],
+  [
+   "<a href=&#128;>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/€"
+    ]
+   }
+  ],
+  [
+   "<a href='&#x80;&euro;&Eacute;&eacute'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/€€Éé"
+    ]
+   }
+  ],
+  [
+   "<a href='&AMP;&LT;&copy&copyx&not;&notin;&semi;'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/&<©&copyx¬∉;"
+    ]
+   }
+  ],
+  [
+   "<a href=\"x\u0000y\">",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x�y"
+    ]
+   }
+  ],
+  [
+   "<a href=x>\u0000",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ],
+  [
+   "<a HREF=X REL=NoFollow href=y>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<a/href=z>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/z"
+    ]
+   }
+  ],
+  [
+   "<a href=1><a href=2></a></a>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1",
+     "https://ex.test/p/2"
+    ]
+   }
+  ],
+  [
+   "<![CDATA[<a href=cd>]]><a href=after>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/after"
+    ]
+   }
+  ],
+  [
+   "<!--><a href=c1>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/c1"
+    ]
+   }
+  ],
+  [
+   "<!---><a href=c2>-->",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/c2"
+    ]
+   }
+  ],
+  [
+   "<! a><a href=b1>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/b1"
+    ]
+   }
+  ],
+  [
+   "</a href=e>",
+   null
+  ],
+  [
+   "<base href=/b1><base href=/b2><a href=x>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/x"
+    ]
+   }
+  ],
+  [
+   "<base><base href=/b2><a href=x>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ],
+  [
+   "<base href=''><a href=x>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ],
+  [
+   "<meta name=ROBOTS content='NoIndex, x'><meta name=robots>",
+   {
+    "lang": "",
+    "meta": [
+     "",
+     "noindex",
+     "x"
+    ],
+    "links": []
+   }
+  ],
+  [
+   "<meta name=desearchbot content=nofollow>",
+   {
+    "lang": "",
+    "meta": [
+     "nofollow"
+    ],
+    "links": []
+   }
+  ],
+  [
+   "<meta content=none name=robots>",
+   {
+    "lang": "",
+    "meta": [
+     "nofollow",
+     "noindex",
+     "none"
+    ],
+    "links": []
+   }
+  ],
+  [
+   "<meta name='googlebot' content='noindex'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<a href=1></body><a href=2></html><a href=3>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1",
+     "https://ex.test/p/2"
+    ]
+   }
+  ],
+  [
+   "</html><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/2"
+    ]
+   }
+  ],
+  [
+   "<svg></html></svg><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<script></html></script><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/2"
+    ]
+   }
+  ],
+  [
+   "<a href=1></HTML ><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1"
+    ]
+   }
+  ],
+  [
+   "x</html><a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<table><a href=t1><tr><a href=t2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/t1",
+     "https://ex.test/p/t2"
+    ]
+   }
+  ],
+  [
+   "<select><a href=s1></select>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/s1"
+    ]
+   }
+  ],
+  [
+   "<a href=1 <a href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1"
+    ]
+   }
+  ],
+  [
+   "<a href='1'href='2'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1"
+    ]
+   }
+  ],
+  [
+   "<a href=\"1\"/href=2>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/1"
+    ]
+   }
+  ],
+  [
+   "<a\nhref\n=\n'nl'\n>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/nl"
+    ]
+   }
+  ],
+  [
+   "<a href='\n  /spaced  \n'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/spaced"
+    ]
+   }
+  ],
+  [
+   "<a href=\"javascript:void(0)\">",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<a href=\"#top\">",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/q"
+    ]
+   }
+  ],
+  [
+   "<a href='//other.test/x'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://other.test/x"
+    ]
+   }
+  ],
+  [
+   "<a href='?q=1'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/q?q=1"
+    ]
+   }
+  ],
+  [
+   "<a href='../up'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/up"
+    ]
+   }
+  ],
+  [
+   "<a href='http://[broken'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<a href>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<a href=''>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": []
+   }
+  ],
+  [
+   "<frameset><a href=fs>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/fs"
+    ]
+   }
+  ],
+  [
+   "<image href=i><a href=im>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/im"
+    ]
+   }
+  ],
+  [
+   "<a rel='a nofollow' href=r1><a rel='NOFOLLOW\tx' href=r2><a rel=nofollowx href=r3><a rel=' nofollow' href=r4>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/r3"
+    ]
+   }
+  ],
+  [
+   "<p>\r\n<a href='cr\r\nlf'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/crlf"
+    ]
+   }
+  ],
+  [
+   "<a href='tab\there'>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/tabhere"
+    ]
+   }
+  ],
+  [
+   "<a href=\"été\">",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/été"
+    ]
+   }
+  ],
+  [
+   "<a href=\"/caf%C3%A9\">",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/caf%C3%A9"
+    ]
+   }
+  ],
+  [
+   "<html><head><base href='https://cdn.test/root/'></head><body><a href=rel>",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://cdn.test/root/rel"
+    ]
+   }
+  ],
+  [
+   "<html><body><a href=x></body></html>\n<!-- end -->",
+   {
+    "lang": "",
+    "meta": [],
+    "links": [
+     "https://ex.test/p/x"
+    ]
+   }
+  ]
+ ],
+ "normalize": [
+  [
+   "",
+   "https://ex.test/a/b",
+   "https://ex.test/a/b"
+  ],
+  [
+   "/a/b?utm_source=x&id=2#top",
+   "https://Ex.test:443/",
+   "https://ex.test/a/b?id=2"
+  ],
+  [
+   "mailto:x@ex.test",
+   "",
+   null
+  ],
+  [
+   "http://ex.test:8080/",
+   "",
+   "http://ex.test:8080/"
+  ],
+  [
+   "https://a.test: Managing Supply/x",
+   "",
+   null
+  ],
+  [
+   "https://a.test:99999/",
+   "",
+   null
+  ],
+  [
+   "https://a.test:8080/x#y",
+   "",
+   "https://a.test:8080/x"
+  ],
+  [
+   "https://a.test:0/x",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   " https://u:p@A.test/x?b=1+2&a=%41&e&ref=z&REF=y&gclid=1&q=a%2Fb ",
+   "",
+   "https://a.test/x?b=1+2&a=A&e=&q=a%2Fb"
+  ],
+  [
+   "?x=é",
+   "https://a.test/p",
+   "https://a.test/p?x=%C3%A9"
+  ],
+  [
+   "https://a.test",
+   "",
+   "https://a.test/"
+  ],
+  [
+   "https://a.test/x?utm_=1&utm_medium=2&UTM_X=3&fbclid=4&mc_cid=5&mc_eid=6&cmpid=7&ito=8&ref=9&refx=10&xref=11",
+   "",
+   "https://a.test/x?refx=10&xref=11"
+  ],
+  [
+   "https://a.test/x?a=1&&b=2&=3&c==4&d=%zz&e=%E2%82%AC&f=%ff&g=a+b%20c",
+   "",
+   "https://a.test/x?a=1&b=2&=3&c=%3D4&d=%25zz&e=%E2%82%AC&f=%EF%BF%BD&g=a+b+c"
+  ],
+  [
+   "https://a.test/x?;a=1;b=2",
+   "",
+   "https://a.test/x?%3Ba=1%3Bb%3D2"
+  ],
+  [
+   "https://a.test/x?",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "https://a.test/x?#frag",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "//b.test/y",
+   "https://a.test/x",
+   "https://b.test/y"
+  ],
+  [
+   "../../z",
+   "https://a.test/a/b/c",
+   "https://a.test/z"
+  ],
+  [
+   "./",
+   "https://a.test/a/b",
+   "https://a.test/a/"
+  ],
+  [
+   "ftp://a.test/x",
+   "",
+   null
+  ],
+  [
+   "javascript:alert(1)",
+   "https://a.test/",
+   null
+  ],
+  [
+   "https://[::1]:8443/x",
+   "",
+   "https://::1:8443/x"
+  ],
+  [
+   "https://[::1/x",
+   "",
+   null
+  ],
+  [
+   "http://a.test:80/x",
+   "",
+   "http://a.test/x"
+  ],
+  [
+   "https://A.TEST./x",
+   "",
+   "https://a.test./x"
+  ],
+  [
+   "https://éxample.test/x",
+   "",
+   "https://éxample.test/x"
+  ],
+  [
+   "https://a.test/été x",
+   "",
+   "https://a.test/été x"
+  ],
+  [
+   "https:/a.test/x",
+   "",
+   null
+  ],
+  [
+   "https:x",
+   "https://a.test/b/c",
+   "https://a.test/b/x"
+  ],
+  [
+   "https://a.test\\x",
+   "",
+   "https://a.test\\x/"
+  ],
+  [
+   "HTTPS://a.test/X",
+   "",
+   "https://a.test/X"
+  ],
+  [
+   "\thttps://a.test/x\n",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "https://a.test/x?q=%2B%20+",
+   "",
+   "https://a.test/x?q=%2B++"
+  ],
+  [
+   "https://a.test/x?ref\n=1",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "https://a.test/x?ſef=1",
+   "",
+   "https://a.test/x?%C5%BFef=1"
+  ],
+  [
+   "https://a.test/x?q=€",
+   "",
+   "https://a.test/x?q=%E2%82%AC"
+  ],
+  [
+   "https://user@a.test:443/x",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "https://a.test:/x",
+   "",
+   "https://a.test/x"
+  ],
+  [
+   "https://a.test:+80/x",
+   "",
+   null
+  ],
+  [
+   "x;",
+   "https://e.test/p/q",
+   "https://e.test/p/x;"
+  ],
+  [
+   "x;?a=1",
+   "https://e.test/p/q",
+   "https://e.test/p/x;?a=1"
+  ],
+  [
+   "x;p",
+   "https://e.test/p/q",
+   "https://e.test/p/x;p"
+  ],
+  [
+   ";p",
+   "https://e.test/p/q",
+   "https://e.test/p/;p"
+  ],
+  [
+   "?q=1",
+   "https://e.test/p/q;b",
+   "https://e.test/p/q;b?q=1"
+  ],
+  [
+   "..;p",
+   "https://e.test/p/q/r",
+   "https://e.test/p/q/..;p"
+  ],
+  [
+   "https://e.test/a;",
+   "https://e.test/",
+   "https://e.test/a;"
+  ],
+  [
+   "#f",
+   "https://e.test/p;x?y=1",
+   "https://e.test/p;x?y=1"
+  ],
+  [
+   "a/b;c/d;e",
+   "https://e.test/p/",
+   "https://e.test/p/a/b;c/d;e"
+  ],
+  [
+   "",
+   "",
+   null
+  ]
+ ],
+ "scope": [
+  [
+   "https://ex.test/doc/a",
+   "ex.test",
+   [
+    "/doc/"
+   ],
+   true
+  ],
+  [
+   "https://ex.test/blog/a",
+   "ex.test",
+   [
+    "/doc/"
+   ],
+   false
+  ],
+  [
+   "https://ex.test/a.PDF",
+   "ex.test",
+   [],
+   false
+  ],
+  [
+   "https://other.test/a",
+   "ex.test",
+   [],
+   false
+  ],
+  [
+   "https://EX.test/a",
+   "ex.test",
+   [],
+   true
+  ],
+  [
+   "https://ex.test/a.json?x=1",
+   "ex.test",
+   [],
+   false
+  ],
+  [
+   "https://ex.test/a.jsonx",
+   "ex.test",
+   [],
+   true
+  ],
+  [
+   "https://ex.test:8080/a",
+   "ex.test",
+   [],
+   false
+  ],
+  [
+   "https://ex.test/a.tar.gz",
+   "ex.test",
+   [],
+   false
+  ],
+  [
+   "https://ex.test/feed.rss",
+   "ex.test",
+   [],
+   false
+  ]
+ ],
+ "robots": [
+  [
+   "User-agent: *\nDisallow: /private/\nCrawl-delay: 3\nSitemap: https://a.test/sm.xml\n",
+   {
+    "delay": 3.0,
+    "sitemaps": [
+     "https://a.test/sm.xml"
+    ],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: DesearchBot\nDisallow: /\n\nUser-agent: *\nAllow: /\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /*?tab=\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: desearch\nDisallow: /a\n\nUser-agent: *\nDisallow: /b\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double"
+    ]
+   }
+  ],
+  [
+   "User-agent: bot\nDisallow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: desearchbotx\nDisallow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: x-desearchbot\nDisallow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: Desearch*\nDisallow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double"
+    ]
+   }
+  ],
+  [
+   "useragent: *\ndissallow: /typo\nDisallow: /$\nAllow: /docs/index.html\nDisallow: /docs/\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /caf%C3%A9\nDisallow: /a b\nDisallow: /*.pdf$\nDisallow: /%7euser\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "Disallow: /orphan\nUser-agent: *\nAllow: /\nUser-agent: other\nDisallow: /\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nUser-agent: other\nDisallow: /\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x"
+    ]
+   }
+  ],
+  [
+   "Sitemap: /s.xml\nsite-map: https://x/t.xml\nsitemaps:https://x/u.xml\n",
+   {
+    "delay": null,
+    "sitemaps": [
+     "/s.xml",
+     "https://x/t.xml",
+     "https://x/u.xml"
+    ],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nCrawl-delay: 1_5\n",
+   {
+    "delay": 15.0,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nCrawl-delay: inf\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nCrawl-delay: -1\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nCrawl-delay: 0\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nCrawl-delay: 2.5 # comment\n",
+   {
+    "delay": 2.5,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: DesearchBot\nCrawl-delay: 7\nUser-agent: *\nCrawl-delay: 1\n",
+   {
+    "delay": 7.0,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /a\nUser-agent: DesearchBot\nAllow: /a/b\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nAllow: /a/b\nDisallow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /a\nAllow: /a\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /*/print*\nDisallow: /*.php$\nAllow: /*.php$\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /x$y\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: *\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow:\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\r\nDisallow: /cr\r\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "﻿User-agent: *\nDisallow: /bom\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent * \nDisallow /nocolon\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User agent: *\nCrawl delay: 4\nDisallow: /spaced\n",
+   {
+    "delay": 4.0,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "user-agent: *\ndisallow: /UPPER\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: /search?\nDisallow: /q=\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nDisallow: http://a.test/full\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/y",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "User-agent: *\nNoindex: /x\nDisallow: /y\nHost: a.test\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/g",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ],
+  [
+   "garbage line\nUser-agent: *\nDisallow: /g\n",
+   {
+    "delay": null,
+    "sitemaps": [],
+    "allowed": [
+     "https://a.test/",
+     "https://a.test/page",
+     "https://a.test/private/x",
+     "https://a.test/x?tab=1",
+     "https://a.test/x",
+     "https://a.test/a",
+     "https://a.test/a/b",
+     "https://a.test/b",
+     "https://a.test/typo",
+     "https://a.test/docs/",
+     "https://a.test/docs/index.html",
+     "https://a.test/docs/a",
+     "https://a.test/café/menu",
+     "https://a.test/caf%c3%a9",
+     "https://a.test/a%20b",
+     "https://a.test/a b",
+     "https://a.test/f/x.pdf",
+     "https://a.test/f/x.pdf?y",
+     "https://a.test/robots.txt",
+     "https://a.test/robots.txt;x",
+     "https://a.test/orphan",
+     "https://a.test/2024/print/x",
+     "https://a.test/x.php",
+     "https://a.test/x$y",
+     "https://a.test/x%24y",
+     "https://a.test/cr",
+     "https://a.test/bom",
+     "https://a.test/nocolon",
+     "https://a.test/spaced",
+     "https://a.test/UPPER",
+     "https://a.test/upper",
+     "https://a.test/search?q=1",
+     "https://a.test/search",
+     "https://a.test/q=1",
+     "https://a.test/full",
+     "https://a.test/http://a.test/full",
+     "https://a.test/y",
+     "https://a.test/~user",
+     "https://a.test/%7Euser",
+     "https://a.test//double",
+     "https://a.test/a#frag",
+     "https://a.test/a;p"
+    ]
+   }
+  ]
+ ],
+ "robot_urls": [
+  "https://a.test/",
+  "https://a.test/page",
+  "https://a.test/private/x",
+  "https://a.test/x?tab=1",
+  "https://a.test/x",
+  "https://a.test/a",
+  "https://a.test/a/b",
+  "https://a.test/b",
+  "https://a.test/typo",
+  "https://a.test/docs/",
+  "https://a.test/docs/index.html",
+  "https://a.test/docs/a",
+  "https://a.test/café/menu",
+  "https://a.test/caf%c3%a9",
+  "https://a.test/a%20b",
+  "https://a.test/a b",
+  "https://a.test/f/x.pdf",
+  "https://a.test/f/x.pdf?y",
+  "https://a.test/robots.txt",
+  "https://a.test/robots.txt;x",
+  "https://a.test/orphan",
+  "https://a.test/2024/print/x",
+  "https://a.test/x.php",
+  "https://a.test/x$y",
+  "https://a.test/x%24y",
+  "https://a.test/cr",
+  "https://a.test/bom",
+  "https://a.test/nocolon",
+  "https://a.test/spaced",
+  "https://a.test/UPPER",
+  "https://a.test/upper",
+  "https://a.test/search?q=1",
+  "https://a.test/search",
+  "https://a.test/q=1",
+  "https://a.test/full",
+  "https://a.test/http://a.test/full",
+  "https://a.test/y",
+  "https://a.test/g",
+  "https://a.test/~user",
+  "https://a.test/%7Euser",
+  "https://a.test//double",
+  "https://a.test/a#frag",
+  "https://a.test/a;p"
+ ],
+ "sitemaps": [
+  [
+   "PD94bWwgdmVyc2lvbj0iMS4wIj8+PHVybHNldCB4bWxucz0iaHR0cDovL3d3dy5zaXRlbWFwcy5vcmcvc2NoZW1hcy9zaXRlbWFwLzAuOSI+PHVybD48bG9jPiBodHRwczovL2V4LnRlc3QvYSA8L2xvYz48L3VybD48dXJsPjxsb2M+aHR0cHM6Ly9leC50ZXN0L2I/eD0xJmFtcDt5PTI8L2xvYz48L3VybD48L3VybHNldD4=",
+   [
+    [
+     "https://ex.test/a",
+     "https://ex.test/b?x=1&y=2"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHNpdGVtYXBpbmRleCB4bWxucz0iaHR0cDovL3d3dy5zaXRlbWFwcy5vcmcvc2NoZW1hcy9zaXRlbWFwLzAuOSI+PHNpdGVtYXA+PGxvYz5odHRwczovL2V4LnRlc3QvczEueG1sLmd6PC9sb2M+PC9zaXRlbWFwPjwvc2l0ZW1hcGluZGV4Pg==",
+   [
+    [],
+    [
+     "https://ex.test/s1.xml.gz"
+    ]
+   ]
+  ],
+  [
+   "bm90IHhtbA==",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsPjxsb2M+aHR0cHM6Ly9leC50ZXN0L2E/eCZ5PC9sb2M+PC91cmw+PC91cmxzZXQ+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmE8L2xvYz4=",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48L3VybHNldD48eC8+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmE8L2xjPjwvdXJsc2V0Pg==",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldCB4bWxuczppPSJ1cm46aW1nIj48dXJsPjxsb2M+YTwhLS0gYyAtLT5iPC9sb2M+PGk6bG9jPmltZzwvaTpsb2M+PGxvYz48IVtDREFUQVtjXV0+ZDwvbG9jPjwvdXJsPjwvdXJsc2V0Pg==",
+   [
+    [
+     "a",
+     "cd"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldCB4bWxucz0idXJuOm90aGVyIj48dXJsPjxsb2M+b3RoZXItbnM8L2xvYz48L3VybD48L3VybHNldD4=",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsPjxsb2M+JiN4NDE7JiM2NjsmbHQ7Jmd0OyZxdW90OyZhcG9zOzwvbG9jPjwvdXJsPjwvdXJsc2V0Pg==",
+   [
+    [
+     "AB<>\"'"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsPjxsb2M+Jm5ic3A7eDwvbG9jPjwvdXJsPjwvdXJsc2V0Pg==",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsPjxsb2M+JiMwO3g8L2xvYz48L3VybD48L3VybHNldD4=",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "ICAKPD94bWwgdmVyc2lvbj0nMS4wJz8+PHVybHNldD48bG9jPndzPC9sb2M+PC91cmxzZXQ+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PD94bWwgdmVyc2lvbj0nMS4wJz8+Cjx1cmxzZXQ+Cjxsb2M+bmw8L2xvYz4KPC91cmxzZXQ+Cg==",
+   [
+    [
+     "nl"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmE8L2xvYz48L3VybHNldD50cmFpbGluZw==",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmE8L2xvYz48L3VybHNldD48IS0tIG9rIC0tPg==",
+   [
+    [
+     "a"
+    ],
+    []
+   ]
+  ],
+  [
+   "PG15c2l0ZW1hcGluZGV4Pjxsb2M+aWR4PC9sb2M+PC9teXNpdGVtYXBpbmRleD4=",
+   [
+    [],
+    [
+     "idx"
+    ]
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsPjxsb2MvPjxsb2M+ICA8L2xvYz48bG9jPng8Yj55PC9iPno8L2xvYz48L3VybD48L3VybHNldD4=",
+   [
+    [
+     "x"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsIGE9JzEnIGE9JzInPjxsb2M+ZHVwPC9sb2M+PC91cmw+PC91cmxzZXQ+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsIGE9MT48bG9jPnVucXVvdGVkPC9sb2M+PC91cmw+PC91cmxzZXQ+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48dXJsIGE9J3gmeSc+PGxvYz5hdHRyPC9sb2M+PC91cmw+PC91cmxzZXQ+",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PD94bWwgdmVyc2lvbj0nMS4wJyBlbmNvZGluZz0nSVNPLTg4NTktMSc/Pjx1cmxzZXQ+PGxvYz5jYWbpPC9sb2M+PC91cmxzZXQ+",
+   [
+    [
+     "café"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmNhZsOpPC9sb2M+PC91cmxzZXQ+",
+   [
+    [
+     "café"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmJhZP88L2xvYz48L3VybHNldD4=",
+   [
+    [],
+    []
+   ]
+  ],
+  [
+   "PCFET0NUWVBFIHVybHNldD48dXJsc2V0Pjxsb2M+ZHQ8L2xvYz48L3VybHNldD4=",
+   [
+    [
+     "dt"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHVybHNldD48bG9jPmE8L2xvYz48bG9jPmI8L2xvYz48L3VybHNldD4=",
+   [
+    [
+     "a",
+     "b"
+    ],
+    []
+   ]
+  ],
+  [
+   "PHM6dXJsc2V0IHhtbG5zOnM9J2h0dHA6Ly93d3cuc2l0ZW1hcHMub3JnL3NjaGVtYXMvc2l0ZW1hcC8wLjknPjxzOmxvYz5wcmU8L3M6bG9jPjwvczp1cmxzZXQ+",
+   [
+    [
+     "pre"
+    ],
+    []
+   ]
+  ],
+  [
+   "H4sIAAAAAAAC/02NWwqAIBBFtxItYG59FpN7CRMVetEMKK0+A4k+z32yRHXbfMZ9cbnJ27rL1AbVcwRSSlRtoePyEBsKCKqIjobWcCXD62HNW5XSdZnUiUJ6KqPkb8ZrM740/s/mAWJ9q/SIAAAA",
+   [
+    [],
+    [
+     "https://ex.test/s1.xml.gz"
+    ]
+   ]
+  ],
+  [
+   "H4tub3QgZ3ppcA==",
+   {
+    "error": "error"
+   }
+  ],
+  [
+   "H4sIAAAAAAAC/12OzQ7CIBCEX4Vw8LjbelP5eRZsiG0ChbCr4NtLqzHR48x8XzLKthjEwxda0qrlCIO0Rt1LIM+iTytpOTPnM2KtFWhhH10mSOWGNM09EH5KHOAkd9eokCYjNo+66BuwJ0YnFG6Dwp35gv/c1TY9HlzMl6c+/ig=",
+   [
+    [],
+    []
+   ]
+  ]
+ ],
+ "charsets": [
+  [
+   "Y2Fm6Q==",
+   "text/html; charset=ISO-8859-1",
+   "café"
+  ],
+  [
+   "gIGNnQ==",
+   "text/html; charset=windows-1252",
+   "€���"
+  ],
+  [
+   "gIE=",
+   "text/html; charset=cp1252",
+   "€�"
+  ],
+  [
+   "Yek=",
+   "text/html; charset=us-ascii",
+   "a�"
+  ],
+  [
+   "Y2Fmw6k=",
+   "text/html; charset=no-such",
+   "café"
+  ],
+  [
+   "Y2Fmw6n/",
+   "text/html",
+   "café�"
+  ],
+  [
+   "b2sg4oIgZW5k",
+   "text/html; charset=utf-8",
+   "ok � end"
+  ],
+  [
+   "7aCAePSQgIB5wK96",
+   "text/html; charset=UTF8",
+   "���x����y��z"
+  ],
+  [
+   "gYOI",
+   "text/html; charset=windows-1250",
+   "���"
+  ],
+  [
+   "0N3+",
+   "text/html; charset=iso-8859-9",
+   "Ğİş"
+  ],
+  [
+   "pA==",
+   "text/html; charset=iso-8859-15",
+   "€"
+  ],
+  [
+   "gqA=",
+   "text/html; charset=shift_jis",
+   "あ"
+  ],
+  [
+   "xOM=",
+   "text/html; charset=gbk",
+   "你"
+  ],
+  [
+   "oaE=",
+   "text/html; charset=euc-kr",
+   "　"
+  ],
+  [
+   "wQ==",
+   "text/html; charset=koi8-r",
+   "а"
+  ],
+  [
+   "eA==",
+   "text/html; charset=\"utf-8\"",
+   "x"
+  ],
+  [
+   "6Q==",
+   "text/html; charset='latin1'",
+   "é"
+  ],
+  [
+   "6Q==",
+   "text/html; CHARSET=Latin-1",
+   "é"
+  ],
+  [
+   "6Q==",
+   "text/html;charset=utf_8",
+   "�"
+  ]
+ ],
+ "wire": [
+  [
+   "https://a.test/authorize?back=%2Fart",
+   "https://a.test/authorize?back=/art"
+  ],
+  [
+   "https://a.test/A%20b/%41%2f%2B%3a/café/x y?q=a%2Bb%3D&s=%7e+1&t=x y",
+   "https://a.test/A%20b/A%2F%2B:/caf%C3%A9/x%20y?q=a%2Bb%3D&s=~+1&t=x+y"
+  ],
+  [
+   "https://a.test/a/./b/../c%zz%4",
+   "https://a.test/a/c%25zz%254"
+  ],
+  [
+   "https://a.test",
+   "https://a.test/"
+  ],
+  [
+   "https://a.test/x'y?a='b'&c=[d]",
+   "https://a.test/x'y?a='b'&c=%5Bd%5D"
+  ],
+  [
+   "https://a.test/%7Euser/%3B;/%40@?a=%26&b=%3F?&c=%23",
+   "https://a.test/~user/;;/@@?a=%26&b=??&c=%23"
+  ],
+  [
+   "https://a.test/{x}|y^`z\"<>",
+   "https://a.test/%7Bx%7D%7Cy%5E%60z%22%3C%3E"
+  ],
+  [
+   "https://a.test/x%2e%2e/y",
+   "https://a.test/x../y"
+  ],
+  [
+   "https://a.test/a/../../b",
+   "https://a.test/b"
+  ],
+  [
+   "https://a.test/%",
+   "https://a.test/%25"
+  ],
+  [
+   "https://a.test/a%2",
+   "https://a.test/a%252"
+  ],
+  [
+   "https://a.test/?%",
+   "https://a.test/?%25"
+  ],
+  [
+   "https://a.test/€?€=€",
+   "https://a.test/%E2%82%AC?%E2%82%AC=%E2%82%AC"
+  ]
+ ]
+}

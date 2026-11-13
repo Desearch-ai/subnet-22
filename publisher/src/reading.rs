@@ -37,7 +37,7 @@ const HOLE_BYTES: u64 = 8 << 10;
 const RANGE_LIMIT: u64 = 32 << 20;
 const BATCH_ROWS: usize = 1024;
 
-/// A stored object read in byte ranges: a local file now, an R2 object next.
+/// A stored object read in byte ranges: a local file or an object in the store.
 pub trait RangeRead: Send + Sync {
     fn size(&self) -> u64;
     fn read(&self, range: Range<u64>) -> io::Result<Bytes>;
@@ -73,7 +73,7 @@ impl RangeRead for LocalFile {
     }
 }
 
-/// Bytes and requests a source served, as R2 would bill them.
+/// Bytes and requests a source served, as a store would bill them.
 #[derive(Default)]
 pub struct Traffic {
     pub bytes: AtomicU64,
@@ -101,7 +101,7 @@ impl<R: RangeRead> RangeRead for Counted<R> {
     }
 }
 
-/// An upload read in ranges from R2, several ranges at once, each refused unless the object is still the version `etag` names.
+/// An upload read in ranges from the store, several ranges at once, each refused unless the object is still the version `etag` names.
 pub struct Remote {
     pub bucket: Bucket,
     pub key: String,

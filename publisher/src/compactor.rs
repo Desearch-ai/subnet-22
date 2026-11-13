@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 
 use crate::current::{self, shard_dir, shard_of, ChangeRow, FileRef, Manifest, PageRow, Retired, Withdrawals, BULK_ORDER, SHARDS};
-use crate::index::VersionIndex;
 
 /// Objects in a bucket or a folder, as the compactor reads and writes them.
 pub trait Store: Send + Sync {
@@ -806,7 +805,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
     Ok(report)
 }
 
-/// The current version of one page from R2 alone: its shard's base and deltas, newest wins, withdrawn tasks dropped.
+/// The current version of one page from the store alone: its shard's base and deltas, newest wins, withdrawn tasks dropped.
 pub fn lookup(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageRow>> {
     Ok(winner(store, prefix, key)?.filter(|row| !row.removed))
 }
@@ -852,31 +851,14 @@ pub fn shard_rows(store: &dyn Store, prefix: &str, shard: usize) -> Result<Vec<P
     Ok(current::merge(rows, &gone, false))
 }
 
-/// How the current state differs from the publisher's version index, page by page.
+/// How the current state differs from a plain fold of the change log, page by page.
 #[derive(Debug, Default)]
 pub struct Compared {
-    /// Pages expected: in the index, or in the fold of the change log.
-    pub index_pages: u64,
+    pub log_pages: u64,
     pub current_pages: u64,
-    /// In the index only because its task is withdrawn and the index has not drained it yet.
-    pub draining: u64,
     pub missing: Vec<String>,
     pub extra: Vec<String>,
     pub other_version: Vec<String>,
-}
-
-/// Compares every page of `shards` in the current state under `prefix` with `index`; holds those shards in memory.
-pub fn compare(store: &dyn Store, prefix: &str, index: &VersionIndex, shards: &Range<usize>, threads: usize) -> Result<Compared> {
-    let draining: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
-    let mut expected = Vec::new();
-    index.scan(|key, page| {
-        if shard_of(&key).is_some_and(|shard| shards.contains(&shard)) {
-            let waiting = draining.contains(&page.task_id);
-            expected.push((key, page.version, waiting));
-        }
-        Ok(())
-    })?;
-    compared(current_versions(store, prefix, shards, threads)?, expected)
 }
 
 /// Compares every page of `shards` in the current state under `prefix` with a plain fold of the change log it covers, without shards or files; reads the whole log, so for test runs.
@@ -915,7 +897,7 @@ pub fn compare_log(store: &dyn Store, prefix: &str, shards: &Range<usize>, threa
             }
         }
     }
-    let expected = current::merge(rows, &withdrawn, false).into_iter().map(|row| (row.key, row.version, false)).collect();
+    let expected = current::merge(rows, &withdrawn, false).into_iter().map(|row| (row.key, row.version)).collect();
     compared(current_versions(store, prefix, shards, threads)?, expected)
 }
 
@@ -929,15 +911,13 @@ fn current_versions(store: &dyn Store, prefix: &str, shards: &Range<usize>, thre
         .collect())
 }
 
-/// `expected` holds each page's key, version, and whether it is waiting to leave because its task was withdrawn.
-fn compared(mut current: HashMap<String, String>, expected: Vec<(String, String, bool)>) -> Result<Compared> {
+fn compared(mut current: HashMap<String, String>, expected: Vec<(String, String)>) -> Result<Compared> {
     let mut compared = Compared { current_pages: current.len() as u64, ..Compared::default() };
-    for (key, version, waiting) in expected {
-        compared.index_pages += 1;
+    for (key, version) in expected {
+        compared.log_pages += 1;
         match current.remove(&key) {
             Some(found) if found == version => {}
             Some(found) => compared.other_version.push(format!("{key}: expected {version} current {found}")),
-            None if waiting => compared.draining += 1,
             None => compared.missing.push(key),
         }
     }

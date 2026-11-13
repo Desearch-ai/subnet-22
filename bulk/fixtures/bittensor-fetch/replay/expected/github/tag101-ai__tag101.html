@@ -1,0 +1,186 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Tag101</h1><a id="user-content-tag101" class="anchor" aria-label="Permalink: Tag101" href="#tag101"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Tag101 - The Decentralized Tagger for Social Posts</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Overview</h2><a id="user-content-overview" class="anchor" aria-label="Permalink: Overview" href="#overview"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Tag101 models a decentralized semantic tagging network where miners transform X (formerly Twitter) posts into concise, structured tags. Miners submit tags that identify the key entities, topics, events, or contextual meanings within each post. The best-performing miners are those that consistently produce tags aligned with the semantic consensus formed by the network.</p>
+<p dir="auto">These tags turn unstructured social posts into structured semantic signals that help systems index real-time information, track emerging topics, and provide cleaner context for downstream AI workflows. Instead of depending on a single tagging model, Tag101 evaluates tagging quality through a decentralized network, making the system more adaptive to diverse topics and phrasing styles.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Task Definition</h2><a id="user-content-task-definition" class="anchor" aria-label="Permalink: Task Definition" href="#task-definition"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Given a Twitter / X post <code>p</code>, each miner produces a small set of tags:</p>
+<p dir="auto">Each miner returns:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+T_m = \lbrace t_1, t_2, \dots, t_K\rbrace
+$$</math-renderer></p>
+<p dir="auto">Each tag <code>t</code> receives an individual score. Tags are expected to be relevant to the post, non-redundant, and well-formed.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Data Source</h2><a id="user-content-data-source" class="anchor" aria-label="Permalink: Data Source" href="#data-source"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Tasks are generated from a centralized database of Twitter / X posts collected from a publicly disclosed whitelist of accounts. In the initial phase, the whitelist is focused on AI-related accounts, forming a topic season that gives the subnet a consistent domain for evaluating miner behavior.</p>
+<p dir="auto">This centralized source helps maintain task quality, source transparency, and consistent validator behavior while the subnet’s scoring and miner ecosystem mature.</p>
+<p dir="auto">The whitelist may be updated periodically as new topic seasons are introduced, allowing Tag101 to expand into different domains over time. Validators retrieve posts from the database via API, with each post distributed to miners as an independent tagging task.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Reward Mechanism</h2><a id="user-content-reward-mechanism" class="anchor" aria-label="Permalink: Reward Mechanism" href="#reward-mechanism"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+\text{TagScore}(t)
+= \mathrm{mean}\left( \mathrm{Sig}(t),\ V(t),\ \mathrm{Util}(t) \right)
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$\mathrm{Sig}(t)$</math-renderer> is the signal score</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$V(t)$</math-renderer> is the validity score</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$\mathrm{Util}(t)$</math-renderer> is the utility score</li>
+</ul>
+<p dir="auto">The scoring design rewards tags that are aligned with other high-quality submissions, grounded in the original post, and expressed as well-formed, informative labels. The miner’s final task score is aggregated from its submitted tag scores.</p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Signal Score</h3><a id="user-content-signal-score" class="anchor" aria-label="Permalink: Signal Score" href="#signal-score"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">The signal score measures how clearly a tag represents a stable semantic signal within the tag space for a post.</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+\mathrm{Sig}(t)
+= S(c) \times R(t)^{1/2} \times P(t)^{1/4} \times C(t)^{1/4}
+$$</math-renderer></p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$S(c)$</math-renderer>: semantic evidence strength — the cluster's log-scaled distinct-miner support. Log scaling gives diminishing returns, so duplicate tags cannot inflate the score.</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$R(t)$</math-renderer>: proximity, which rewards tags closer to the semantic center of their cluster (a blend of centroid similarity and local density).</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$P(t)$</math-renderer>: perturbation stability — whether the tag keeps its meaning under light lexical rewrites.</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$C(t)$</math-renderer>: canonical consistency — whether the tag's canonical views agree in embedding space.</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Validity Score</h3><a id="user-content-validity-score" class="anchor" aria-label="Permalink: Validity Score" href="#validity-score"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Validity measures whether a tag is relevant to the original post and follows basic formatting requirements. The score combines content relevance with format checks:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+V(t) = \text{tier}(\text{BaseScore}(t) \times \text{FormatScore}(t))
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$\text{BaseScore}(t)$</math-renderer>: content relevance based on semantic similarity or lexical overlap</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$\text{FormatScore}(t)$</math-renderer>: basic tag format validation</li>
+</ul>
+<p dir="auto">The raw validity score is mapped into discrete tiers:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+V(t) \in \lbrace 0,\ 0.3,\ 0.6,\ 1.0 \rbrace
+$$</math-renderer></p>
+<p dir="auto">This keeps validity stable while filtering tags that are unrelated, malformed, or outside the expected tag format.</p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Utility Score</h3><a id="user-content-utility-score" class="anchor" aria-label="Permalink: Utility Score" href="#utility-score"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Utility measures whether a tag is a well-separated, informative label.</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+\mathrm{Util}(t) = 0.70 \times U(t) + 0.30 \times F(t)
+$$</math-renderer></p>
+<p dir="auto">where:</p>
+<ul dir="auto">
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$U(t)$</math-renderer>: silhouette utility, derived from the cosine silhouette of <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$t$</math-renderer> within the shared clustering, so better-separated tags score higher. A neutral value is used when the silhouette is not computable.</li>
+<li>
+<math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$F(t)$</math-renderer>: label fitness, which rewards concise semantic labels — named entities, noun phrases, acronyms, model / product names — and penalizes sentence-like or low-content phrases.</li>
+</ul>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Aggregation</h3><a id="user-content-aggregation" class="anchor" aria-label="Permalink: Aggregation" href="#aggregation"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Each tag is scored independently. A miner’s task score sums the miner’s best <code>TagScore</code> in each qualifying cluster it covers (limited to its tag budget), normalized against the absolute ceiling an <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$N$</math-renderer>-tag miner could reach.</p>
+<p dir="auto">Let (N) be the number of submitted tags, and let (Q) be the set of qualifying clusters:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+\text{MinerScore}(m)
+= \frac{\sum_{c}^{\text{top-}N} \max_{t \in m,, c} \text{TagScore}(t)}
+{N \times \text{TagScore}_{\max}}
+$$</math-renderer></p>
+<p dir="auto">If no cluster qualifies, the scorer falls back to the miner’s mean top tag score.</p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Repeated-Set Adjustment</h3><a id="user-content-repeated-set-adjustment" class="anchor" aria-label="Permalink: Repeated-Set Adjustment" href="#repeated-set-adjustment"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto"><code>TagScorer</code> then scales each miner’s score down when the same tag set is submitted by multiple miners on one task. Let <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$n$</math-renderer> be the number of miners sharing that identical set:</p>
+<p dir="auto"><math-renderer class="js-display-math" style="display: block" data-run-id="acf4559e45aeade639109dd52f16c7db">$$
+\text{AdjustedMinerScore}(m)
+= \text{MinerScore}(m) \times \left(\text{floor} + \frac{1 - \text{floor}}{1 + (n / c)^{p}}\right)
+$$</math-renderer></p>
+<p dir="auto">Reference defaults: <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$c = 50$</math-renderer>, <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$p = 5.5$</math-renderer>, <math-renderer class="js-inline-math" style="display: inline-block" data-run-id="acf4559e45aeade639109dd52f16c7db">$\text{floor} = 0$</math-renderer>.</p>
+<p dir="auto">Over time, validator scoreboards aggregate miner performance across multiple tasks and convert recent task-level scores into relative miner scores for weight calculation.</p>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto"><strong>Quick Start</strong></h2><a id="user-content-quick-start" class="anchor" aria-label="Permalink: Quick Start" href="#quick-start"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Assume your wallet hotkey is already created and registered on the target
+subnet. Replace the placeholder values with the network, wallet, hotkey, axon
+port, and runtime values for your deployment.</p>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Install</h3><a id="user-content-install" class="anchor" aria-label="Permalink: Install" href="#install"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Prerequisite: Python 3.12.</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m venv .venv
+source .venv/bin/activate
+pip install -e ."><pre>python -m venv .venv
+<span class="pl-c1">source</span> .venv/bin/activate
+pip install -e <span class="pl-c1">.</span></pre></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Run with Docker</h3><a id="user-content-run-with-docker" class="anchor" aria-label="Permalink: Run with Docker" href="#run-with-docker"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Docker is the recommended way to run a miner or validator. It keeps the runtime
+environment consistent and enables the built-in Docker auto-update flow by
+default. After a successful update, the Docker monitor re-execs itself so the
+watcher also runs the updated code.</p>
+<p dir="auto">Build the miner/validator image:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m tag101.deploy.docker_node build --image tag101:latest"><pre>python -m tag101.deploy.docker_node build --image tag101:latest</pre></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Miner</h4><a id="user-content-miner" class="anchor" aria-label="Permalink: Miner" href="#miner"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Prepare a miner env file:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="cp deploy/miner.docker.example miner.env"><pre>cp deploy/miner.docker.example miner.env</pre></div>
+<p dir="auto">Edit <code>miner.env</code> for your host paths, network, wallet, hotkey, axon settings,
+and OpenAI credentials. The default SN101 reference miner calls the OpenAI API,
+so miners should set <code>OPENAI_API_KEY</code>; optional overrides are
+<code>OPENAI_BASE_URL</code> and <code>OPENAI_MODEL</code>.</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m tag101.deploy.docker_node start \
+  --role miner \
+  --name sn101-miner \
+  --env-file miner.env"><pre>python -m tag101.deploy.docker_node start \
+  --role miner \
+  --name sn101-miner \
+  --env-file miner.env</pre></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Validator</h4><a id="user-content-validator" class="anchor" aria-label="Permalink: Validator" href="#validator"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Prepare a validator env file:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="cp deploy/validator.docker.example validator.env"><pre>cp deploy/validator.docker.example validator.env</pre></div>
+<p dir="auto">Edit <code>validator.env</code> for your host paths, network, wallet, hotkey, and axon
+settings, then start one validator container:</p>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m tag101.deploy.docker_node start \
+  --role validator \
+  --name sn101-validator \
+  --env-file validator.env"><pre>python -m tag101.deploy.docker_node start \
+  --role validator \
+  --name sn101-validator \
+  --env-file validator.env</pre></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Useful commands</h4><a id="user-content-useful-commands" class="anchor" aria-label="Permalink: Useful commands" href="#useful-commands"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m tag101.deploy.docker_node restart --role miner --name sn101-miner --env-file miner.env
+python -m tag101.deploy.docker_node status --name sn101-miner
+docker logs -f sn101-miner
+python -m tag101.deploy.docker_node stop --name sn101-miner"><pre>python -m tag101.deploy.docker_node restart --role miner --name sn101-miner --env-file miner.env
+python -m tag101.deploy.docker_node status --name sn101-miner
+docker logs -f sn101-miner
+python -m tag101.deploy.docker_node stop --name sn101-miner</pre></div>
+<div class="markdown-heading" dir="auto"><h3 class="heading-element" dir="auto">Run with PM2</h3><a id="user-content-run-with-pm2" class="anchor" aria-label="Permalink: Run with PM2" href="#run-with-pm2"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">PM2 can also run a miner or validator directly on the host. Install PM2
+separately, keep using the Python virtual environment from the install step,
+and point <code>PYTHON_BIN</code> at that venv Python in the env file.</p>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Miner</h4><a id="user-content-miner-1" class="anchor" aria-label="Permalink: Miner" href="#miner-1"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="cp deploy/miner.pm2.env.example miner.pm2.env
+$EDITOR miner.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role miner \
+  --name sn101-miner \
+  --env-file miner.pm2.env"><pre>cp deploy/miner.pm2.env.example miner.pm2.env
+<span class="pl-smi">$EDITOR</span> miner.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role miner \
+  --name sn101-miner \
+  --env-file miner.pm2.env</pre></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Validator</h4><a id="user-content-validator-1" class="anchor" aria-label="Permalink: Validator" href="#validator-1"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="cp deploy/validator.pm2.env.example validator.pm2.env
+$EDITOR validator.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role validator \
+  --name sn101-validator \
+  --env-file validator.pm2.env"><pre>cp deploy/validator.pm2.env.example validator.pm2.env
+<span class="pl-smi">$EDITOR</span> validator.pm2.env
+
+python -m tag101.deploy.pm2_node start \
+  --role validator \
+  --name sn101-validator \
+  --env-file validator.pm2.env</pre></div>
+<div class="markdown-heading" dir="auto"><h4 class="heading-element" dir="auto">Useful commands</h4><a id="user-content-useful-commands-1" class="anchor" aria-label="Permalink: Useful commands" href="#useful-commands-1"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="python -m tag101.deploy.pm2_node restart --role miner --name sn101-miner --env-file miner.pm2.env
+python -m tag101.deploy.pm2_node status --name sn101-miner
+pm2 logs sn101-miner
+python -m tag101.deploy.pm2_node stop --name sn101-miner"><pre>python -m tag101.deploy.pm2_node restart --role miner --name sn101-miner --env-file miner.pm2.env
+python -m tag101.deploy.pm2_node status --name sn101-miner
+pm2 logs sn101-miner
+python -m tag101.deploy.pm2_node stop --name sn101-miner</pre></div>
+</article></div>

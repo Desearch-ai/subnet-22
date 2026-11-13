@@ -211,14 +211,6 @@
   "net",
   "org"
  ],
- "blocked_operators": [
-  "shinhan"
- ],
- "not_blocked": [
-  "kakushinhan.org",
-  "marushinhanten.com",
-  "tenshinhanten.com"
- ],
  "dynamic_platforms": [
   "500px.com",
   "academia.edu",

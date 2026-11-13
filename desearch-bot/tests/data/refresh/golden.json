@@ -1,0 +1,600 @@
+{
+ "runs": {
+  "edgar_errors": {
+   "agents": [
+    "Desearch support@desearch.ai"
+   ],
+   "exit": 1,
+   "manifest": null,
+   "records": [
+    {
+     "content_type": "text/html",
+     "html": "<html><head><title>FINE CO 8-K</title></head><body><p>FINE CO 8-K section 0: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>FINE CO 8-K section 1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p><p>FINE CO 8-K section 2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release.</p></body></html>",
+     "meta": {
+      "cik": 2004,
+      "company": "FINE CO",
+      "filed": "2026-11-12",
+      "form": "8-K"
+     },
+     "source": "edgar",
+     "status": 200,
+     "url": "https://www.sec.gov/Archives/edgar/data/2004/000000200426000001/fine-8k.htm"
+    }
+   ],
+   "requests": {
+    "data.sec.gov": [
+     "/submissions/CIK0000002001.json",
+     "/submissions/CIK0000002002.json",
+     "/submissions/CIK0000002003.json",
+     "/submissions/CIK0000002004.json",
+     "/submissions/CIK0000002005.json",
+     "/submissions/CIK0000002005.json"
+    ],
+    "www.sec.gov": [
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261112.idx",
+     "/robots.txt",
+     "/Archives/edgar/data/2003/000000200326000001/broken.htm",
+     "/Archives/edgar/data/2004/000000200426000001/fine-8k.htm"
+    ]
+   },
+   "rows": null,
+   "seconds": 0.5,
+   "stderr_tail": "",
+   "stdout": "{\"failed\": \"too many fetch errors: {'index_days': 1, 'submissions_404': 1, 'submissions_unreadable': 1, 'submissions_ServerDisconnectedError': 1, 'document_500': 1, 'form_8-K': 1, 'filers': 5}\"}"
+  },
+  "edgar_index_fail": {
+   "agents": [
+    "Desearch support@desearch.ai"
+   ],
+   "exit": 1,
+   "manifest": null,
+   "records": null,
+   "requests": {
+    "www.sec.gov": [
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261112.idx",
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261113.idx",
+     "/robots.txt"
+    ]
+   },
+   "rows": null,
+   "seconds": 0.2,
+   "stderr_tail": "",
+   "stdout": "{\"failed\": \"daily index 2026-11-13: 500\"}"
+  },
+  "edgar_none": {
+   "agents": [
+    "Desearch support@desearch.ai"
+   ],
+   "exit": 0,
+   "manifest": {
+    "counts": {},
+    "files": [],
+    "removed": null,
+    "rows": 0,
+    "run": "edgar",
+    "source": "crawl"
+   },
+   "records": null,
+   "requests": {
+    "www.sec.gov": [
+     "/robots.txt"
+    ]
+   },
+   "rows": [],
+   "seconds": 0.4,
+   "stderr_tail": "",
+   "stdout": "{\"fetch\": {\"filers\": 0}, \"build\": {}}"
+  },
+  "edgar_ok": {
+   "agents": [
+    "Desearch support@desearch.ai"
+   ],
+   "exit": 0,
+   "manifest": {
+    "counts": {
+     "page_edgar": 2,
+     "page_edgar_item": 3
+    },
+    "files": [
+     "crawl-000001.parquet"
+    ],
+    "removed": null,
+    "rows": 5,
+    "run": "edgar",
+    "source": "crawl"
+   },
+   "records": null,
+   "requests": {
+    "data.sec.gov": [
+     "/submissions/CIK0000000999.json",
+     "/submissions/CIK0000001001.json",
+     "/submissions/CIK0000001002.json",
+     "/submissions/CIK0000001003.json"
+    ],
+    "www.sec.gov": [
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261107.idx",
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261108.idx",
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261109.idx",
+     "/Archives/edgar/daily-index/2026/QTR4/form.20261110.idx",
+     "/robots.txt",
+     "/Archives/edgar/data/1001/000000100126000001/acme-10k.htm",
+     "/Archives/edgar/data/1002/000000100226000007/beta-8k.htm",
+     "/Archives/edgar/data/1003/000000100326000002/proxy.htm"
+    ]
+   },
+   "rows": [
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=1",
+     "headings": [],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "a1597e28e18ec3e1ffc3d7cb52f52e7949fe0ff6f82efd3db0da4aeee99e9bb4",
+     "title": "ACME CORP 10-K 2026-11-10, Item 1",
+     "url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=1"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=1A",
+     "headings": [],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "638cfd129446588288cf0d6a2b6744af69a14c37d887911fa72a251e3225d78d",
+     "title": "ACME CORP 10-K 2026-11-10, Item 1A",
+     "url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=1A"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=7",
+     "headings": [],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "0b14f45b75f7731d53fa2ab2bd9fbb87d4f9d2cdbaffc84f5f9eb765f6dc3ce5",
+     "title": "ACME CORP 10-K 2026-11-10, Item 7",
+     "url": "https://www.sec.gov/Archives/edgar/data/1001/000000100126000001/acme-10k.htm?item=7"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://www.sec.gov/Archives/edgar/data/1002/000000100226000007/beta-8k.htm",
+     "headings": [],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "35dc9af290eccac9a412dfa66f0c97bad833a06dda26799c4bcb574e07ad4b58",
+     "title": "BETA HOLDINGS INC 8-K",
+     "url": "https://www.sec.gov/Archives/edgar/data/1002/000000100226000007/beta-8k.htm"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://www.sec.gov/Archives/edgar/data/1003/000000100326000002/proxy.htm",
+     "headings": [],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "2566b3d0a57cc4c6d8c1c91128d2e4550b524a9d6e0427f8b907b83cc9a6f393",
+     "title": "GAMMA TRUST proxy",
+     "url": "https://www.sec.gov/Archives/edgar/data/1003/000000100326000002/proxy.htm"
+    }
+   ],
+   "seconds": 0.6,
+   "stderr_tail": "",
+   "stdout": "{\"fetch\": {\"no_index_weekend\": 2, \"no_index_weekday\": 1, \"index_days\": 1, \"skipped\": 1, \"form_10-K\": 1, \"form_8-K\": 1, \"form_DEF 14A\": 1, \"filers\": 4}, \"build\": {\"page_edgar_item\": 3, \"page_edgar\": 2}}"
+  },
+  "fred_cases": {
+   "agents": [
+    "Mozilla/5.0 (compatible; DesearchBot/1.0; +https://www.desearch.ai/crawler)"
+   ],
+   "exit": 1,
+   "manifest": null,
+   "records": [
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"en\"><head><title>Locked series</title></head><body><h1>Locked series</h1><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Locked series notes.</p><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Locked series notes.</p><p>Locked series: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Locked series notes.</p></body></html>",
+     "meta": {},
+     "source": "list",
+     "status": 200,
+     "url": "https://fred.stlouisfed.org/series/LOCKED"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"en\"><head><title>Case series P1</title></head><body><h1>Case series P1</h1><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P1 notes.</p><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P1 notes.</p><p>Case series P1: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P1 notes.</p></body></html>",
+     "meta": {},
+     "source": "list",
+     "status": 200,
+     "url": "https://fred.stlouisfed.org/series/P1"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"en\"><head><title>Case series P2</title></head><body><h1>Case series P2</h1><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P2 notes.</p><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P2 notes.</p><p>Case series P2: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P2 notes.</p></body></html>",
+     "meta": {},
+     "source": "list",
+     "status": 200,
+     "url": "https://fred.stlouisfed.org/series/P2"
+    },
+    {
+     "content_type": "text/html",
+     "html": "<html lang=\"en\"><head><title>Case series P3</title></head><body><h1>Case series P3</h1><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 0 of the Case series P3 notes.</p><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 1 of the Case series P3 notes.</p><p>Case series P3: The series is published by the agency every month and the figures are revised when new survey data arrives. Analysts use it to follow changes in the economy over time, and the notes below explain how the values are measured, which sources they come from and what the units mean for each release. Paragraph 2 of the Case series P3 notes.</p></body></html>",
+     "meta": {},
+     "source": "list",
+     "status": 200,
+     "url": "https://fred.stlouisfed.org/series/P3"
+    }
+   ],
+   "requests": {
+    "busy.stlouisfed.org": [
+     "/robots.txt",
+     "/a",
+     "/b"
+    ],
+    "down.stlouisfed.org": [
+     "/robots.txt",
+     "/robots.txt"
+    ],
+    "elsewhere.test": [
+     "/robots.txt",
+     "/landing"
+    ],
+    "fred.stlouisfed.org": [
+     "/robots.txt",
+     "/series/P1",
+     "/series/missing",
+     "/series/noindex",
+     "/series/fr",
+     "/series/plain",
+     "/series/away",
+     "/series/LOCKED",
+     "/series/LOCKED",
+     "/series/loop1",
+     "/series/loop2",
+     "/series/loop3",
+     "/series/loop4",
+     "/series/self",
+     "/series/empty",
+     "/series/broken",
+     "/series/P2",
+     "/series/P3"
+    ],
+    "login.stlouisfed.org": [
+     "/robots.txt",
+     "/auth?back=/series/LOCKED"
+    ]
+   },
+   "rows": null,
+   "seconds": 25.4,
+   "stderr_tail": "",
+   "stdout": "{\"failed\": \"refused: {'bad_url': 1, 'page': 5, 'status_404': 1, 'robots_disallowed': 1, 'noindex': 1, 'other_language': 1, 'not_html': 1, 'redirect_offsite': 1, 'cookie_round_trip': 1, 'redirect': 5, 'repeat': 1, 'empty': 1, 'status_502': 1, 'robots_503': 2, 'status_429': 2, 'rate_limited': 1}\"}"
+  },
+  "fred_exists": {
+   "agents": [],
+   "exit": 1,
+   "manifest": null,
+   "records": null,
+   "requests": {},
+   "rows": null,
+   "seconds": 0.2,
+   "stderr_tail": "",
+   "stdout": "{\"failed\": \"{dir}/build/fred exists\"}"
+  },
+  "fred_ok": {
+   "agents": [
+    "Mozilla/5.0 (compatible; DesearchBot/1.0; +https://www.desearch.ai/crawler)"
+   ],
+   "exit": 0,
+   "manifest": {
+    "counts": {
+     "page_list": 12
+    },
+    "files": [
+     "crawl-000001.parquet"
+    ],
+    "removed": null,
+    "rows": 12,
+    "run": "fred-test",
+    "source": "crawl"
+   },
+   "records": null,
+   "requests": {
+    "fred.stlouisfed.org": [
+     "/robots.txt",
+     "/series/A",
+     "/series/B",
+     "/series/C",
+     "/data/GDP",
+     "/series/OLD",
+     "/series/K",
+     "/series/D",
+     "/series/E",
+     "/series/F",
+     "/series/G",
+     "/series/H",
+     "/series/I",
+     "/series/J"
+    ]
+   },
+   "rows": [
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/data/GDP",
+     "headings": [
+      "Gross Domestic Product"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "b33fd54d1a880010eeb4b1367495e4380bc4efecfbdadb0d006814be44a0ae3c",
+     "title": "Gross Domestic Product (GDP) data",
+     "url": "https://fred.stlouisfed.org/data/GDP"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/A",
+     "headings": [
+      "Series A"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "36ebd2efef43496daf3a636c95a205cc0bdf6b83bf58928365ef8bb266a19b9a",
+     "title": "Series A",
+     "url": "https://fred.stlouisfed.org/series/A"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/B",
+     "headings": [
+      "Series B"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "5cfd7772e333ce8175d10540a1b5b6c4647b8ea2d4736363af320fae5aeb0463",
+     "title": "Series B",
+     "url": "https://fred.stlouisfed.org/series/B"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/C",
+     "headings": [
+      "Series C"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "4db88befb3a84ec221909a0e0f426c2c8cc76b5ec5e4e7668ca996e03fc6aa8a",
+     "title": "Series C",
+     "url": "https://fred.stlouisfed.org/series/C"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/D",
+     "headings": [
+      "Series D"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "47a8490c5f4b8edaa4fb903db5811e3ecd1a18c1031ef12389c32f6a043f28c4",
+     "title": "Series D",
+     "url": "https://fred.stlouisfed.org/series/D"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/E",
+     "headings": [
+      "Series E"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "e0d2aaaddab4ae5383de48269bbb479c02b0a6a1120f8914d2326650d3b41703",
+     "title": "Series E",
+     "url": "https://fred.stlouisfed.org/series/E"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/F",
+     "headings": [
+      "Series F"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "00b5965782eb9d7b299bd8f311549a9b5b7ba64a04f7e941273193e7efd087f9",
+     "title": "Series F",
+     "url": "https://fred.stlouisfed.org/series/F"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/G",
+     "headings": [
+      "Series G"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "ec641414e5220f841ee5c43db51facfbb07ccebf917a3b18070e8803e6bc8007",
+     "title": "Series G",
+     "url": "https://fred.stlouisfed.org/series/G"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/H",
+     "headings": [
+      "Series H"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "e75420a13d903ae04a6355c9bd00cc5355b86a2879b0a59c49f66659410e7745",
+     "title": "Series H",
+     "url": "https://fred.stlouisfed.org/series/H"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/I",
+     "headings": [
+      "Series I"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "32c1bc0ffb725e15c0d77b1285a9b5dd00f4bdf443d5ae757dd70ac657360852",
+     "title": "Series I",
+     "url": "https://fred.stlouisfed.org/series/I"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/J",
+     "headings": [
+      "Series J"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "21a2d7257497dc25d62f3d593ff41c3a56086b8fd03f86dec9b901b94c679d98",
+     "title": "Series J",
+     "url": "https://fred.stlouisfed.org/series/J"
+    },
+    {
+     "canonical": "",
+     "content_type": "text/html",
+     "description": "",
+     "extraction": "v2",
+     "final_url": "https://fred.stlouisfed.org/series/K",
+     "headings": [
+      "Series K"
+     ],
+     "html_bytes": 0,
+     "html_sha256": "",
+     "lang": "en",
+     "page_type": "other",
+     "published": "",
+     "status": 200,
+     "text_mode": "full",
+     "text_sha256": "d0575ceb62e27f0ae29c89777e3b2045888249ab8ad7bd1023fa2fe64ccf5c80",
+     "title": "Series K",
+     "url": "https://fred.stlouisfed.org/series/K"
+    }
+   ],
+   "seconds": 12.4,
+   "stderr_tail": "",
+   "stdout": "{\"asked\": 13, \"fetch\": {\"page\": 12, \"redirect\": 1}, \"build\": {\"page_list\": 12}}"
+  }
+ },
+ "side": "python"
+}

@@ -13,8 +13,8 @@ v1_set = importlib.util.module_from_spec(SPEC)
 sys.modules["v1_set"] = v1_set
 SPEC.loader.exec_module(v1_set)
 
-GOLDEN = Path(__file__).resolve().parent / "v1_set_golden.json"
-GOLDEN_UNDATED = Path(__file__).resolve().parent / "v1_set_golden_undated.json"
+GOLDEN = Path(__file__).resolve().parents[2] / "publisher" / "tests" / "v1-set-golden.json"
+GOLDEN_UNDATED = Path(__file__).resolve().parents[2] / "publisher" / "tests" / "v1-set-golden-undated.json"
 
 
 TODAY = date(2026, 10, 28)
@@ -336,6 +336,28 @@ def test_public_suffixes_are_never_taken_deeper_or_whole_nor_parents_of_subdomai
     assert sites["mag.example"]["own_host"] is True and "news.us.com" not in sites and sites["news.mag.example"]["own_host"] is True
     whole = {site["host"]: site for site in sites.values()}
     assert not v1_set.matches(whole, "https://shop.mag.example/x", None), "whole for its rank takes its own host only"
+
+
+def test_a_bulk_only_hand_entry_is_out_in_the_set_and_bulk_only_in_the_planners_copy(tmp_path, capsys):
+    decisions = tmp_path / "decisions.tsv"
+    decisions.write_text("host\trank\tstate\tlisted\treason\ttype\tcap\tv1\nuniprot.org\t8483\tactive\t1\t\treference\t1000000\t\nvendor.example\t3\tno_sitemap\t1\t\tcompany\t2000\t\n")
+    hand = tmp_path / "hand.tsv"
+    hand.write_text("host\trule\ttype\twhy\tpaths\tsource\nuniprot.org\tbulk_only\treference\tbenchmark\t\tuniprot-swissprot\n")
+    out = tmp_path / "v1-set.json"
+    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--hand", str(hand), "--landing-rank", "3"])
+    canonical = json.loads(out.read_text())
+    assert {s["host"]: s for s in canonical["sites"]}["uniprot.org"] == {"host": "uniprot.org", "rule": "out", "why": ["bulk-only"]}
+    capsys.readouterr()
+    v1_set.main(["--planner-from", str(out), "--hand", str(hand)])
+    copy = json.loads(capsys.readouterr().out)
+    uniprot = {"host": "uniprot.org", "rule": "bulk_only", "source": "uniprot-swissprot", "type": "reference", "why": ["benchmark"]}
+    assert copy == {**canonical, "sites": [uniprot if s["host"] == "uniprot.org" else s for s in canonical["sites"]]}
+    v1_set.main(["--planner-from", str(out)])
+    assert json.loads(capsys.readouterr().out) == canonical
+    unlisted = {**canonical, "sites": [s for s in canonical["sites"] if s["host"] != "uniprot.org"]}
+    assert v1_set.planner_copy(unlisted, v1_set.hand_entries(v1_set.tsv(str(hand))))["sites"][-1] == uniprot
+    with pytest.raises(SystemExit):
+        v1_set.main(["--out", str(out)])
 
 
 def test_hand_depths_and_switches_are_read_as_the_set_holds_them_and_a_bad_one_stops_the_build():

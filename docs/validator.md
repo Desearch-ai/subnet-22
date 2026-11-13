@@ -126,15 +126,6 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |
 
-### Upgrading from the search validator
-
-Nothing to do by hand.
-- A validator started with `run.sh` pulls this release, installs it, removes the old API process and
-  restarts as the single validator process with the same flags.
-- It keeps the `SCRAPINGDOG_API_KEY` it was started with.
-- Without a key it checks nothing and sets no weights, and logs so, until the key is in
-  `neurons/validators/.env` and the validator restarts.
-
 ### 📈 Monitor
 
 ```bash

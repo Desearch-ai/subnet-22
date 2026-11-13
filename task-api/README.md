@@ -17,13 +17,13 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 
 | Path | |
 | --- | --- |
-| `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
-| `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
+| `src/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
+| `tests/api/` | the API's tests, against a fake chain, Redis and an in-memory store |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
-The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
-(text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/). The publisher,
-which writes passed pages and vectors to the pages bucket and takes withdrawn ones down, is in
+The miner and validator are in [`neurons/`](../neurons/), with their shared code in
+[`desearch/`](../desearch/). The API shares [`crates/desearch/`](../crates/desearch/) with the publisher,
+which writes passed pages and vectors to the pages bucket and takes withdrawn ones down, in
 [`publisher/`](../publisher/).
 
 ## How it works
@@ -165,7 +165,7 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    passages split at its markdown headings, never inside a table row, a list item or a code block, each
    starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
    fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
-   while `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
+   while `GET /v1/room?kind=embed` has room, and cuts at most `PLANNER_EMBED_TASKS_PER_HOUR` inputs an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
@@ -208,7 +208,9 @@ The planner keeps its place in the log and the version of every page it planned 
 | `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
-| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most, and with the fresh lane's handed over an hour at most, from the start; the log's pages past it wait and are planned later |
+| `PLANNER_EMBED_TASKS_PER_HOUR` | 2500 | embed tasks (inputs) planned and handed over an hour, every lane together; 0 budgets in pages alone |
+| `PLANNER_BULK_TASK_SHARE` | 0.25 | the bulk feed's share of the task budget; what one share leaves goes to the other |
+| `PLANNER_PAGES_PER_HOUR` | none (100000 with no task budget) | pages planned an hour at most outside the bulk feed; the log's pages past it wait and are planned later |
 | `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file at most |
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
@@ -224,11 +226,11 @@ The planner keeps its place in the log and the version of every page it planned 
 
 ## Run
 
-The API is built from `Dockerfile.rust` at the repository root. It keeps its SQLite file in `/data`
+The API is built from `task-api/Dockerfile`, with the repository root as the build context. It keeps its SQLite file in `/data`
 and needs a Redis (`TASK_API_REDIS`); the [publisher](../publisher/) runs on its own machine:
 
 ```bash
-docker build -f task-api/Dockerfile.rust -t task-api .
+docker build -f task-api/Dockerfile -t task-api .
 docker run -d --env-file task-api/deploy/.env.example -e TASK_API_REGISTRY=chain -e TASK_API_SEEDS=chain -v task-api-data:/data -p 127.0.0.1:8080:8080 task-api
 curl -s localhost:8080/v1/ping
 ```
@@ -263,7 +265,7 @@ file, and is written at a few hundred MB a second.
 It needs two buckets:
 
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day.
-  `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default, as R2 signs), `CF_R2_ACCESS_KEY_ID` and
+  `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default), `CF_R2_ACCESS_KEY_ID` and
   `CF_R2_SECRET_ACCESS_KEY` reach it;
 - `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` after ten
   days, `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the uploads bucket's credentials unless
@@ -274,9 +276,8 @@ It needs two buckets:
 Validators read `subnet-22` without credentials. On a store that keeps buckets private and opens
 objects one by one, as OVHcloud Object Storage does, set `CF_R2_PUBLIC_OBJECTS=1` for the API and the
 publisher: the API writes its own files readable by anyone and opens each upload once its completion
-is checked, and the planner writes embed inputs the same way. On R2, serve the bucket on a custom
-domain instead, not the rate-limited `r2.dev` URL. Objects are readable but not listable, which is
-why the API keeps `validation/open.json`. Mainnet serves it at
+is checked, and the planner writes embed inputs the same way. Objects are readable but not listable,
+which is why the API keeps `validation/open.json`. Mainnet serves it at
 `https://subnet-22.s3.us-east-va.io.cloud.ovh.us`, the validator's default `--neuron.storage_url`.
 
 The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`).
@@ -296,7 +297,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
-| `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
+| `TASK_API_CHECK_SHARE` | `SHARE` in [`src/sampling.rs`](src/sampling.rs) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
 | `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
 | `TASK_API_RELEASE_SPREAD_S` | 60 | seconds a revealed round's tasks are released over, one by one in the round's order; 0 releases them all at once |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
@@ -394,18 +395,18 @@ desearch-pages bucket
 
 A page's key comes from its URL alone; it is how the change files and `current/` name a page:
 
-```python
-from app.canonical import canonicalize, domain_of, url_sha1
+```rust
+use desearch::canonical::{canonicalize, domain_of, url_sha1};
 
-url = canonicalize(assigned_url)
-key = f"pages/{domain_of(url)}/{url_sha1(url)}"
+let url = canonicalize(assigned_url)?;
+let key = format!("pages/{}/{}", domain_of(&url)?, url_sha1(&url)?);
 ```
 
 ## Tests
 
 ```bash
-cd task-api && python3 -m pytest -q
+cd task-api && cargo test
 ```
 
-The tests use Redis db 14 and an in-memory R2; run one suite at a time. `TASK_API_TEST_R2=1` also runs
-the storage tests against real buckets, under `_test/`.
+The tests use Redis db 13 on localhost; run one suite at a time.
+

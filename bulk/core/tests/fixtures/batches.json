@@ -1,0 +1,445 @@
+{
+ "source": "pubmed",
+ "run": "test-run",
+ "as_of": "2026-11-01T05:06:07.123456+02:00",
+ "as_of_us": 1793502367123456,
+ "rows_per_file": 3,
+ "rows": [
+  {
+   "url": "https://example.org/0",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 0 \u00e9\ud83d\ude00",
+    "description": "",
+    "lang": "en",
+    "canonical": "https://example.org/0",
+    "published": "",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "",
+    "tags": [],
+    "breadcrumbs": [],
+    "json_ld_types": [],
+    "headings": [],
+    "entity": "",
+    "ld": "",
+    "paywalled": null,
+    "robots": [],
+    "text": "Title 0\n## Intro\nBody text 0 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/1",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 1 \u00e9\ud83d\ude00",
+    "description": "desc",
+    "lang": "en",
+    "canonical": "https://example.org/1",
+    "published": "2024-01-02",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "",
+    "tags": [
+     "t0"
+    ],
+    "breadcrumbs": [],
+    "json_ld_types": [],
+    "headings": [
+     "Intro",
+     "M\u00e9thodes"
+    ],
+    "entity": "",
+    "ld": "",
+    "paywalled": true,
+    "robots": [
+     "noindex"
+    ],
+    "text": "Title 1\n## Intro\nBody text 1 with \u00fcn\u00efcode and \u4e2d\u6587.Title 1\n## Intro\nBody text 1 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/2",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 2 \u00e9\ud83d\ude00",
+    "description": "",
+    "lang": "en",
+    "canonical": "https://example.org/2",
+    "published": "2024-01-02",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "https://example.org/i.png",
+    "section": "",
+    "tags": [
+     "t0",
+     "t1"
+    ],
+    "breadcrumbs": [],
+    "json_ld_types": [],
+    "headings": [],
+    "entity": "",
+    "ld": "",
+    "paywalled": false,
+    "robots": [],
+    "text": "Title 2\n## Intro\nBody text 2 with \u00fcn\u00efcode and \u4e2d\u6587.Title 2\n## Intro\nBody text 2 with \u00fcn\u00efcode and \u4e2d\u6587.Title 2\n## Intro\nBody text 2 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/3",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 3 \u00e9\ud83d\ude00",
+    "description": "desc",
+    "lang": "en",
+    "canonical": "https://example.org/3",
+    "published": "",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "Science",
+    "tags": [
+     "t0",
+     "t1",
+     "t2"
+    ],
+    "breadcrumbs": [],
+    "json_ld_types": [],
+    "headings": [
+     "Intro",
+     "M\u00e9thodes"
+    ],
+    "entity": "",
+    "ld": "",
+    "paywalled": null,
+    "robots": [],
+    "text": "Title 3\n## Intro\nBody text 3 with \u00fcn\u00efcode and \u4e2d\u6587.Title 3\n## Intro\nBody text 3 with \u00fcn\u00efcode and \u4e2d\u6587.Title 3\n## Intro\nBody text 3 with \u00fcn\u00efcode and \u4e2d\u6587.Title 3\n## Intro\nBody text 3 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/4",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 4 \u00e9\ud83d\ude00",
+    "description": "",
+    "lang": "en",
+    "canonical": "https://example.org/4",
+    "published": "2024-01-02",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "",
+    "tags": [
+     "t0",
+     "t1",
+     "t2",
+     "t3"
+    ],
+    "breadcrumbs": [
+     "Home",
+     "Papers"
+    ],
+    "json_ld_types": [],
+    "headings": [],
+    "entity": "",
+    "ld": "",
+    "paywalled": true,
+    "robots": [],
+    "text": "Title 4\n## Intro\nBody text 4 with \u00fcn\u00efcode and \u4e2d\u6587.Title 4\n## Intro\nBody text 4 with \u00fcn\u00efcode and \u4e2d\u6587.Title 4\n## Intro\nBody text 4 with \u00fcn\u00efcode and \u4e2d\u6587.Title 4\n## Intro\nBody text 4 with \u00fcn\u00efcode and \u4e2d\u6587.Title 4\n## Intro\nBody text 4 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/5",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 5 \u00e9\ud83d\ude00",
+    "description": "desc",
+    "lang": "en",
+    "canonical": "https://example.org/5",
+    "published": "2024-01-02",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "",
+    "tags": [
+     "t0",
+     "t1",
+     "t2",
+     "t3",
+     "t4"
+    ],
+    "breadcrumbs": [],
+    "json_ld_types": [
+     "ScholarlyArticle"
+    ],
+    "headings": [
+     "Intro",
+     "M\u00e9thodes"
+    ],
+    "entity": "",
+    "ld": "",
+    "paywalled": false,
+    "robots": [],
+    "text": "Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587.Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587.Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587.Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587.Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587.Title 5\n## Intro\nBody text 5 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  },
+  {
+   "url": "https://example.org/6",
+   "content_type": "application/xml",
+   "page": {
+    "page_type": "paper",
+    "text_mode": "main",
+    "title": "Title 6 \u00e9\ud83d\ude00",
+    "description": "",
+    "lang": "en",
+    "canonical": "https://example.org/6",
+    "published": "",
+    "modified": "",
+    "author": "A. Author",
+    "site_name": "Example",
+    "image": "",
+    "section": "",
+    "tags": [
+     "t0",
+     "t1",
+     "t2",
+     "t3",
+     "t4",
+     "t5"
+    ],
+    "breadcrumbs": [],
+    "json_ld_types": [],
+    "headings": [],
+    "entity": "{\"name\": \"x\"}",
+    "ld": "[]",
+    "paywalled": null,
+    "robots": [],
+    "text": "Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587.Title 6\n## Intro\nBody text 6 with \u00fcn\u00efcode and \u4e2d\u6587."
+   }
+  }
+ ],
+ "removed": [
+  "https://example.org/gone-1",
+  "https://example.org/gone-\u00e9"
+ ],
+ "counts": [
+  [
+   "taken",
+   7
+  ],
+  [
+   "skipped",
+   2
+  ],
+  [
+   "cl\u00e9",
+   1
+  ],
+  [
+   "zero",
+   0
+  ]
+ ],
+ "manifest": "{\n \"source\": \"pubmed\",\n \"run\": \"test-run\",\n \"as_of\": \"2026-11-01T03:06:07Z\",\n \"files\": [\n  \"pubmed-000001.parquet\",\n  \"pubmed-000002.parquet\",\n  \"pubmed-000003.parquet\"\n ],\n \"removed\": \"removed.txt\",\n \"rows\": 7,\n \"counts\": {\n  \"taken\": 7,\n  \"skipped\": 2,\n  \"cl\\u00e9\": 1,\n  \"zero\": 0\n }\n}",
+ "removed_txt": "https://example.org/gone-1\nhttps://example.org/gone-\u00e9\n",
+ "out": "runs/./pubmed-test/",
+ "summary": "{\"out\": \"runs/pubmed-test\", \"files\": 3, \"rows\": 7, \"removed\": 2, \"taken\": 7, \"skipped\": 2, \"cl\\u00e9\": 1, \"zero\": 0}",
+ "override_counts": [
+  [
+   "rows",
+   99
+  ],
+  [
+   "extra",
+   1
+  ]
+ ],
+ "override_summary": "{\"out\": \"x\", \"files\": 0, \"rows\": 99, \"removed\": 0, \"extra\": 1}",
+ "schema": [
+  {
+   "name": "url",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "final_url",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "status",
+   "type": "int32",
+   "nullable": false
+  },
+  {
+   "name": "error",
+   "type": "string",
+   "nullable": true
+  },
+  {
+   "name": "fetched_at",
+   "type": "timestamp[us, tz=UTC]",
+   "nullable": false
+  },
+  {
+   "name": "elapsed_ms",
+   "type": "int32",
+   "nullable": false
+  },
+  {
+   "name": "content_type",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "html_bytes",
+   "type": "int32",
+   "nullable": false
+  },
+  {
+   "name": "html",
+   "type": "large_binary",
+   "nullable": true
+  },
+  {
+   "name": "html_sha256",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "page_type",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "title",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "description",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "lang",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "canonical",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "published",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "author",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "json_ld_types",
+   "type": "list<item: string>",
+   "nullable": false
+  },
+  {
+   "name": "headings",
+   "type": "list<item: string>",
+   "nullable": false
+  },
+  {
+   "name": "text",
+   "type": "large_string",
+   "nullable": false
+  },
+  {
+   "name": "text_sha256",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "extraction",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "text_mode",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "modified",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "site_name",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "image",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "section",
+   "type": "string",
+   "nullable": false
+  },
+  {
+   "name": "tags",
+   "type": "list<item: string>",
+   "nullable": false
+  },
+  {
+   "name": "breadcrumbs",
+   "type": "list<item: string>",
+   "nullable": false
+  },
+  {
+   "name": "entity",
+   "type": "large_string",
+   "nullable": false
+  },
+  {
+   "name": "ld",
+   "type": "large_string",
+   "nullable": false
+  },
+  {
+   "name": "paywalled",
+   "type": "bool",
+   "nullable": true
+  },
+  {
+   "name": "robots",
+   "type": "list<item: string>",
+   "nullable": false
+  }
+ ]
+}

@@ -1,6 +1,7 @@
 //! The DesearchBot crawl loop, on every core of one process.
 
 pub mod allowed;
+pub mod blocklist;
 pub mod buckets;
 pub mod churn;
 pub mod crawl;
@@ -15,19 +16,27 @@ pub mod links;
 pub mod listed;
 pub mod net;
 pub mod outcomes;
+pub mod pagebuild;
+pub mod pagecheck;
+pub mod pystr;
 pub mod ready;
-pub mod recrawl;
 pub mod records;
+pub mod recrawl;
+pub mod refresh;
 pub mod registry;
 pub mod replay;
 pub mod robots;
 pub mod schedule;
+pub mod setrule;
 pub mod signing;
+pub mod sitecrawl;
+pub mod sitemapcheck;
 pub mod sitemaps;
 pub mod states;
 pub mod suffixes;
 pub mod taskapi;
 pub mod text;
 pub mod timetable;
+pub mod uploads;
 pub mod urls;
 pub mod visit;

@@ -1,0 +1,19 @@
+[package]
+name = "bulk-gutenberg"
+description = "Project Gutenberg's English public-domain books as pages at gutenberg.org, their text cut to an opening"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+csv.workspace = true
+regex.workspace = true
+tar = "0.4"
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

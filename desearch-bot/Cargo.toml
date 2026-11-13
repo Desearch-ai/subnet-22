@@ -9,21 +9,26 @@ description = "The DesearchBot crawl loop"
 
 [dependencies]
 anyhow = "1"
+arrow-array = "59"
+arrow-schema = "59"
 base64 = "0.22"
 bip39 = { version = "2", default-features = false, features = ["std"] }
 blake2 = "0.10"
 bs58 = "0.5"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+desearch = { path = "../crates/desearch" }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 encoding_rs = "0.8"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-indexmap = "2"
+indexmap = { version = "2", features = ["serde"] }
 libc = "0.2"
 memchr = "2"
-parquet = { version = "59", default-features = false, features = ["zstd", "snap"] }
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd", "snap"] }
+quick-xml = "0.41"
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+html5ever = "0.38"
 rand = "0.8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
@@ -39,6 +44,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signa
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tokio-postgres-rustls = "0.13"
 unicode-normalization = "0.1"
+zstd = "0.13"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
@@ -48,3 +54,8 @@ tikv-jemallocator = { version = "0.6", features = ["stats"] }
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+[dev-dependencies]
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
+tokio = { version = "1", features = ["test-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

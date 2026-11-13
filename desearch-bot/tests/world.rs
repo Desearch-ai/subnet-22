@@ -270,6 +270,9 @@ async fn crawls_a_small_web() {
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: ["site.test", "blocked.test", "empty.test"].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
@@ -362,6 +365,9 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
@@ -458,6 +464,9 @@ async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host, "site.test"].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -524,6 +533,9 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().map(|(h, _)| *h).collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -580,6 +592,9 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -645,6 +660,9 @@ async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locat
         follow_links: FollowLinks::Off,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -701,6 +719,9 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -759,6 +780,9 @@ async fn an_outlet_with_hubs_lists_its_homepage_and_the_pages_it_links_to_beside
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -775,6 +799,24 @@ async fn an_outlet_with_hubs_lists_its_homepage_and_the_pages_it_links_to_beside
     assert!(home["interval"].as_f64().unwrap() >= 86_400.0, "read again no sooner than its hubs go: {home:?}");
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_request_reaches_a_host_in_the_abuse_blocklist_listed_or_redirected_to() {
+    let web: Shared = Arc::default();
+    {
+        let mut w = web.lock().unwrap();
+        w.redirect("hops.test", "/robots.txt", "http://www.shfg.com/robots.txt", None);
+        w.add("shfg.com", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add("www.shfg.com", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+    }
+    let hosts = ["hops.test", "shfg.com"];
+    let buckets = visit_resolving(web.clone(), &hosts, &["hops.test", "shfg.com", "www.shfg.com"], &[], "blocklist").await;
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(hits.iter().any(|(h, path, _)| h == "hops.test" && path == "/robots.txt"), "{hits:?}");
+    assert!(!hits.iter().any(|(h, _, _)| h.ends_with("shfg.com")), "{hits:?}");
+    let record = buckets.store("shfg.com").domain("shfg.com").unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("excluded"));
 }
 
 async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
@@ -829,6 +871,9 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
         follow_links: FollowLinks::Thin,
         resolver: Some(Arc::new(TestResolver { addr, known: resolves.iter().copied().collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -903,9 +948,12 @@ async fn crawl_adjusted(
         follow_links,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     adjust(&mut visitor);
-    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new()).with_links(paced.0, paced.1);
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new()).with_links(paced.0, paced.1).with_news(4, 10, 0);
     assert_eq!(crawl.load().unwrap(), hosts.len());
     // A site queued for link work alone is not visited.
     assert!(crawl.step().await.unwrap() <= hosts.len());
@@ -1073,6 +1121,334 @@ async fn a_recheck_between_two_reads_of_a_working_sitemap_keeps_the_site_active(
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the sitemap is not due, and still lists its 12 pages");
     assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/list.xml"), "a sitemap not due is not read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_active_site_whose_one_due_root_is_gone_stays_active_while_another_root_works() {
+    let web: Shared = Arc::default();
+    let host = "two-roots.test";
+    let (news, video) = (format!("http://{host}/news.xml"), format!("http://{host}/video.xml"));
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: {news}\nSitemap: {video}\n").as_bytes());
+        w.add(host, "/news.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/video.xml", 404, None, b"gone");
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let later = chrono::Utc::now().timestamp() + 86_400;
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "two-roots", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let now = chrono::Utc::now().timestamp();
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now - 10 * 86_400), ("checked", now - 86_400), ("ok", now - 86_400)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let working = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 12, "next": later});
+        changes.sitemap(host, &news, working.as_object().unwrap());
+        let due = serde_json::json!({"id": sitemap_id(&video), "kind": "urlset", "depth": 0, "status": "ok", "urls": 5, "next": 0});
+        changes.sitemap(host, &video, due.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("active"), None), "the news sitemap still works, so one gone root ends nothing");
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(hits.iter().any(|(_, path, _)| path == "/video.xml"), "the due root was read");
+    assert!(!hits.iter().any(|(_, path, _)| path == "/news.xml"), "the working root was not due");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_site_set_aside_as_gone_while_a_sitemap_it_holds_still_works_is_due_again() {
+    let web: Shared = Arc::default();
+    let (parked, dead) = ("parked.test", "dead.test");
+    {
+        let mut w = web.lock().unwrap();
+        for host in [parked, dead] {
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/news.xml\n").as_bytes());
+            w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+        }
+        w.add(parked, "/news.xml", 200, None, urlset(parked, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(dead, "/news.xml", 404, None, b"gone");
+    }
+    let now = chrono::Utc::now().timestamp();
+    let month = now + 30 * 86_400;
+    let (buckets, mut crawl) = crawl_prepared(web.clone(), &[parked, dead], "parked", |buckets| {
+        buckets.allow(&Allowed::of([parked, dead]));
+        for (host, status, urls) in [(parked, "ok", 12), (dead, "gone", 0)] {
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("sitemap_gone"), Some(month * 1_000_000));
+            for (name, at) in [("robots", now - 3_600), ("checked", now - 86_400), ("ok", now - 86_400)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("listed".into(), true.into());
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(host, &record);
+            let news = format!("http://{host}/news.xml");
+            let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": status, "urls": urls, "next": now - 60});
+            changes.sitemap(host, &news, file.as_object().unwrap());
+            buckets.store(host).write(changes).unwrap();
+        }
+    })
+    .await;
+    let record = |host: &str| buckets.store(host).domain(host).unwrap().unwrap();
+    assert!(record(parked)["due"].as_i64().unwrap() <= chrono::Utc::now().timestamp() + 5, "a site set aside while its sitemap still works is due again within seconds");
+    assert_eq!(record(dead)["due"].as_i64(), Some(month), "one whose sitemaps are all gone keeps its wait");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    assert_eq!((record(parked)["state"].as_str(), record(parked)["urls"].as_i64()), (Some("active"), Some(12)));
+}
+
+/// A Google News sitemap listing these pages, each published today.
+fn news_urlset(host: &str, paths: &[&str]) -> String {
+    let urls: String = paths
+        .iter()
+        .map(|path| format!("<url><loc>http://{host}{path}</loc><news:news><news:publication_date>2026-11-10T10:00:00Z</news:publication_date></news:news></url>"))
+        .collect();
+    format!("<?xml version=\"1.0\"?><urlset xmlns:news=\"http://www.google.com/schemas/sitemap-news/0.9\">{urls}</urlset>")
+}
+
+fn lane_site(web: &Shared, host: &str, stories: &[&str]) {
+    let mut w = web.lock().unwrap();
+    w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/sitemap.xml\n").as_bytes());
+    let index = format!("<?xml version=\"1.0\"?><sitemapindex><sitemap><loc>http://{host}/news.xml</loc></sitemap><sitemap><loc>http://{host}/archive.xml</loc></sitemap></sitemapindex>");
+    w.add(host, "/sitemap.xml", 200, None, index.as_bytes());
+    w.add(host, "/news.xml", 200, None, news_urlset(host, stories).as_bytes());
+    let old: String = (0..30).map(|i| format!("<url><loc>http://{host}/old/{i}</loc><lastmod>2020-01-01</lastmod></url>")).collect();
+    w.add(host, "/archive.xml", 200, None, format!("<?xml version=\"1.0\"?><urlset>{old}</urlset>").as_bytes());
+    w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_news_sites_lane_file_takes_the_lane_tier_and_leaves_the_sites_due_time_to_its_other_files() {
+    let web: Shared = Arc::default();
+    let host = "lane.test";
+    lane_site(&web, host, &["/story/1", "/story/2"]);
+    let now = chrono::Utc::now().timestamp();
+    let news_terms = |buckets: &Arc<Buckets>| buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+    let (buckets, _crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-tier", FollowLinks::Off, Slots::new(1), (0, 0), news_terms, |visitor| visitor.news_lane = true).await;
+    let store = buckets.store(host);
+    let file = |name: &str| store.sitemap(host, &format!("http://{host}/{name}")).unwrap().unwrap();
+    assert_eq!((file("news.xml")["lane"].as_bool(), file("archive.xml")["lane"].as_bool()), (Some(true), Some(false)), "the Google News file is in the lane, the old archive is not");
+    let slow = desearch_bot::schedule::NEWS_SLOW / desearch_bot::schedule::SECOND;
+    let interval = file("news.xml")["interval"].as_i64().unwrap();
+    assert!((slow * 9 / 10..=slow * 11 / 10).contains(&interval), "a news site outside the fast tier has its lane file read every twelve minutes or so, not {interval} s");
+    let due = store.domain(host).unwrap().unwrap()["due"].as_i64().unwrap();
+    assert!(due > now + 20 * 60, "the site is due for its index, not for the file the lane polls: in {} s", due - now);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_lane_poll_reads_only_the_due_lane_file_and_leaves_the_site_as_it_stood() {
+    let web: Shared = Arc::default();
+    let (host, stale) = ("polled.test", "stale-robots.test");
+    lane_site(&web, host, &["/story/1", "/story/2", "/story/3"]);
+    lane_site(&web, stale, &["/story/1"]);
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        let news = Terms { news: true, ..Terms::default() };
+        buckets.allow(&Allowed::with_terms([(host, news), (stale, news)]));
+        for (site, robots) in [(host, now - 3_600), (stale, now - 3 * 86_400)] {
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+            for (name, at) in [("robots", robots), ("checked", now - 3_600), ("ok", now - 3_600)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(site, &record);
+            for (name, kind, depth, next, lane) in [("sitemap.xml", "index", 0, later, false), ("archive.xml", "urlset", 1, now - 60, false), ("news.xml", "urlset", 1, now - 60, true)] {
+                let url = format!("http://{site}/{name}");
+                let file = serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": depth, "status": "ok", "urls": 2, "next": next, "lane": lane});
+                changes.sitemap(site, &url, file.as_object().unwrap());
+            }
+            buckets.store(site).write(changes).unwrap();
+        }
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host, stale], &[], "lane-poll", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    assert!(web.lock().unwrap().hits.is_empty(), "the sites' visits are not due, so nothing is asked before the lane takes them");
+    crawl.step().await.unwrap();
+    let hits: Vec<(String, String)> = web.lock().unwrap().hits.iter().map(|(site, path, _)| (site.clone(), path.clone())).collect();
+    assert_eq!(hits, [(host.to_string(), "/news.xml".to_string())], "one request, for the lane file: no robots.txt, no index, not the due archive, and nothing on a site whose robots.txt is days old");
+    let store = buckets.store(host);
+    assert!(store.url(&urls::parse(&format!("http://{host}/story/3"), host).unwrap()).unwrap().is_some(), "the poll keeps the stories it found");
+    let record = store.domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["due"].as_i64()), (Some("active"), Some(later)), "and leaves the site's standing and due time alone");
+    let news = store.sitemap(host, &format!("http://{host}/news.xml")).unwrap().unwrap();
+    assert!(news["next"].as_i64().is_some_and(|next| next > now + 5 * 60), "the file is next polled on its tier");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lane_file_that_did_not_change_waits_half_as_long_again_before_its_next_poll() {
+    let web: Shared = Arc::default();
+    let host = "quiet.test";
+    lane_site(&web, host, &["/story/1"]);
+    let body = news_urlset(host, &["/story/1"]);
+    web.lock().unwrap().add(host, "/news.xml", 200, Some("v1"), body.as_bytes());
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600)] {
+            record.insert(name.into(), at.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 1, "next": now - 60, "lane": true, "etag": "v1", "interval": 720, "newest": now - 600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-quiet", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    crawl.step().await.unwrap();
+    let hits: Vec<(String, Option<String>)> = web.lock().unwrap().hits.iter().map(|(_, path, validator)| (path.clone(), validator.clone())).collect();
+    assert_eq!(hits, [("/news.xml".to_string(), Some("v1".to_string()))], "one conditional request");
+    let news = buckets.store(host).sitemap(host, &format!("http://{host}/news.xml")).unwrap().unwrap();
+    assert_eq!(news["interval"].as_i64(), Some(1_080), "unchanged, it waits half as long again: up to five times its tier");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_of_a_site_whose_turn_is_far_off_gives_its_runner_back_at_once() {
+    let web: Shared = Arc::default();
+    let host = "delayed.test";
+    lane_site(&web, host, &["/story/1"]);
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600), ("quiet", now + 20)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("delay".into(), 30.0.into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 1, "next": now - 60, "lane": true, "interval": 720, "newest": now - 600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (_buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-delayed", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    let started = std::time::Instant::now();
+    crawl.step().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10), "the poll does not sit out the site's 20 s: {:?}", started.elapsed());
+    assert!(web.lock().unwrap().hits.is_empty(), "and asks nothing before the site's turn");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lane_file_that_refuses_a_poll_waits_twice_as_long_each_time() {
+    let web: Shared = Arc::default();
+    let host = "refusing.test";
+    lane_site(&web, host, &["/story/1"]);
+    web.lock().unwrap().add(host, "/news.xml", 403, None, b"denied");
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600)] {
+            record.insert(name.into(), at.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "ok", "urls": 1, "next": now - 60, "lane": true, "interval": 720, "newest": now - 600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-refused", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    crawl.step().await.unwrap();
+    let news = buckets.store(host).sitemap(host, &format!("http://{host}/news.xml")).unwrap().unwrap();
+    assert_eq!((news["status"].as_str(), news["error"].as_str(), news["interval"].as_i64()), (Some("error"), Some("http_403"), Some(1_440)), "refused, it waits twice as long");
+    assert_eq!(web.lock().unwrap().hits.len(), 1, "and the poll asks nothing more");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_site_whose_lane_files_lag_has_its_homepage_read_for_article_links_and_feeds() {
+    let web: Shared = Arc::default();
+    let host = "lagging.test";
+    lane_site(&web, host, &["/post/1", "/post/2"]);
+    {
+        let links: String = ["/post/101", "/post/102", "/world", "/tag/ukraine", "/about"].iter().map(|path| format!("<a href=\"{path}\">{path}</a>")).collect();
+        let home = format!("<html lang=\"en\"><head><link rel=\"alternate\" type=\"application/rss+xml\" href=\"/feed.xml\"></head><body><p>{ENGLISH}</p>{links}</body></html>");
+        web.lock().unwrap().add(host, "/", 200, None, home.as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let later = now + 86_400;
+    let prepare = |buckets: &Arc<Buckets>| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(later * 1_000_000));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let news = format!("http://{host}/news.xml");
+        let file = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 1, "status": "ok", "urls": 2, "next": later, "lane": true, "shapes": ["post/#"], "newest": now - 10 * 3_600});
+        changes.sitemap(host, &news, file.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    };
+    let (buckets, mut crawl) = crawl_adjusted(web.clone(), &[host], &[], "lane-home", FollowLinks::Off, Slots::new(1), (0, 0), prepare, |visitor| visitor.news_lane = true).await;
+    crawl.step().await.unwrap();
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/"], "its lane file is not due and its newest story is ten hours old, so the homepage is read, alone");
+    let store = buckets.store(host);
+    let stored = |path: &str| store.url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/post/101") && stored("/post/102"), "the article links the sitemaps lag behind are kept");
+    assert!(!stored("/world") && !stored("/tag/ukraine") && !stored("/about"), "sections, tags and other pages are not");
+    let home = store.sitemap(host, &format!("http://{host}/")).unwrap().unwrap();
+    assert_eq!((home["lane"].as_bool(), home["interval"].as_i64()), (Some(true), Some(300)), "a homepage that found new articles is read again in five minutes");
+    assert!(store.sitemap(host, &format!("http://{host}/feed.xml")).unwrap().is_some(), "and the feed it names waits for the site's next visit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_sites_news_file_is_read_before_its_other_due_files_and_those_longest_due_first() {
+    let web: Shared = Arc::default();
+    let host = "many-files.test";
+    let index = format!("http://{host}/sitemap.xml");
+    let news = format!("http://{host}/z-news.xml");
+    let files: Vec<String> = (0..60).map(|i| format!("/a-{i:02}.xml")).collect();
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: {index}\n").as_bytes());
+        for (i, file) in files.iter().enumerate() {
+            w.add(host, file, 200, None, urlset(host, &[format!("/old/{i}")]).as_bytes());
+        }
+        let story = format!("<url><loc>http://{host}/story/new</loc><news:news><news:publication_date>2026-11-10</news:publication_date></news:news></url>");
+        w.add(host, "/z-news.xml", 200, None, format!("<?xml version=\"1.0\"?><urlset>{story}</urlset>").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "many-files", |buckets| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { news: true, ..Terms::default() })]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now - 3_600), ("checked", now - 86_400), ("ok", now - 86_400)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let root = serde_json::json!({"id": sitemap_id(&index), "kind": "index", "depth": 0, "status": "ok", "urls": 0, "next": now + 86_400});
+        changes.sitemap(host, &index, root.as_object().unwrap());
+        for (i, file) in files.iter().enumerate() {
+            let url = format!("http://{host}{file}");
+            // The later a file sorts, the longer it has been due.
+            let child = serde_json::json!({"id": sitemap_id(&url), "kind": "urlset", "depth": 1, "parent": sitemap_id(&index), "status": "ok", "urls": 1, "next": now - 60 * i as i64});
+            changes.sitemap(host, &url, child.as_object().unwrap());
+        }
+        let child = serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 1, "parent": sitemap_id(&index), "status": "ok", "urls": 1, "gnews": true, "next": now - 60});
+        changes.sitemap(host, &news, child.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).filter(|path| path.ends_with(".xml")).collect();
+    assert_eq!(hits.first().map(String::as_str), Some("/z-news.xml"), "the news file goes first: {hits:?}");
+    assert!(hits.contains(&"/a-59.xml".to_string()) && !hits.contains(&"/a-00.xml".to_string()), "then the files due longest, which sort last: {hits:?}");
+    let story = buckets.store(host).sitemap(host, &news).unwrap().unwrap();
+    assert!(story["fetched"].as_i64().is_some_and(|at| at >= now), "and the news file's read is kept");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2413,6 +2789,9 @@ async fn a_visit_due_while_link_work_holds_the_site_still_comes_when_that_work_e
         // The link run looks up the site's address slowly, then finds no slot: it ends as a wait, writing nothing.
         resolver: Some(Arc::new(SlowResolver { addr, known: [host].into(), wait: Duration::from_secs(3) })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     crawl.load().unwrap();
@@ -2819,6 +3198,9 @@ async fn probe_crawl(web: Shared, host: &'static str, name: &str, timeout: Durat
         follow_links: FollowLinks::Off,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
         links_cpu: Slots::new(2),
+        news_lane: false,
+        news_fast: Arc::default(),
+        news_bodies: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     crawl.load().unwrap();

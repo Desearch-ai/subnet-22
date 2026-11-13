@@ -12,10 +12,6 @@ every core.
 - **Rules**: robots.txt and Crawl-delay, one request a second per host, sitemap schedules, exclusions,
   and Web Bot Auth request signatures.
 
-The domain list is published as the Hugging Face dataset
-[`desearch/subnet-22`](https://huggingface.co/datasets/desearch/subnet-22); its card is
-[`dataset_card.md`](./dataset_card.md).
-
 ## Build
 
 ```bash
@@ -44,6 +40,10 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--heavy-slots` | 16 | visits at once to domains with more than 2,000 sitemap records |
 | `--follow-links` | `thin` | which listed sites have their links followed: `off`, `thin` (sitemaps listing under 1,000 pages, or none) or `all` (those, and every whole or news site) |
 | `--links-slots` | 32 | link runs at once; 0, like `--follow-links off`, turns them off |
+| `--news-lane` | off | poll listed news sites' Google News sitemaps, feeds and files of newest stories apart from their visits |
+| `--news-slots` | 32 | news lane polls at once |
+| `--news-fetch-slots` | 16 | lane files fetched or parsed at once, apart from the visits' sitemap slots |
+| `--news-fast-hosts` | 300 | news sites polled every 2 minutes, those whose lane files find the most new pages; the rest every 12 |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--urls-per-hour` | 0 | URLs sent in an hour at most, at a steady pace; 0 sends what the task API has room for |
@@ -54,13 +54,12 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--recrawl-overrides` | none | a file of `domain days` lines, such as `bbc.co.uk 1`, giving listed domains and their subdomains their own interval |
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
-| `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
+| `--backfill-ready` | off | walk every store once, resuming where it stopped, to queue each page never sent or changed since sent |
 | `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth, hubs}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
 | `--stock-per-sec` | `--join-per-sec` | sent records the refresh stock keeper's threads read per second together |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
-| `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
 `desearch-bot run --help` lists the memory and disk limits.
@@ -71,6 +70,33 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `DESEARCH_SIGNING_KEY_FILE` | the Ed25519 key requests are signed with |
 | `FEEDER_KEY_URI` | the task API admin hotkey, as a Substrate secret URI, needed with `--task-api` |
 | `MALLOC_ARENA_MAX=2` | stops glibc from holding on to memory RocksDB has freed |
+
+## Abuse blocklist
+
+`data/blocklist.json` names who asked us to stop. Nothing on the bot box sends them a request, and
+no miner is handed their pages.
+
+| Field | Blocks |
+| --- | --- |
+| `operators` | any host with the name in one of its labels other than the TLD (`shinhan` covers `www.shinhangroup.com`) |
+| `not_blocked` | hosts, and the hosts under them, the `operators` rule must leave alone |
+| `domains` | each domain and every host under it |
+| `networks` | IPv4 and IPv6 ranges in CIDR form; an address literal or a DNS answer inside one |
+
+Every path checks it before it sends anything:
+
+- **Visits, news polls and link work:** a listed domain that matches is excluded without a visit. Each
+  redirect hop is checked before it is followed, so a site that redirects into the list stops there.
+- **DNS:** both resolvers refuse a name with any answer in a blocked network. A host with an
+  unrelated name on a blocked address is never connected to, and the failure is named `Blocked`.
+- **`crawl-sites`, `refresh` and `sitemap-check`:** every request and redirect hop is checked.
+- **Dispatch:** a matching domain, or a page on a matching host, is never sent to the task API.
+
+To add an entry, edit the file, rebuild, and restart the bot.
+
+Every crawl path reads a host's robots.txt before its other pages and keeps to its rules and
+`Crawl-delay`. Visits space one host's requests at least a second apart. `crawl-sites`
+waits a second between requests to a host, and `sitemap-check` makes at most one request a second.
 
 ## Visits
 
@@ -99,7 +125,24 @@ name within the host's registrable domain.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
-are read again within 30 minutes.
+are read again within 30 minutes. A visit reads at most 40 files: a news site's Google News sitemaps
+first, then the files due longest. An active site whose roots read on a visit are gone stays active
+while another sitemap it holds answered when last read; a listed site set aside as gone while one does
+is due again when the list loads.
+
+With `--news-lane`, a listed news site's lane files are polled on their own: Google News sitemaps, RSS
+and Atom feeds, and files of up to 5,000 entries whose newest entry is under two days old. A poll reads
+the one lane file due first, with the validators of its last read, on fetch slots of its own, and leaves
+the site's standing and its next visit as they were; robots.txt, read by the site's visits within the
+last two days, and the site's Crawl-delay apply, and polls of one site are at least 10 seconds apart. The
+sites whose lane files find the most new pages are polled every 2 minutes, the rest every 12; a lane
+file that did not change waits half as long again each time, up to five times that, and a site's visits
+come when its other files are due. The pages a news site's lists gain go out first in the
+next dispatch pass. A news site whose lane files' newest story is over two hours old has its homepage
+read in the lane as a list of the links shaped like the articles its lane files list (`/post/123`,
+`/2026/11/10/a-story/`), not its sections or tags; a read that finds new ones brings the homepage back in
+5 minutes, and one that does not doubles the wait, up to 6 hours. Feeds the homepage names are read on the
+site's next visit.
 
 A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
 the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
@@ -186,9 +229,8 @@ by the lower of the two, so a domain that starts refusing slows within hours. A 
 after its domain's interval, and after two failures in a row waits `--gone-days`; each failed send
 counts once when its outcome comes, against the send in flight when it failed: the latest, or the one
 before it while the latest has not come back published, however often the failure is reported. It is
-kept in a count of its own beside the
-sent record's, which keeps the meaning earlier versions read; a send that comes back
-published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
+kept in a count of its own beside the sent record's, which counts a failure when its retry comes due;
+a send that comes back published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
 within the hourly budget. A number still missing after two minutes, or whose file expired, is
 skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
@@ -256,23 +298,46 @@ stores. With the bot stopped, `desearch-bot unresend` takes every waiting resend
 pages' marks and forgets each domain's walked value; install a list without `resend_before` first.
 
 `tools/crawl_list.py` builds the list from the registry. `tools/v1_set.py` writes the v1 set, each
-v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under their caps and floors.
-`tools/resend_waves.py` splits the sites with pages to send again into waves, and `crawl_list.py
---resend-before DATE --resend-hosts FILE` gives the hosts of the waves applied so far their
-`resend_before`. `tools/build-v1.sh` runs the three on the bot box.
+v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under their caps and floors,
+and `crawl_list.py --resend-before DATE --resend-hosts FILE` gives the hosts in FILE their
+`resend_before`.
 
-Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
-feeder already sent are marked first, from its state:
+`tools/build-v1.sh` runs both on the bot box. It builds `v1-set.json` and the v1 crawl list into
+`~ubuntu/crawl-1b/v1` from the registry, read-only, and the staged inputs, and checks every input
+before it writes anything, so a bad one leaves the set and the list as they were. These variables
+change what it builds:
 
-```bash
-sqlite3 -separator $'\t' sent.db "SELECT host, path, lastmod, CAST(at AS INTEGER) FROM sent" > sent.tsv
-desearch-bot run --backfill-ready --backfill-sent sent.tsv ...
-```
+| Variable | Default | |
+| --- | --- | --- |
+| `NEWS` | `A` | `B` takes every news site from 2020 |
+| `UNDATED` | `out` | `article` takes undated news articles |
+| `RESEND_WAVES` | 0 | N gives the sites in resend wave files 1 to N (`resend-waves-$NEWS/resend-wave-NN.txt`) `resend_before` 2026-10-27 |
+| `NODE2_MIN_WEIGHT` | 2 | sites outside the set weighted below it stay off the list; 1 keeps the weight-1 sites |
+| `NODE2_HOURS` | 0 | H holds each site outside the set that stays to its stored pages divided by H an hour; 0 sets no limit |
+| `REJOIN` | none | a file of hosts whose `send_cap` goes one up, so the list walker queues their stored pages again |
+| `RECHECKED` | none | a TSV of host and verdict; a host whose verdict is `ok` passes the homepage language, text and error checks |
+| `VERDICTS` | none | the site check's TSV; the hosts it puts out stay out for quality |
+| `LANDING_RANK` | none | listed sites ranked N or higher that no other entry takes or shuts become landing sites, which send their homepage and first-level pages only |
+| `DEEP_RANK` | none | company landing sites ranked N or higher go three levels down |
+| `WHOLE_RANK` | none | media, organization and reference landing sites ranked N or higher go whole once the site check keeps them |
+| `WIDENED_BEFORE` | none | a date: the sites `DEEP_RANK` and `WHOLE_RANK` take send their pages last sent before it once more, up to their cap |
+| `SUBDOMAINS` | 0 | 1 takes the docs, help, support, newsroom, investor and news subdomains of those sites as their parents are |
+| `PSL` | `/opt/desearch-bot/data/public_suffix_list.dat` | the public suffix list `DEEP_RANK`, `WHOLE_RANK` and `SUBDOMAINS` read; they never take a suffix |
+| `HUBS` | 0 | 1 takes the undated hub pages of the news sites taken for all years, whose homepages and hubs the bot sends again hourly or daily |
 
 Run one bot with `--task-api` at a time.
 
 SIGTERM and SIGINT stop the loop; visits still running after 30 seconds are dropped and simply fall
 due again.
+
+## Page builds
+
+`desearch-bot build` turns fetched records into a bulk run folder, and `refresh edgar|fred` fetches and builds the
+EDGAR filings and FRED pages. Both read pages with the shared extraction in `--workers` Python processes running the
+worker built into the binary, [`desearch/extraction/worker.py`](../desearch/extraction/worker.py) as
+`python -c`, which imports `desearch` from the checkout `--subnet22` names. `--python` names the interpreter (one
+with lxml, and pypdf for PDFs), `--worker` runs a worker script instead, and `--worker-memory-mb` caps each worker's
+address space.
 
 ## Tests
 
@@ -281,7 +346,8 @@ cargo test --release
 ```
 
 The parity tests replay fixed vectors for URL keys, joins, dates, signatures and language, byte for
-byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/world.rs` crawls a
+byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/refresh_parity.rs` a `python3` with
+lxml for the extraction workers, `tests/world.rs` crawls a
 small local web end to end, and `tests/dispatch.rs` runs the queue, its lanes, the outcome feed and
 the dispatcher against a fake task API.
 

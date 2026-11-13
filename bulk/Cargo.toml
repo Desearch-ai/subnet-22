@@ -1,0 +1,51 @@
+[workspace]
+members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "openalex", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "gutenberg", "fedreg", "dailymed", "pubchem", "uniprot", "cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+arrow-array = "59"
+arrow-schema = "59"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+desearch = { path = "../crates/desearch" }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+indexmap = "2"
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
+rayon = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+roxmltree = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+bulk-core = { path = "core" }
+bulk-arxiv = { path = "arxiv" }
+bulk-arxiv-text = { path = "arxiv-text" }
+bulk-pubmed = { path = "pubmed" }
+bulk-pmc = { path = "pmc" }
+bulk-openalex = { path = "openalex" }
+bulk-wikipedia = { path = "wikipedia" }
+bulk-bittensor = { path = "bittensor" }
+bulk-medlineplus = { path = "medlineplus" }
+bulk-factbook = { path = "factbook" }
+bulk-uscode = { path = "uscode" }
+bulk-ecfr = { path = "ecfr" }
+bulk-ctgov = { path = "ctgov" }
+bulk-eurlex = { path = "eurlex" }
+bulk-gutenberg = { path = "gutenberg" }
+bulk-fedreg = { path = "fedreg" }
+bulk-dailymed = { path = "dailymed" }
+bulk-pubchem = { path = "pubchem" }
+bulk-uniprot = { path = "uniprot" }
+
+[profile.release]
+debug = false

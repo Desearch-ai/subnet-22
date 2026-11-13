@@ -1,0 +1,18 @@
+{
+ "source": "pubmed",
+ "run": "20261101",
+ "as_of": "2026-11-01T00:00:00Z",
+ "files": [
+  "pubmed-000001.parquet",
+  "pubmed-000002.parquet",
+  "pubmed-000003.parquet"
+ ],
+ "removed": "removed.txt",
+ "rows": 46,
+ "counts": {
+  "pages": 46,
+  "skipped_pmid": 3,
+  "no_abstract": 5,
+  "deleted": 5
+ }
+}

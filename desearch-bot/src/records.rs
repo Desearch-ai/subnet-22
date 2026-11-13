@@ -146,6 +146,10 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),
         google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
+        // Records from before the news lane know only their Google News flag.
+        lane: record.get("lane").and_then(Value::as_bool).or_else(|| record.get("gnews").and_then(Value::as_bool)).unwrap_or(false),
+        shapes: record.get("shapes").and_then(Value::as_array).map(|shapes| shapes.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        newest: moment(record.get("newest")),
         fetched_at: moment(record.get("fetched")),
     })
 }
@@ -170,7 +174,7 @@ pub fn links_refusal(domain: &Json, now: i64) -> Option<u16> {
 pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> Json {
     let visit = &write.visit;
     let mut record = previous.clone();
-    if !visit.links_only {
+    if !visit.links_only && !visit.news_only {
         record.insert("due".into(), seconds(write.next_due_at));
     }
     if let Some(quiet) = visit.quiet_until {
@@ -192,8 +196,8 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
         record.insert("links_status".into(), status.into());
         record.insert("links_status_at".into(), seconds(Some(write.checked_at)));
     }
-    // Link work alone leaves the domain's standing and due time as they were.
-    if visit.links_only {
+    // Link work and news lane polls leave the domain's standing and due time as they were.
+    if visit.links_only || visit.news_only {
         return record;
     }
     if visit.paced {
@@ -240,6 +244,13 @@ pub fn listed_unread(record: &Json) -> bool {
     record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str()) && record.get("listed").and_then(Value::as_bool) != Some(true)
 }
 
+/// A domain set aside because the roots its last visit read were gone, while a sitemap it holds answered when last read and lists pages.
+pub fn parked_with_sitemaps(record: &Json, sitemaps: &[(String, Json)]) -> bool {
+    record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str())
+        && record.get("reason").and_then(Value::as_str) == Some("sitemap_gone")
+        && sitemaps.iter().filter_map(|(url, raw)| known_sitemap(url, raw)).any(|s| s.ok && s.url_count > 0 && crate::visit::is_sitemap(s.kind.as_deref()))
+}
+
 /// The sitemap record after a read; its counts change only when its content did.
 pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64) -> Json {
     let mut record = previous.cloned().unwrap_or_default();
@@ -269,6 +280,15 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
     }
     if let Some(kind) = &update.kind {
         record.insert("kind".into(), kind.clone().into());
+    }
+    record.insert("lane".into(), update.lane.into());
+    if !update.shapes.is_empty() {
+        record.insert("shapes".into(), update.shapes.clone().into());
+    } else if update.changed {
+        record.remove("shapes");
+    }
+    if let Some(newest) = update.newest {
+        record.insert("newest".into(), seconds(Some(newest)));
     }
     if update.google_news {
         record.insert("gnews".into(), true.into());
@@ -335,6 +355,9 @@ mod tests {
             sketch: Vec::new(),
             generated_until: None,
             google_news: true,
+            lane: true,
+            shapes: vec!["story/#".into()],
+            newest: Some(900 * SECOND),
         };
         let first = written_sitemap(None, &read, 1_000 * SECOND);
         let known = known_sitemap(&read.url, &first).unwrap();
@@ -344,6 +367,12 @@ mod tests {
         assert!(known_sitemap(&read.url, &second).unwrap().google_news, "a 304 or an unchanged hash keeps it");
         let plain = SitemapUpdate { google_news: false, ..read.clone() };
         assert!(!known_sitemap(&read.url, &written_sitemap(Some(&second), &plain, 3_000 * SECOND)).unwrap().google_news, "a read that finds no Google News markup clears it");
+        assert!(known.lane);
+        let mut before_lane = first.clone();
+        before_lane.remove("lane");
+        assert!(known_sitemap(&read.url, &before_lane).unwrap().lane, "a record from before the news lane is in it when it is a Google News sitemap");
+        let grown = SitemapUpdate { lane: false, ..read.clone() };
+        assert!(!known_sitemap(&read.url, &written_sitemap(Some(&first), &grown, 3_000 * SECOND)).unwrap().lane, "one grown too big leaves it");
     }
 
     #[test]

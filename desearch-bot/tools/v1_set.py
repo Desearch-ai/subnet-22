@@ -56,7 +56,7 @@ LOCALE = re.compile(r"[a-z]{2}[-_][a-z]{2}", re.I | re.A)
 OUT_REASONS = {
     "mirror", "benchmark-copy", "people-search", "template", "spam", "aggregator", "judge", "terms", "not-english",
     "simple-english-copy", "dictionary", "data-not-pages", "project-infrastructure", "taxonomy-stubs", "media-files",
-    "piracy", "no-dump", "shop", "platform", "too-big", "low-value",
+    "piracy", "no-dump", "shop", "platform", "too-big", "low-value", "bulk-only",
 }
 NOTE_REASONS = (
     ("terms", "terms"), ("web archive", "mirror"), ("same database", "mirror"), ("private people", "people-search"),
@@ -125,6 +125,13 @@ def hand_terms(row: dict) -> dict:
         else:
             sys.exit(f"hand row {row.get('host')}: {name} {value!r} is not {'a whole number' if name == 'depth' else 'true or false'}; nothing written")
     return terms
+
+
+def planner_copy(found: dict, hand: list[dict]) -> dict:
+    """The planner's copy of a built set: each hand entry of rule bulk_only in place of its host's entry, which the set file holds as out."""
+    bulk_only = {entry["host"]: entry for entry in hand if entry["rule"] == "bulk_only"}
+    sites = [bulk_only.pop(site["host"], site) for site in found["sites"]]
+    return {**found, "sites": sites + list(bulk_only.values())}
 
 
 def bad_entry(entry: dict) -> str | None:
@@ -503,12 +510,13 @@ def uncounted(sites: list[dict], counts: dict[str, dict], news_counts: dict[str,
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", required=True, help="the set file to write, such as v1-set.json")
-    parser.add_argument("--decisions", required=True, help="the crawl list builder's decisions TSV (.gz allowed)")
+    parser.add_argument("--out", help="the set file to write, such as v1-set.json")
+    parser.add_argument("--decisions", help="the crawl list builder's decisions TSV (.gz allowed)")
+    parser.add_argument("--planner-from", help="a built set file: print the planner's copy of it with --hand's bulk_only entries, and build nothing")
     parser.add_argument("--news", choices=("A", "B"), default="A", help="A: established outlets all years, other news sites their last year; B: every news site from 2020")
     parser.add_argument("--undated", choices=("out", "article"), default="out", help="article: a news page with no date is in when its page_type is article")
     parser.add_argument("--rows", action="append", default=[], help="a set rows file (JSON with sites); earlier files win a host")
-    parser.add_argument("--hand", help="TSV of host, rule, type, why, paths, source (why and paths space-separated): the lead's entries, which win over every other source")
+    parser.add_argument("--hand", help="TSV of host, rule, type, why, paths, source (why and paths space-separated): the lead's entries, which win over every other source; rule bulk_only, which takes a site's bulk-feed rows only, is out in the set file and goes to the planner through --planner-from")
     parser.add_argument("--backing", help="TSV of host, wikidata_type, benchmark_citations, news_list")
     parser.add_argument("--news-domains", help="TSV (.gz allowed) of news hosts and their sources (wikidata, list897, jev, ut1)")
     parser.add_argument("--outlets", help="TSV of host and why: news outlets by Wikidata class and official website, the major-news list and names added by hand")
@@ -522,8 +530,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--whole-rank", type=int, help="media, organization and reference landing sites ranked this high or higher that the site check keeps go whole")
     parser.add_argument("--deep-rank", type=int, help=f"company landing sites ranked this high or higher give pages {DEEP_DEPTH} levels down")
     parser.add_argument("--subdomains", action="store_true", help="listed docs, help, support, newsroom, investor and news subdomains of a site taken for its rank are taken as their parent is")
+    parser.add_argument("--pages", help="URLs, one a line, that the set admits whatever their host's rule says")
     parser.add_argument("--public-suffixes", help="the public suffix list (public_suffix_list.dat): a public suffix is never taken deeper or whole, nor a parent of subdomains; needed with --whole-rank, --deep-rank and --subdomains")
     args = parser.parse_args(argv)
+    if args.planner_from:
+        with open_text(args.planner_from) as source:
+            print(json.dumps(planner_copy(json.load(source), hand_entries(tsv(args.hand))), separators=(",", ":")))
+        return
+    if not (args.out and args.decisions):
+        parser.error("--out and --decisions are required to build the set")
     if (args.whole_rank or args.deep_rank or args.subdomains) and not args.public_suffixes:
         sys.exit("--whole-rank, --deep-rank and --subdomains need --public-suffixes; nothing written")
     suffixes = read_suffixes(args.public_suffixes)
@@ -540,7 +555,8 @@ def main(argv: list[str] | None = None) -> None:
         redirects = redirects_of(csv.DictReader(source, delimiter="\t"))
     with open_text(args.decisions) as source:
         decisions = csv.DictReader(source, delimiter="\t")
-        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects, landing_rank=args.landing_rank, hubs=args.hubs, whole_rank=args.whole_rank, deep_rank=args.deep_rank, subdomains=args.subdomains, suffixes=suffixes)
+        hand = [{"host": entry["host"], "rule": "out", "why": ["bulk-only"]} if entry["rule"] == "bulk_only" else entry for entry in hand_entries(tsv(args.hand))]
+        sites, too_big = build([read_rows(path) for path in args.rows], hand, decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects, landing_rank=args.landing_rank, hubs=args.hubs, whole_rank=args.whole_rank, deep_rank=args.deep_rank, subdomains=args.subdomains, suffixes=suffixes)
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
     for site in sites:
@@ -549,6 +565,8 @@ def main(argv: list[str] | None = None) -> None:
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     temporary = Path(f"{args.out}.new")
     head = {"built": built, "news": args.news, "undated": args.undated}
+    if args.pages:
+        head["pages"] = sorted({line.strip() for line in open_text(args.pages) if line.strip()})
     if any(site.get("hubs") for site in sites):
         head["hub_pages"] = HUB_PAGES
     temporary.write_text(json.dumps({**head, "sites": sites}, separators=(",", ":")))

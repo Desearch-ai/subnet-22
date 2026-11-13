@@ -1,0 +1,15 @@
+{
+ "source": "arxiv",
+ "run": "20261101",
+ "as_of": "2026-11-01T00:00:00Z",
+ "files": [
+  "arxiv-000001.parquet"
+ ],
+ "removed": "removed.txt",
+ "rows": 5,
+ "counts": {
+  "pages": 5,
+  "deleted": 2,
+  "empty": 2
+ }
+}

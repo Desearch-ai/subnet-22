@@ -1,0 +1,193 @@
+[
+ {
+  "name": "source_test",
+  "inputs": [
+   "pubmed26n0001.xml"
+  ],
+  "skip": [],
+  "limit": 0,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    1
+   ],
+   [
+    "no_abstract",
+    1
+   ],
+   [
+    "deleted",
+    1
+   ]
+  ]
+ },
+ {
+  "name": "misc_gz",
+  "inputs": [
+   "pubmed26n0001.xml.gz"
+  ],
+  "skip": [],
+  "limit": 0,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    15
+   ],
+   [
+    "no_abstract",
+    2
+   ],
+   [
+    "deleted",
+    3
+   ]
+  ]
+ },
+ {
+  "name": "all_gz_skip",
+  "inputs": [
+   "pubmed26n0001.xml.gz"
+  ],
+  "skip": [
+   "203",
+   "401",
+   "610",
+   " 610 \n",
+   "999"
+  ],
+  "limit": 0,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    46
+   ],
+   [
+    "skipped_pmid",
+    3
+   ],
+   [
+    "no_abstract",
+    5
+   ],
+   [
+    "deleted",
+    5
+   ]
+  ]
+ },
+ {
+  "name": "limit",
+  "inputs": [
+   "pubmed26n0001.xml.gz"
+  ],
+  "skip": [],
+  "limit": 7,
+  "rows_per_file": 3,
+  "counts": [
+   [
+    "pages",
+    7
+   ]
+  ]
+ },
+ {
+  "name": "limit_before_deletions",
+  "inputs": [
+   "pubmed26n0001.xml"
+  ],
+  "skip": [],
+  "limit": 2,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    2
+   ]
+  ]
+ },
+ {
+  "name": "crlf_bom",
+  "inputs": [
+   "pubmed26n0001.xml"
+  ],
+  "skip": [],
+  "limit": 0,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    15
+   ],
+   [
+    "no_abstract",
+    2
+   ],
+   [
+    "deleted",
+    3
+   ]
+  ]
+ },
+ {
+  "name": "three_files_limit",
+  "inputs": [
+   "pubmed26n0001.xml.gz",
+   "pubmed26n0002.xml",
+   "pubmed26n0003.xml.gz"
+  ],
+  "skip": [],
+  "limit": 17,
+  "rows_per_file": 20,
+  "counts": [
+   [
+    "pages",
+    17
+   ],
+   [
+    "no_abstract",
+    3
+   ],
+   [
+    "deleted",
+    4
+   ]
+  ]
+ },
+ {
+  "name": "two_files",
+  "inputs": [
+   "pubmed26n0001.xml",
+   "pubmed26n0002.xml.gz"
+  ],
+  "skip": [],
+  "limit": 0,
+  "rows_per_file": 7,
+  "counts": [
+   [
+    "pages",
+    16
+   ],
+   [
+    "no_abstract",
+    3
+   ],
+   [
+    "deleted",
+    4
+   ]
+  ]
+ },
+ {
+  "name": "error_after_pages",
+  "inputs": [
+   "pubmed26n0001.xml"
+  ],
+  "skip": [],
+  "limit": 0,
+  "rows_per_file": 20,
+  "error": "AttributeError"
+ }
+]

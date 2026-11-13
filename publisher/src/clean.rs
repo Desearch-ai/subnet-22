@@ -1,7 +1,7 @@
 //! A page's own text: its site's template lines out, whether enough of it is left for a vector, and the error and utility page rule, read as the indexer reads them (`tests/clean-golden.json`).
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -145,18 +145,6 @@ pub fn kinds(lines: &[&str]) -> Vec<Kind> {
                 Kind::Text
             }
         })
-        .collect()
-}
-
-pub fn page_hashes(text: &str) -> HashSet<u64> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    lines
-        .iter()
-        .zip(kinds(&lines))
-        .filter(|(_, kind)| *kind == Kind::Text)
-        .map(|(line, _)| line_key(line))
-        .filter(|key| !key.is_empty())
-        .map(|key| line_hash(&key))
         .collect()
 }
 

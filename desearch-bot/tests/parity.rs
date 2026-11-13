@@ -1,4 +1,4 @@
-//! The Rust crawler must key, join and date everything exactly as the Python crawler did.
+//! URL keys, joins, dates, signatures and languages against frozen golden vectors, byte for byte.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -17,11 +17,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn report(differ: &[String], total: usize) {
-    assert!(differ.is_empty(), "{} of {total} differ from Python:\n{}", differ.len(), differ[..differ.len().min(15)].join("\n"));
+    assert!(differ.is_empty(), "{} of {total} differ from the vectors:\n{}", differ.len(), differ[..differ.len().min(15)].join("\n"));
 }
 
 #[test]
-fn url_keys_match_python() {
+fn url_keys_match_the_vectors() {
     let rows = vectors("url-vectors.jsonl.gz");
     let mut differ = Vec::new();
     for row in &rows {
@@ -29,14 +29,14 @@ fn url_keys_match_python() {
         let got = urls::parse(url, host).map(|u| (hex(&u.key), u64::from(u.flags)));
         let want = row["key"].as_str().map(|key| (key.to_string(), row["flags"].as_u64().unwrap()));
         if got != want {
-            differ.push(format!("{url:?} on {host}: rust {got:?} python {want:?}"));
+            differ.push(format!("{url:?} on {host}: got {got:?} want {want:?}"));
         }
     }
     report(&differ, rows.len());
 }
 
 #[test]
-fn joins_match_python() {
+fn joins_match_the_vectors() {
     let rows = vectors("join-vectors.jsonl.gz");
     let mut differ = Vec::new();
     for row in &rows {
@@ -44,14 +44,14 @@ fn joins_match_python() {
         let got = urls::join(base, url).ok();
         let want = row["joined"].as_str().map(str::to_string);
         if got != want {
-            differ.push(format!("{base:?} + {url:?}: rust {got:?} python {want:?}"));
+            differ.push(format!("{base:?} + {url:?}: got {got:?} want {want:?}"));
         }
     }
     report(&differ, rows.len());
 }
 
 #[test]
-fn lastmods_match_python() {
+fn lastmods_match_the_vectors() {
     let rows = vectors("lastmod-vectors.jsonl.gz");
     let mut differ = Vec::new();
     for row in &rows {
@@ -59,14 +59,14 @@ fn lastmods_match_python() {
         let got = (isodate::parse_lastmod(Some(value)), sitemaps::has_time(Some(value).filter(|v| !v.is_empty())));
         let want = (row["us"].as_i64(), row["timed"].as_bool().unwrap());
         if got != want {
-            differ.push(format!("{value:?}: rust {got:?} python {want:?}"));
+            differ.push(format!("{value:?}: got {got:?} want {want:?}"));
         }
     }
     report(&differ, rows.len());
 }
 
 #[test]
-fn signatures_match_python() {
+fn signatures_match_the_vectors() {
     let file = File::open(format!("{}/tests/data/signing-vectors.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let vectors: Value = serde_json::from_reader(file).unwrap();
     let signer = signing::Signer::load(vectors["pem"].as_str().unwrap()).unwrap();
@@ -89,7 +89,7 @@ fn signatures_match_python() {
 }
 
 #[test]
-fn hotkeys_and_task_api_signatures_match_python() {
+fn hotkeys_and_task_api_signatures_match_the_vectors() {
     let file = File::open(format!("{}/tests/data/hotkey-vectors.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let vectors: Value = serde_json::from_reader(file).unwrap();
     for row in vectors["keys"].as_array().unwrap() {
@@ -103,15 +103,15 @@ fn hotkeys_and_task_api_signatures_match_python() {
         let text = |name: &str| row[name].as_str().unwrap();
         let payload = hotkey::signing_payload(text("method"), text("path"), text("body").as_bytes(), text("timestamp"), text("nonce"));
         assert_eq!(payload, text("payload").as_bytes());
-        let python: Vec<u8> = (0..128).step_by(2).map(|i| u8::from_str_radix(&text("signature")[i..i + 2], 16).unwrap()).collect();
-        assert!(hotkey::verify(&signer.public(), &payload, &python), "Python's signature of {} verifies", text("path"));
+        let signature: Vec<u8> = (0..128).step_by(2).map(|i| u8::from_str_radix(&text("signature")[i..i + 2], 16).unwrap()).collect();
+        assert!(hotkey::verify(&signer.public(), &payload, &signature), "the vector's signature of {} verifies", text("path"));
         assert!(hotkey::verify(&signer.public(), &payload, &signer.sign(&payload)));
-        assert!(!hotkey::verify(&signer.public(), b"another payload", &python));
+        assert!(!hotkey::verify(&signer.public(), b"another payload", &signature));
     }
 }
 
 #[test]
-fn languages_match_python() {
+fn languages_match_the_vectors() {
     let Ok(path) = std::env::var("LANGID_FILE") else {
         return;
     };
@@ -122,7 +122,7 @@ fn languages_match_python() {
         let (text, want) = (row["text"].as_str().unwrap(), row["lang"].as_str().unwrap());
         let got = model.classify(text);
         if got != want {
-            differ.push(format!("{:?}: rust {got} python {want} ({})", &text[..text.len().min(60)], row["score"]));
+            differ.push(format!("{:?}: got {got} want {want} ({})", &text[..text.len().min(60)], row["score"]));
         }
     }
     report(&differ, rows.len());

@@ -1,0 +1,69 @@
+[
+ {
+  "netuid": 62,
+  "listed": "https://www.ridges.ai/",
+  "pages": [
+   {
+    "url": "https://www.ridges.ai/",
+    "final_url": "https://www.ridges.ai/",
+    "file": "a.html"
+   },
+   {
+    "url": "https://www.ridges.ai/about",
+    "final_url": "https://www.ridges.ai/about",
+    "file": "b.html"
+   },
+   {
+    "url": "https://www.ridges.ai/x",
+    "final_url": "https://www.ridges.ai/x",
+    "status": 404
+   }
+  ]
+ },
+ {
+  "netuid": 77,
+  "listed": "old.example",
+  "pages": [
+   {
+    "url": "https://old.example/",
+    "final_url": "https://old.example/",
+    "file": "c.html"
+   }
+  ],
+  "known": [
+   "https://old.example/k",
+   "https://old.example/"
+  ]
+ },
+ {
+  "netuid": 2,
+  "listed": "https://danilabs.ai/",
+  "pages": [
+   {
+    "url": "https://danilabs.ai/gone-page",
+    "final_url": "https://danilabs.ai/gone-page",
+    "file": "d.html"
+   }
+  ]
+ },
+ {
+  "netuid": 900,
+  "listed": "https://refused.example",
+  "pages": [
+   {
+    "url": "https://refused.example/",
+    "final_url": "https://refused.example/old",
+    "file": "z.html"
+   }
+  ]
+ },
+ {
+  "netuid": 903,
+  "listed": "https://held2.example/home?x=1#top",
+  "pages": [],
+  "known": [
+   "https://held2.example/a",
+   "https://held2.example/b"
+  ]
+ }
+]

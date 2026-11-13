@@ -9,7 +9,6 @@ use common::{page, page_v2, parquet, parquet_v2};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{Body, Kind};
 use publisher::current::{decode_changes, ChangeRow};
-use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::outcomes;
 use publisher::records::{record_version, Record, SECOND};
@@ -147,29 +146,5 @@ fn a_withdrawal_writes_one_row_per_task_whatever_its_pages_and_refuses_its_jobs_
     let kinds: Vec<&str> = read.column_by_name("kind").unwrap().as_string::<i32>().iter().flatten().collect();
     let ids: Vec<&str> = read.column_by_name("task_id").unwrap().as_string::<i32>().iter().flatten().collect();
     assert_eq!((kinds, ids), (vec!["task_withdrawn"; 3], vec!["big", "small", "late"]));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn the_index_kept_from_before_still_reads_and_takes_pages_down() {
-    let dir = scratch("index");
-    let index = VersionIndex::open(&dir, 8 << 20).unwrap();
-    let current = |task: &str, version: &str, fetched_at: &str| publisher::index::Current {
-        url: "https://ex.com/p".into(),
-        version: version.into(),
-        fetched_at: fetched_at.into(),
-        task_id: task.into(),
-        content_sha1: "c".repeat(40),
-        change_seq: None,
-        change_row: None,
-    };
-    let key = "pages/ex.com/1".to_string();
-    index.store(&[(key.clone(), current("t1", &"1".repeat(40), "2026-10-01T00:00:00+00:00"))]).unwrap();
-    index.store(&[(key.clone(), current("t2", &"2".repeat(40), "2026-10-02T00:00:00+00:00"))]).unwrap();
-    assert_eq!(index.current(&key).unwrap().unwrap().task_id, "t2");
-    index.remove(&[(key.clone(), "1".repeat(40))]).unwrap();
-    assert!(index.current(&key).unwrap().is_some(), "a version that is no longer current stays");
-    index.remove(&[(key.clone(), "2".repeat(40))]).unwrap();
-    assert_eq!(index.current(&key).unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }

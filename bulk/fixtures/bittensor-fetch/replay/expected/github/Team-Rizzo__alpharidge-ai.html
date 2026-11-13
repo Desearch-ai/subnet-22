@@ -1,0 +1,216 @@
+<div id="readme" class="md" data-path="README.md"><article class="markdown-body entry-content container-lg" itemprop="text"><div class="markdown-heading" dir="auto"><h1 class="heading-element" dir="auto">Alpharidge AI (Subnet 45)</h1><a id="user-content-alpharidge-ai-subnet-45" class="anchor" aria-label="Permalink: Alpharidge AI (Subnet 45)" href="#alpharidge-ai-subnet-45"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Subnet 45 finds real-world events as they happen and turns each one into a structured record with the source that proves it. It is the event layer behind <strong><a href="https://alpharidge.ai" rel="nofollow">AlphaRidge</a></strong>.</p>
+<p dir="auto">Miners search the open web for new events in finance, technology, politics and sports (a merger, a rate decision, a funding round, a bill passed, a player transfer) and send each one as a signed claim with a source URL. The first miner to report an event from a trusted source wins it. A miner who finds it first anywhere else holds it as a scoop: paid five times the price if a trusted source confirms it later, charged double as debt if none does. Validators judge the pages, confirm scoops, verify the signed ledger and set weights.</p>
+<p dir="auto"><strong>Guides:</strong> <a href="docs/miner.md">Running a miner</a> · <a href="docs/validator.md">Running a validator</a> · <a href="docs/mechanism.md">How the mechanism works</a></p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Who does what</h2><a id="user-content-who-does-what" class="anchor" aria-label="Permalink: Who does what" href="#who-does-what"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Job</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Miner</strong></td>
+<td>Watches any sources it likes, spots new events and sends each as a claim with the URL that proves it</td>
+</tr>
+<tr>
+<td><strong>Coordination API</strong></td>
+<td>Stamps receipt time, decides whether the event is new, checks the claim against its page, scores source trust and keeps a signed ledger of points</td>
+</tr>
+<tr>
+<td><strong>Validator</strong></td>
+<td>Judges claims' pages, scans trusted sources to confirm scoops, verifies the ledger, re-checks paid claims on its own and sets weights</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Finding is the hard part and checking is cheap: validators never search the open web, they fetch the pages miners point to and read the trusted sources' feeds.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Categories and event types</h2><a id="user-content-categories-and-event-types" class="anchor" aria-label="Permalink: Categories and event types" href="#categories-and-event-types"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Types</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Finance</td>
+<td><code>monetary_policy</code>, <code>economic_data</code>, <code>earnings</code>, <code>merger_acquisition</code>, <code>bankruptcy</code>, <code>personnel</code>, <code>layoffs</code>, <code>delisting</code>, <code>ipo_listing</code>, <code>trading_halt</code></td>
+</tr>
+<tr>
+<td>Technology</td>
+<td><code>product_launch</code>, <code>breakthrough</code>, <code>funding</code>, <code>partnership</code>, <code>security_incident</code>, <code>outage</code>, <code>vulnerability</code>, <code>tech_regulation</code>, <code>infrastructure_investment</code></td>
+</tr>
+<tr>
+<td>Politics</td>
+<td><code>election_result</code>, <code>legislation_passed</code>, <code>appointment</code>, <code>sanction_or_tariff</code></td>
+</tr>
+<tr>
+<td>Sports</td>
+<td><code>transfer</code>, <code>injury</code>, <code>award</code>, <code>match_result</code></td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Other types are rejected as <code>type_off</code>, and price moves are never events. The category follows from the type. Each type has fixed fact slots, and names link to registry IDs (Wikidata, SEC CIK, LEI). <a href="docs/miner.md">docs/miner.md</a> lists every type with its sources and key facts.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">The life of a claim</h2><a id="user-content-the-life-of-a-claim" class="anchor" aria-label="Permalink: The life of a claim" href="#the-life-of-a-claim"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="miner ── signed claim + source URL ──► API
+                                        │ receipt time stamped on arrival
+                                        ▼
+                                  Is it new?  ── known ──► nothing
+                                        │ new
+                                        ▼
+                               Is the source trusted? ── no ──► held as a scoop until a
+                                        │ yes                    trusted page confirms it (72 h)
+                                        ▼
+                              Does the page say it?  ── no ──► rejected
+                                        │ yes
+                                        ▼
+                         First in line wins: part credited now, the rest after settlement
+                                        │
+                                        ▼
+                     signed ledger ──► validators: verify, re-check, set weights"><pre class="notranslate"><code>miner ── signed claim + source URL ──► API
+                                        │ receipt time stamped on arrival
+                                        ▼
+                                  Is it new?  ── known ──► nothing
+                                        │ new
+                                        ▼
+                               Is the source trusted? ── no ──► held as a scoop until a
+                                        │ yes                    trusted page confirms it (72 h)
+                                        ▼
+                              Does the page say it?  ── no ──► rejected
+                                        │ yes
+                                        ▼
+                         First in line wins: part credited now, the rest after settlement
+                                        │
+                                        ▼
+                     signed ledger ──► validators: verify, re-check, set weights
+</code></pre></div>
+<ul dir="auto">
+<li><strong>New:</strong> same type, subject, place and date window means the same event; a different amount or headline earns nothing more.</li>
+<li><strong>Trusted:</strong> a reviewed list of official sites, newsrooms and outlets per category. A company's or club's own site counts only for claims that name it.</li>
+<li><strong>Says it:</strong> the page must be live, recent and openly readable, contain every name and figure in the claim and the miner's quote, and pass the page judge run by the listed validators.</li>
+<li><strong>First:</strong> by the API's receipt time, with a recomputable draw for ties.</li>
+<li><strong>Receipts:</strong> every claim gets a receipt signed by the API with its receipt time, kept by the miner and shown on the dashboard.</li>
+</ul>
+<p dir="auto">Details: <a href="docs/mechanism.md">docs/mechanism.md</a>.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">How pay works</h2><a id="user-content-how-pay-works" class="anchor" aria-label="Permalink: How pay works" href="#how-pay-works"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="points = tier price × source trust × age"><pre class="notranslate"><code>points = tier price × source trust × age
+</code></pre></div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Points</th>
+<th>Types</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Low</td>
+<td>3</td>
+<td>earnings, economic_data, monetary_policy, trading_halt, delisting, personnel, ipo_listing, product_launch, partnership, vulnerability, tech_regulation, infrastructure_investment, election_result, legislation_passed, appointment, sanction_or_tariff, injury, award, match_result</td>
+</tr>
+<tr>
+<td>High</td>
+<td>12</td>
+<td>merger_acquisition, layoffs, bankruptcy, security_incident, funding, transfer, breakthrough, outage</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<ul dir="auto">
+<li><strong>First report only.</strong> Later stages or extra facts on a known event earn nothing.</li>
+<li><strong>Trust</strong> is 1 for official and company pages, lower for news outlets.</li>
+<li><strong>Age.</strong> Events up to 30 days old; full pay for 48 hours, sliding to a quarter at 30 days.</li>
+<li><strong>Scoops</strong> pay 5× when the confirming trusted page comes out after the scoop, 1× otherwise; an unconfirmed or contradicted scoop costs 2× as debt. Rate decisions, data releases, earnings, trading halts, election results and match results can't be scooped.</li>
+<li><strong>Scheduled releases.</strong> A rate decision, data release, earnings report or trading halt claimed before its official release time is not paid.</li>
+<li><strong>Wrong claims</strong> are clawed back, with any pay already earned carried as debt on the coldkey. Confirmed misconduct costs 5× the claim's value.</li>
+<li><strong>One pool.</strong> Every category is priced the same way; the only limit is capacity.</li>
+</ul>
+<p dir="auto">Full rules: <a href="docs/miner.md#3-pay">docs/miner.md</a>.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Where the rest of the emission goes</h2><a id="user-content-where-the-rest-of-the-emission-goes" class="anchor" aria-label="Permalink: Where the rest of the emission goes" href="#where-the-rest-of-the-emission-goes"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">Each miner's share is its points divided by the larger of total points and capacity. Whatever no verified work claims goes to <strong>UID 189, the burn UID</strong>.</p>
+<div align="center" dir="auto">
+  <themed-picture data-catalyst-inline="true"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./emission-bar-dark.svg">
+    <img alt="How miner emission splits each epoch: miners claim their own share, the remainder burns at UID 189" src="./emission-bar.svg">
+  </picture></themed-picture>
+</div>
+<markdown-accessiblity-table><table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total points below capacity</td>
+<td>Each miner is paid its points over capacity. The unclaimed remainder burns.</td>
+</tr>
+<tr>
+<td>Total points above capacity</td>
+<td>Miners split all of miner emission in proportion to points, and burn is zero.</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Live capacity and window: <code>GET /dashboard/mechanism</code>. A worked TAO example and how to check the burn UID: <a href="docs/mechanism.md#emission-capacity-and-the-burn">docs/mechanism.md</a>.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Quickstart</h2><a id="user-content-quickstart" class="anchor" aria-label="Permalink: Quickstart" href="#quickstart"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="highlight highlight-source-shell notranslate position-relative overflow-auto" dir="auto" data-snippet-clipboard-copy-content="git clone https://github.com/Team-Rizzo/alpharidge-ai.git
+cd alpharidge-ai
+
+./install.sh validator     # validator
+./install.sh miner         # reference miner (same CPU-only install)"><pre>git clone https://github.com/Team-Rizzo/alpharidge-ai.git
+<span class="pl-c1">cd</span> alpharidge-ai
+
+./install.sh validator     <span class="pl-c"><span class="pl-c">#</span> validator</span>
+./install.sh miner         <span class="pl-c"><span class="pl-c">#</span> reference miner (same CPU-only install)</span></pre></div>
+<p dir="auto">Then follow <a href="docs/miner.md">docs/miner.md</a> or <a href="docs/validator.md">docs/validator.md</a>. Upgrading a 3.x miner: <a href="docs/miner.md#upgrading-from-3x">docs/miner.md</a>. Validators on the auto-updater upgrade on their own.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Project structure</h2><a id="user-content-project-structure" class="anchor" aria-label="Permalink: Project structure" href="#project-structure"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<div class="snippet-clipboard-content notranslate position-relative overflow-auto" data-snippet-clipboard-copy-content="alpharidge-ai/
+├── neurons/
+│   ├── miner.py              # Reference miner entry point
+│   └── validator.py          # Validator entry point
+├── alpharidge_ai/
+│   ├── config.py             # Env settings (.miner_env / .vali_env) and command-line arguments
+│   ├── schema/               # Claim model, event types, stages, slots, canonical hashing
+│   ├── verify/               # Shared fetch rules and the claim-against-page check
+│   ├── judge/                # Page judge prompt, client and verdict combination
+│   ├── ledger/               # API client, request signing, signed ledger pulls, claim receipts
+│   ├── mechanism/            # settle(), window points, mechanism profile
+│   ├── validator/            # Ledger loop, keyed re-check, scoop scan, page judge, mechanism profile client
+│   ├── miner/                # Reference miner: feed discovery, entity linking, claim building
+│   └── chain/                # Neuron base classes, weight utils, mock chain
+├── docs/                     # Miner, validator and mechanism guides
+├── profiles/                 # Shape of a mechanism profile (placeholder values)
+└── scripts/                  # Validator auto-updater, local end-to-end run"><pre class="notranslate"><code>alpharidge-ai/
+├── neurons/
+│   ├── miner.py              # Reference miner entry point
+│   └── validator.py          # Validator entry point
+├── alpharidge_ai/
+│   ├── config.py             # Env settings (.miner_env / .vali_env) and command-line arguments
+│   ├── schema/               # Claim model, event types, stages, slots, canonical hashing
+│   ├── verify/               # Shared fetch rules and the claim-against-page check
+│   ├── judge/                # Page judge prompt, client and verdict combination
+│   ├── ledger/               # API client, request signing, signed ledger pulls, claim receipts
+│   ├── mechanism/            # settle(), window points, mechanism profile
+│   ├── validator/            # Ledger loop, keyed re-check, scoop scan, page judge, mechanism profile client
+│   ├── miner/                # Reference miner: feed discovery, entity linking, claim building
+│   └── chain/                # Neuron base classes, weight utils, mock chain
+├── docs/                     # Miner, validator and mechanism guides
+├── profiles/                 # Shape of a mechanism profile (placeholder values)
+└── scripts/                  # Validator auto-updater, local end-to-end run
+</code></pre></div>
+<p dir="auto">The <code>schema</code> and <code>verify</code> packages are installed in the coordination API as well, so the API and validators reach the same verdict on the same page.</p>
+<hr>
+<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">License</h2><a id="user-content-license" class="anchor" aria-label="Permalink: License" href="#license"><svg data-component="Octicon" class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg></a></div>
+<p dir="auto">MIT</p>
+</article></div>

@@ -27,8 +27,6 @@ pub(crate) const SENT: u8 = b'P';
 const WAITING: u8 = b'W';
 /// Each page's latest schedule; a waiting entry another schedule replaced is skipped when it comes due.
 const NEXT: u8 = b'N';
-/// Deadlines left by earlier versions, which resent every page with no outcome a day after it went.
-const EXPECTING: u8 = b'X';
 /// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
 const YIELD: u8 = b'Y';
 /// The same outcomes fading within hours, so a domain that starts refusing is slowed the same hour.
@@ -51,7 +49,7 @@ const RESEND_COUNT: u8 = b'G';
 const RESEND_CHUNK: usize = 2_000;
 /// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
 const STOCK: u8 = b'F';
-/// Each page's failed sends counted as their outcomes come; the sent record's count keeps the meaning earlier versions read, so going back to one costs no page the long wait.
+/// Each page's failed sends counted as their outcomes come; the sent record keeps a count of its own, raised as each retry of a failed page comes due.
 const FAILS: u8 = b'K';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
@@ -370,12 +368,11 @@ pub struct Sent {
 }
 
 impl Sent {
-    /// Failures share the last byte with the requeued flag; the byte before held a count that also took in outcomes that never came, and is left at zero.
+    /// Failures share the last byte with the requeued flag; the byte before holds only the published bit.
     fn pack(self) -> [u8; 6] {
         let mut out = [0u8; 6];
         out[..4].copy_from_slice(&self.lastmod.to_le_bytes());
         out[5] = u8::from(self.requeued) | self.failures.min(127) << 1;
-        // Earlier versions never read this byte, and write it as zero.
         out[4] = if self.published { PUBLISHED_BIT } else { 0 };
         out
     }
@@ -419,7 +416,7 @@ impl Fails {
     }
 }
 
-/// The bit of a sent record's fifth byte that says its latest send came back published; the counts earlier versions kept there stayed far below it.
+/// The bit of a sent record's fifth byte that says its latest send came back published; the byte's other bits are not read.
 const PUBLISHED_BIT: u8 = 0x80;
 
 /// The failure count key of a page's sent record key.
@@ -491,7 +488,6 @@ pub struct Pick {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Published,
-    Unchanged,
     Failed,
     Dropped,
 }
@@ -500,7 +496,6 @@ impl Outcome {
     pub fn parse(value: &str) -> Option<Outcome> {
         match value {
             "published" => Some(Outcome::Published),
-            "unchanged" => Some(Outcome::Unchanged),
             "failed" => Some(Outcome::Failed),
             "dropped" => Some(Outcome::Dropped),
             _ => None,
@@ -571,15 +566,6 @@ pub struct PageSchedule {
     pub domain: String,
     pub rest: Vec<u8>,
     pub next: Scheduled,
-}
-
-/// A page an earlier sender sent, with the lastmod it had then.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SentPage {
-    pub domain: String,
-    pub rest: Vec<u8>,
-    pub lastmod: u32,
-    pub at: u32,
 }
 
 /// A domain's published and failed outcomes, each decayed by its age.
@@ -1569,19 +1555,6 @@ impl BucketStore {
         Ok(added)
     }
 
-    /// Deletes the deadlines earlier versions kept for every sent page; whether there were any.
-    pub fn forget_expecting(&self) -> Result<bool> {
-        let (from, to) = ([EXPECTING], [EXPECTING + 1]);
-        if self.db.iterator_opt(IteratorMode::From(&from, Direction::Forward), bounded(&from)).next().transpose()?.is_none() {
-            return Ok(false);
-        }
-        let mut changes = Changes::default();
-        changes.delete_range(&from, &to);
-        self.write(changes)?;
-        self.db.delete_file_in_range(from, to)?;
-        Ok(true)
-    }
-
     /// Put pages whose schedule came due back on their ready lists: a page that failed again waits the long interval instead.
     pub fn requeue_due(&self, now: u32, limit: usize, recrawl: &Recrawl) -> Result<Requeued> {
         let mut options = ReadOptions::default();
@@ -1617,13 +1590,13 @@ impl BucketStore {
                 continue;
             };
             let mut sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
-            // Entries without a schedule were written by earlier versions and go back as they are.
+            // An entry without a schedule goes back as it is.
             match next {
                 Some(next) if next.outdated(record.pushed_at) => continue,
                 Some(Scheduled { why: Why::Recrawl, .. }) => sent.failures = 0,
                 Some(Scheduled { why: Why::Failed, at, .. }) => {
                     sent.failures = sent.failures.saturating_add(1);
-                    // Pages failed before outcomes were counted as they came keep the sent record's count.
+                    // A page without a count of its own is judged by the sent record's.
                     if fails.map_or(sent.failures, |fails| fails.count) >= GONE_AFTER {
                         put_schedule(&mut batch, domain, rest, Scheduled { why: Why::Gone, due: at.saturating_add(recrawl.gone), at: record.pushed_at });
                         batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -1756,30 +1729,6 @@ impl BucketStore {
 
     pub fn domain_yield_recent(&self, domain: &str) -> Result<Option<Yield>> {
         Ok(self.db.get(count_key_of(YIELD_RECENT, domain))?.as_deref().and_then(Yield::unpack))
-    }
-
-    /// Stamp pages another sender already sent; returns how many the store knows.
-    pub fn import_sent(&self, rows: &[SentPage]) -> Result<usize> {
-        let _guard = self.lock_ready();
-        let records = self.records(rows.iter().map(|row| prefixed(URL, row.domain.as_bytes(), &row.rest)))?;
-        let sents = self.sents(rows.iter().map(|row| prefixed(SENT, row.domain.as_bytes(), &row.rest)))?;
-        let mut batch = WriteBatch::default();
-        let mut known = 0;
-        for ((SentPage { domain, rest, lastmod, at }, record), sent) in rows.iter().zip(records).zip(sents) {
-            let Some(mut record) = record else {
-                continue;
-            };
-            known += 1;
-            if record.pushed_at == 0 {
-                record.pushed_at = *at;
-                batch.put(prefixed(URL, domain.as_bytes(), rest), record.pack());
-            }
-            if sent.is_none() {
-                batch.put(prefixed(SENT, domain.as_bytes(), rest), Sent { lastmod: *lastmod, ..Sent::default() }.pack());
-            }
-        }
-        self.db.write(batch)?;
-        Ok(known)
     }
 
     /// Where this store's walk for the ready lists stands, starting one now if none ever did.
@@ -2173,7 +2122,7 @@ mod tests {
     }
 
     #[test]
-    fn junk_matches_the_python_feeder() {
+    fn tag_category_paging_file_and_query_pages_are_junk() {
         for path in ["example.com/tag/x", "example.com/category/news/", "example.com/page/2", "example.com/a.PDF", "example.com/s?page=3", "example.com/x?q=a"] {
             assert!(junk(path.as_bytes()), "{path}");
         }
@@ -2255,7 +2204,7 @@ mod tests {
 
     #[test]
     fn a_landing_depth_keeps_the_pages_the_sets_landing_rule_takes() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!("../../tests/bot/v1_set_golden.json")).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(include_str!("../../publisher/tests/v1-set-golden.json")).unwrap();
         let mut checked = 0;
         for case in golden["cases"].as_array().unwrap() {
             let address = case["url"].as_str().unwrap();
@@ -2336,23 +2285,17 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_of_earlier_versions_are_deleted_once_and_their_waiting_entries_still_come_back() {
-        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-old-keys-{}", std::process::id()));
+    fn a_waiting_entry_without_a_schedule_goes_back_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-unscheduled-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = BucketStore::open(&dir, &crate::buckets::Resources::new(8 << 20, 8 << 20, 1)).unwrap();
         let page = |path: &str| (crate::urls::parse(&format!("https://example.com/{path}"), "example.com").unwrap(), 10, false);
         store.record_listing("example.com", 7, vec![page("a"), page("b")], 100).unwrap();
         let picks = store.take_ready("example.com", [0, 0, 10]).unwrap();
         store.mark_sent(&picks, 1000, &Recrawl::default()).unwrap();
-        for (due, path) in [(1000 + 86_400, "a"), (1000 + 86_400, "b")] {
-            store.db.put(timed_key(EXPECTING, due, b"example.com", format!("example.com/{path}").as_bytes()), []).unwrap();
-        }
         store.db.put(timed_key(WAITING, 1500, b"example.com", b"example.com/b"), []).unwrap();
 
-        assert!(store.forget_expecting().unwrap());
-        assert!(store.db.iterator_opt(IteratorMode::From(&[EXPECTING], Direction::Forward), bounded(&[EXPECTING])).next().is_none());
-        assert!(!store.forget_expecting().unwrap(), "nothing is left to delete on the next start");
-        assert_eq!(store.requeue_due(1000 + 86_400, 100, &Recrawl::default()).unwrap(), Requeued { moved: 1, gone: 0 }, "a waiting entry with no schedule goes back as before");
+        assert_eq!(store.requeue_due(1000 + 86_400, 100, &Recrawl::default()).unwrap(), Requeued { moved: 1, gone: 0 });
         let again = store.take_ready("example.com", [0, 10, 0]).unwrap();
         assert_eq!(again.iter().map(|p| (p.url.as_str(), p.reason)).collect::<Vec<_>>(), [("https://example.com/b", Reason::Requeued)]);
         drop(store);
@@ -2360,14 +2303,14 @@ mod tests {
     }
 
     #[test]
-    fn failures_share_the_requeued_byte_and_the_count_of_earlier_versions_is_not_read() {
+    fn failures_share_the_requeued_byte_and_the_byte_before_holds_only_the_published_bit() {
         let sent = Sent { lastmod: 7, failures: 2, requeued: false, published: false };
         assert_eq!(Sent::unpack(&sent.pack()), Some(sent));
-        assert_eq!(sent.pack()[4..], [0, 4], "earlier versions read it as requeued, which only matters for a page on its list");
-        let earlier = [7, 0, 0, 0, 3, 1];
-        assert_eq!(Sent::unpack(&earlier), Some(Sent { lastmod: 7, failures: 0, requeued: true, published: false }), "three retries counted before, outcomes that never came among them");
+        assert_eq!(sent.pack()[4..], [0, 4]);
+        let counted = [7, 0, 0, 0, 3, 1];
+        assert_eq!(Sent::unpack(&counted), Some(Sent { lastmod: 7, failures: 0, requeued: true, published: false }), "the fifth byte's low bits are not read");
         let published = Sent { published: true, ..sent };
-        assert_eq!((Sent::unpack(&published.pack()), published.pack()[5]), (Some(published), sent.pack()[5]), "the published bit leaves the byte earlier versions read alone");
+        assert_eq!((Sent::unpack(&published.pack()), published.pack()[5]), (Some(published), sent.pack()[5]), "the published bit leaves the failures byte alone");
     }
 
     #[test]

@@ -1,0 +1,1308 @@
+{
+ "hosts": {
+  "badbase.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><base href=\"http://[broken/\"><a href=\"/x\">x</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "bare.test": {
+   "/": {
+    "close": true
+   },
+   "/robots.txt": {
+    "close": true
+   }
+  },
+  "capped.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/c0\">/c0</a><a href=\"/c1\">/c1</a><a href=\"/c2\">/c2</a><a href=\"/c3\">/c3</a><a href=\"/c4\">/c4</a><a href=\"/c5\">/c5</a><a href=\"/c6\">/c6</a><a href=\"/c7\">/c7</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c0": {
+    "body": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c1": {
+    "body": "<html><head><title>t</title></head><body><p>1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c2": {
+    "body": "<html><head><title>t</title></head><body><p>2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c3": {
+    "body": "<html><head><title>t</title></head><body><p>3</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c4": {
+    "body": "<html><head><title>t</title></head><body><p>4</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c5": {
+    "body": "<html><head><title>t</title></head><body><p>5</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c6": {
+    "body": "<html><head><title>t</title></head><body><p>6</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c7": {
+    "body": "<html><head><title>t</title></head><body><p>7</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "charset.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/latin\">/latin</a><a href=\"/cp1252\">/cp1252</a><a href=\"/bad\">/bad</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/bad": {
+    "b64": "PGh0bWw+PGJvZHk+PHA+b2sg//4g4oIgZW5kPC9wPjwvYm9keT48L2h0bWw+",
+    "status": 200,
+    "type": "text/html; charset=utf-8"
+   },
+   "/cp1252": {
+    "b64": "PGh0bWw+PGJvZHk+PHA+gCCBIJNxlDwvcD48L2JvZHk+PC9odG1sPg==",
+    "status": 200,
+    "type": "text/html; charset=windows-1252"
+   },
+   "/latin": {
+    "b64": "PGh0bWw+PGJvZHk+PHA+Y2Fm6SCAPC9wPjwvYm9keT48L2h0bWw+",
+    "status": 200,
+    "type": "text/html; charset=ISO-8859-1"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "cookie.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/art\">/art</a><a href=\"/nocookie\">/nocookie</a><a href=\"/blk\">/blk</a><a href=\"/loop\">/loop</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/art": {
+    "body": "<html><head><title>t</title></head><body><p>art</p></body></html>",
+    "else": {
+     "headers": [
+      [
+       "Location",
+       "https://idp.cookie.test/authorize?back=/art"
+      ]
+     ],
+     "status": 303
+    },
+    "need_cookie": "session",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/blk": {
+    "body": "<html><head><title>t</title></head><body><p>blk</p></body></html>",
+    "else": {
+     "headers": [
+      [
+       "Location",
+       "https://idp.cookie.test/blocked?back=/blk"
+      ]
+     ],
+     "status": 303
+    },
+    "need_cookie": "third",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/loop": {
+    "body": "<html><head><title>t</title></head><body><p>loop</p></body></html>",
+    "else": {
+     "headers": [
+      [
+       "Location",
+       "https://idp.cookie.test/elsewhere"
+      ]
+     ],
+     "status": 302
+    },
+    "need_cookie": "fourth",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/nocookie": {
+    "body": "<html><head><title>t</title></head><body><p>nocookie</p></body></html>",
+    "else": {
+     "headers": [
+      [
+       "Location",
+       "https://idp.cookie.test/plain?back=/nocookie"
+      ]
+     ],
+     "status": 303
+    },
+    "need_cookie": "other",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "deep.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d1\">/d1</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d1": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d2\">/d2</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d2": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d3\">/d3</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d3": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d4\">/d4</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d4": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d5\">/d5</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d5": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d6\">/d6</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d6": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d7\">/d7</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d7": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d8\">/d8</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d8": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d9\">/d9</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d9": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/d10\">/d10</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "elsewhere.test": {
+   "/landing": {
+    "body": "<html><head><title>t</title></head><body><p>elsewhere</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "errors.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/ok\">/ok</a><a href=\"/e1\">/e1</a><a href=\"/e2\">/e2</a><a href=\"/ok2\">/ok2</a><a href=\"/e3\">/e3</a><a href=\"/e4\">/e4</a><a href=\"/e5\">/e5</a><a href=\"/e6\">/e6</a><a href=\"/e7\">/e7</a><a href=\"/after\">/after</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/after": {
+    "body": "<html><head><title>t</title></head><body><p>after</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/e1": {
+    "status": 500
+   },
+   "/e2": {
+    "status": 502
+   },
+   "/e3": {
+    "status": 503
+   },
+   "/e4": {
+    "status": 500
+   },
+   "/e5": {
+    "status": 504
+   },
+   "/e6": {
+    "status": 500
+   },
+   "/e7": {
+    "close": true
+   },
+   "/ok": {
+    "body": "<html><head><title>t</title></head><body><p>ok</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/ok2": {
+    "body": "<html><head><title>t</title></head><body><p>ok2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "frhome.test": {
+   "/": {
+    "body": "<html lang=\"fr-CA\"><head><title>t</title></head><body><a href=\"/en/a\">en</a><a href=\"/de/a\">de</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/de/a": {
+    "body": "<html lang=\"de\"><head><title>t</title></head><body><p>de</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/en/a": {
+    "body": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/en/b\">b</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/en/b": {
+    "body": "<html lang=\"EN-us\"><head><title>t</title></head><body><p>b</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "homeredirect.test": {
+   "/": {
+    "headers": [
+     [
+      "Location",
+      "https://www.homeredirect.test/"
+     ]
+    ],
+    "status": 301
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "idp.cookie.test": {
+   "/authorize?back=/art": {
+    "headers": [
+     [
+      "Location",
+      "/transit?back=/art"
+     ],
+     [
+      "Set-Cookie",
+      "session=1; Domain=cookie.test; Path=/"
+     ]
+    ],
+    "status": 302
+   },
+   "/elsewhere": {
+    "headers": [
+     [
+      "Location",
+      "https://elsewhere.test/landing"
+     ],
+     [
+      "Set-Cookie",
+      "fourth=1; Domain=cookie.test; Path=/"
+     ]
+    ],
+    "status": 302
+   },
+   "/plain?back=/nocookie": {
+    "headers": [
+     [
+      "Location",
+      "https://cookie.test/nocookie"
+     ]
+    ],
+    "status": 302
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nDisallow: /blocked\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/transit?back=/art": {
+    "headers": [
+     [
+      "Location",
+      "https://cookie.test/art"
+     ]
+    ],
+    "status": 302
+   }
+  },
+  "lang.test": {
+   "/": {
+    "body": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/fr/a\">fr</a><a href=\"/en/a\">en</a><a href=\"/x\">x</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/en/a": {
+    "body": "<html lang=\"en\"><head><title>t</title></head><body><a href=\"/fr/d\">d</a><a href=\"/en/b\">b</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/en/b": {
+    "body": "<html lang=\"en\"><head><title>t</title></head><body><p>b</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/fr/a": {
+    "body": "<html lang=\"fr-CA\"><head><title>t</title></head><body><a href=\"/fr/b\">b</a><a href=\"/fr/c\">c</a><a href=\"/y\">y</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/x": {
+    "body": "<html lang=\"fr-CA\"><head><title>t</title></head><body><p>x</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "midforbid.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a><a href=\"/f1\">/f1</a><a href=\"/b\">/b</a><a href=\"/f2\">/f2</a><a href=\"/f3\">/f3</a><a href=\"/f4\">/f4</a><a href=\"/c\">/c</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/b": {
+    "body": "<html><head><title>t</title></head><body><p>b</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c": {
+    "body": "<html><head><title>t</title></head><body><p>c</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/f1": {
+    "status": 403
+   },
+   "/f2": {
+    "status": 403
+   },
+   "/f3": {
+    "status": 403
+   },
+   "/f4": {
+    "status": 403
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "named.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/no/a\">/no/a</a><a href=\"/no/yes\">/no/yes</a><a href=\"/page.php\">/page.php</a><a href=\"/page.php?x=1\">/page.php?x=1</a><a href=\"/ok\">/ok</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/no/yes": {
+    "body": "<html><head><title>t</title></head><body><p>yes</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/ok": {
+    "body": "<html><head><title>t</title></head><body><p>ok</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/page.php?x=1": {
+    "body": "<html><head><title>t</title></head><body><p>php</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n\nUser-agent: DesearchBot\nDisallow: /no/\nDisallow: /*.php$\nAllow: /no/yes\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "near.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/blog/1\">/blog/1</a><a href=\"/docs/1\">/docs/1</a><a href=\"/blog/2\">/blog/2</a><a href=\"/docs/2\">/docs/2</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/blog/1": {
+    "body": "<html><head><title>t</title></head><body><p>b1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/blog/2": {
+    "body": "<html><head><title>t</title></head><body><p>b2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/docs/1": {
+    "body": "<html><head><title>t</title></head><body><p>d1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/docs/2": {
+    "body": "<html><head><title>t</title></head><body><p>d2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "plain.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">a</a><a href=\"/b\">b</a><a href=\"/c\">c</a><a href=\"/redir\">r</a><a href=\"/redir2\">r2</a><a href=\"/gone\">g</a><a href=\"/away\">o</a><a href=\"/f.pdf\">f</a><a href=\"/hdr\">h</a><a href=\"/xhtml\">x</a><a href=\"/data.txt\">t</a><a href=\"/empty\">e</a><a href=\"/none\">n</a><a href=\"https://other.test/x\">ext</a><a href=\"/a?utm_source=x\">dup</a><a href=\"/q?b=2&amp;a=1&amp;gclid=z\">q</a><a href=\"mailto:x@plain.test\">m</a><a href=\"/A%20b\">sp</a><a href=\"/caf%C3%A9\">cafe</a><a href=\"/xmldecl\">xd</a><a href=\"/srv\">srv</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/A%20b": {
+    "body": "<html><head><title>t</title></head><body><p>space</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p><a href=\"/hidden\" rel=\"nofollow\">h</a><a href=\"/a2\">a2</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a2": {
+    "body": "<html><head><title>t</title></head><body><p>a2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/away": {
+    "headers": [
+     [
+      "Location",
+      "https://elsewhere.test/landing"
+     ]
+    ],
+    "status": 302
+   },
+   "/b": {
+    "body": "<html><head><title>t</title><meta name=\"robots\" content=\"noindex\"></head><body><a href=\"/b2\">b2</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/b2": {
+    "body": "<html><head><title>t</title></head><body><p>b2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/c": {
+    "body": "<html><head><title>t</title><meta name=\"robots\" content=\"nofollow\"></head><body><a href=\"/d\">d</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/caf%C3%A9": {
+    "body": "<html><head><title>t</title></head><body><p>cafe</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/d": {
+    "body": "<html><head><title>t</title></head><body><p>d</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/data.txt": {
+    "body": "plain text",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/e": {
+    "body": "<html><head><title>t</title></head><body><p>e</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/empty": {
+    "body": "",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/hdr": {
+    "body": "<html><head><title>t</title></head><body><p>hdr</p></body></html>",
+    "headers": [
+     [
+      "X-Robots-Tag",
+      "noindex"
+     ]
+    ],
+    "status": 200,
+    "type": "text/html"
+   },
+   "/hidden": {
+    "body": "<html><head><title>t</title></head><body><p>hidden</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/n2": {
+    "body": "<html><head><title>t</title></head><body><p>n2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/none": {
+    "body": "<html><head><title>t</title><meta name=\"ROBOTS\" content=\"None\"></head><body><a href=\"/n2\">n2</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/q?a=1&b=2": {
+    "body": "<html><head><title>t</title></head><body><p>q sorted</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/q?b=2&a=1": {
+    "body": "<html><head><title>t</title></head><body><p>q</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/redir": {
+    "headers": [
+     [
+      "Location",
+      "/a"
+     ]
+    ],
+    "status": 302
+   },
+   "/redir2": {
+    "headers": [
+     [
+      "Location",
+      "/e"
+     ]
+    ],
+    "status": 301
+   },
+   "/robots.txt": {
+    "status": 404
+   },
+   "/srv": {
+    "status": 500
+   },
+   "/x2": {
+    "body": "<html><head><title>t</title></head><body><p>x2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/xhtml": {
+    "body": "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><a href=\"/x2\">x2</a></body></html>",
+    "status": 200,
+    "type": "application/xhtml+xml"
+   },
+   "/xmldecl": {
+    "body": "<?xml version=\"1.0\" encoding=\"utf-8\"?><html><body><a href=\"/xd2\">x</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "prefixed.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/docs/a\">/docs/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/blog/b": {
+    "body": "<html><head><title>t</title></head><body><p>b</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/docs/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/docs/a\">/docs/a</a><a href=\"/blog/b\">/blog/b</a><a href=\"/docs/b\">/docs/b</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/docs/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/docs/b": {
+    "body": "<html><head><title>t</title></head><body><p>b</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "ratelimit.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/p1\">/p1</a><a href=\"/p2\">/p2</a><a href=\"/p3\">/p3</a><a href=\"/p4\">/p4</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/p1": {
+    "headers": [
+     [
+      "Retry-After",
+      "6"
+     ]
+    ],
+    "status": 429
+   },
+   "/p2": {
+    "body": "<html><head><title>t</title></head><body><p>2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/p3": {
+    "status": 429
+   },
+   "/p4": {
+    "body": "<html><head><title>t</title></head><body><p>4</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "refuse401.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a><a href=\"/b\">/b</a><a href=\"/c\">/c</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/b": {
+    "status": 401
+   },
+   "/c": {
+    "body": "<html><head><title>t</title></head><body><p>c</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "robots401.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 401
+   }
+  },
+  "robots403.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/private/x\">/private/x</a><a href=\"/y\">/y</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/private/x": {
+    "body": "<html><head><title>t</title></head><body><p>p</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 403
+   },
+   "/y": {
+    "body": "<html><head><title>t</title></head><body><p>y</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "robots410.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 410
+   }
+  },
+  "robots429.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "headers": [
+     [
+      "Retry-After",
+      "1"
+     ]
+    ],
+    "status": 429
+   }
+  },
+  "robots503.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 503
+   }
+  },
+  "seeded.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/from-seed": {
+    "body": "<html><head><title>t</title></head><body><p>s</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nDisallow: /blocked\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/start?x=1": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/from-seed\">s</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "setland.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/about\">/about</a><a href=\"/a/b/c\">/a/b/c</a><a href=\"/about?x=1\">/about?x=1</a><a href=\"/fr-fr/about\">/fr-fr/about</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/about": {
+    "body": "<html><head><title>t</title></head><body><p>about</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/extra-seed": {
+    "body": "<html><head><title>t</title></head><body><p>extra</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "setnews.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/2026/11/story\">/2026/11/story</a><a href=\"/section\">/section</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/2026/11/story": {
+    "body": "<html><head><title>t</title></head><body><p>s</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   },
+   "/section": {
+    "body": "<html><head><title>t</title></head><body><p>sec</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "setout.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "setwhole.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/lit/a\">/lit/a</a><a href=\"/blog/x\">/blog/x</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/blog/x": {
+    "body": "<html><head><title>t</title></head><body><p>x</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/lit/b\">/lit/b</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/b": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/lit/c\">/lit/c</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/c": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/lit/d\">/lit/d</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/d": {
+    "body": "<html><head><title>t</title></head><body><p>d</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/lit/seeded": {
+    "body": "<html><head><title>t</title></head><body><p>seeded</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "sitemap.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/s1\">/s1</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/broken.xml": {
+    "body": "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>https://sitemap.test/s6?a&b</loc></url></urlset>",
+    "status": 200,
+    "type": "application/xml"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\nSitemap: /smindex.xml\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/s1": {
+    "body": "<html><head><title>t</title></head><body><p>s1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s2?b=1": {
+    "body": "<html><head><title>t</title></head><body><p>s2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s5": {
+    "body": "<html><head><title>t</title></head><body><p>s5</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s6?a=&b=": {
+    "body": "<html><head><title>t</title></head><body><p>s6</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/sm1.xml": {
+    "body": "<?xml version=\"1.0\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>https://sitemap.test/s1</loc></url><url><loc> https://sitemap.test/s2?b=1&amp;utm_medium=x </loc></url><url><loc>https://other.test/s3</loc></url><url><loc>https://sitemap.test/s4.pdf</loc></url></urlset>",
+    "status": 200,
+    "type": "application/xml"
+   },
+   "/sm2.xml.gz": {
+    "b64": "H4sIAAAAAAAC/y2NQQqAMBADvyJ9QOPFg7L2L1KKCtWKWanPt1WPyWSIXGdk0Obe4s7RLKrHAOScLVcN23TQpnMG/VIC8ZdobW+cFNdJTN5VjcX7sdVABTtBhYJ3h+/JPVRNAk5yAAAA",
+    "status": 200,
+    "type": "application/x-gzip"
+   },
+   "/smindex.xml": {
+    "body": "<?xml version=\"1.0\"?><sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><sitemap><loc>https://sitemap.test/sm1.xml</loc></sitemap><sitemap><loc>https://sitemap.test/sm2.xml.gz</loc></sitemap><sitemap><loc>https://sitemap.test/broken.xml</loc></sitemap><sitemap><loc>https://sitemap.test/missing.xml</loc></sitemap></sitemapindex>",
+    "status": 200,
+    "type": "application/xml"
+   }
+  },
+  "skip.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/held\">/held</a><a href=\"/fresh\">/fresh</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/fresh": {
+    "body": "<html><head><title>t</title></head><body><p>fresh</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/held": {
+    "body": "<html><head><title>t</title></head><body><p>held</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "slots.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/s0\">/s0</a><a href=\"/s1\">/s1</a><a href=\"/s2\">/s2</a><a href=\"/s3\">/s3</a><a href=\"/s4\">/s4</a><a href=\"/s5\">/s5</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   },
+   "/s0": {
+    "body": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s1": {
+    "body": "<html><head><title>t</title></head><body><p>1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s2": {
+    "body": "<html><head><title>t</title></head><body><p>2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s3": {
+    "body": "<html><head><title>t</title></head><body><p>3</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s4": {
+    "body": "<html><head><title>t</title></head><body><p>4</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/s5": {
+    "body": "<html><head><title>t</title></head><body><p>5</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "slow.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/p1\">/p1</a><a href=\"/p2\">/p2</a><a href=\"/private/x\">/private/x</a><a href=\"/p3\">/p3</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/p1": {
+    "body": "<html><head><title>t</title></head><body><p>1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/p2": {
+    "body": "<html><head><title>t</title></head><body><p>2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/p3": {
+    "body": "<html><head><title>t</title></head><body><p>3</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nDisallow: /private/\nCrawl-delay: 2\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "unlisted.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/a\">/a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/a": {
+    "body": "<html><head><title>t</title></head><body><p>a</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  },
+  "variants.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/list?related=0\">/list?related=0</a><a href=\"/list?related=1\">/list?related=1</a><a href=\"/list?related=2\">/list?related=2</a><a href=\"/list?related=3\">/list?related=3</a><a href=\"/list?related=4\">/list?related=4</a><a href=\"/list?related=5\">/list?related=5</a><a href=\"/list?related=6\">/list?related=6</a><a href=\"/list?related=7\">/list?related=7</a><a href=\"/list?related=8\">/list?related=8</a><a href=\"/list?related=9\">/list?related=9</a><a href=\"/list?related=10\">/list?related=10</a><a href=\"/list?related=11\">/list?related=11</a><a href=\"/list?utm_source=a\">/list?utm_source=a</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=0": {
+    "body": "<html><head><title>t</title></head><body><p>0</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=1": {
+    "body": "<html><head><title>t</title></head><body><p>1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=10": {
+    "body": "<html><head><title>t</title></head><body><p>10</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=11": {
+    "body": "<html><head><title>t</title></head><body><p>11</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=2": {
+    "body": "<html><head><title>t</title></head><body><p>2</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=3": {
+    "body": "<html><head><title>t</title></head><body><p>3</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=4": {
+    "body": "<html><head><title>t</title></head><body><p>4</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=5": {
+    "body": "<html><head><title>t</title></head><body><p>5</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=6": {
+    "body": "<html><head><title>t</title></head><body><p>6</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=7": {
+    "body": "<html><head><title>t</title></head><body><p>7</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=8": {
+    "body": "<html><head><title>t</title></head><body><p>8</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/list?related=9": {
+    "body": "<html><head><title>t</title></head><body><p>9</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   }
+  },
+  "www.bare.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/w1\">/w1</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "body": "User-agent: *\nAllow: /\n",
+    "status": 200,
+    "type": "text/plain"
+   },
+   "/w1": {
+    "body": "<html><head><title>t</title></head><body><p>w1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   }
+  },
+  "www.homeredirect.test": {
+   "/": {
+    "body": "<html><head><title>t</title></head><body><a href=\"/h1\">/h1</a></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/h1": {
+    "body": "<html><head><title>t</title></head><body><p>h1</p></body></html>",
+    "status": 200,
+    "type": "text/html"
+   },
+   "/robots.txt": {
+    "status": 404
+   }
+  }
+ },
+ "runs": {
+  "a": {
+   "args": [
+    "--hosts-at-once",
+    "40",
+    "--seed",
+    "https://seeded.test/start?x=1"
+   ],
+   "found": true,
+   "hosts_file": [
+    "plain.test",
+    "robots403.test",
+    "robots503.test",
+    "robots401.test",
+    "robots429.test",
+    "robots410.test",
+    "slow.test",
+    "named.test",
+    "ratelimit.test",
+    "midforbid.test",
+    "refuse401.test",
+    "errors.test",
+    "bare.test",
+    "homeredirect.test",
+    "cookie.test",
+    "lang.test",
+    "frhome.test",
+    "variants.test",
+    "capped.test\t3",
+    "near.test\t2\t\t/docs/",
+    "deep.test",
+    "sitemap.test",
+    "skip.test",
+    "charset.test",
+    "badbase.test",
+    "slots.test\t\t2",
+    "seeded.test"
+   ],
+   "skip": [
+    "https://skip.test/held",
+    "https://plain.test/e extra words"
+   ]
+  },
+  "b": {
+   "args": [
+    "--no-sitemaps",
+    "--max-depth",
+    "2",
+    "--hosts-at-once",
+    "2"
+   ],
+   "hosts_file": [
+    "setwhole.test",
+    "setland.test",
+    "setnews.test",
+    "unlisted.test",
+    "setout.test"
+   ],
+   "seeds": [
+    "https://setland.test/extra-seed",
+    "https://setwhole.test/lit/seeded",
+    "https://elsewhere.test/nothing"
+   ],
+   "set": {
+    "sites": [
+     {
+      "host": "setwhole.test",
+      "paths": [
+       "/lit/"
+      ],
+      "rule": "whole"
+     },
+     {
+      "depth": 1,
+      "host": "setland.test",
+      "rule": "landing"
+     },
+     {
+      "host": "setnews.test",
+      "rule": "news",
+      "since": "2026-10-01"
+     },
+     {
+      "host": "setout.test",
+      "rule": "out"
+     }
+    ]
+   }
+  },
+  "c": {
+   "args": [
+    "--prefix",
+    "/docs/",
+    "--seed",
+    "https://prefixed.test/docs/",
+    "--max-pages",
+    "2"
+   ],
+   "hosts_file": [
+    "prefixed.test"
+   ]
+  }
+ }
+}

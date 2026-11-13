@@ -212,7 +212,7 @@ class Sandbox:
         raise TimeoutError("the task API did not become healthy")
 
     async def feed(self, http: aiohttp.ClientSession) -> None:
-        """Keeps a few tasks waiting, the way the mainnet feeder keeps the queue topped up."""
+        """Keeps a few tasks waiting, the way the bot keeps the mainnet queue topped up."""
         if self.exhausted or time.time() - self.fed_at < REVEAL_WAIT_S:
             return
         health = await get_json(http, f"{self.ports.api_url}/v1/health")

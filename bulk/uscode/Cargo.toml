@@ -1,0 +1,19 @@
+[package]
+name = "bulk-uscode"
+description = "The United States Code as a page per section at uscode.house.gov, from an OLRC release point"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+roxmltree.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

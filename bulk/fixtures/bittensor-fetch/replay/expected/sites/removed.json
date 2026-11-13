@@ -1,0 +1,42 @@
+[
+ {
+  "url": "https://numinouslabs.io/cdn-cgi/l/email-protection",
+  "why": "gone"
+ },
+ {
+  "url": "https://cookingtao.com/cdn-cgi/l/email-protection",
+  "why": "gone"
+ },
+ {
+  "url": "https://refused.example/",
+  "why": "denied"
+ },
+ {
+  "url": "https://refused.example/old",
+  "why": "denied"
+ },
+ {
+  "url": "https://gone.example/",
+  "why": "gone"
+ },
+ {
+  "url": "https://held.example/private",
+  "why": "denied"
+ },
+ {
+  "url": "https://www.ridges.ai/",
+  "why": "unlisted"
+ },
+ {
+  "url": "https://www.ridges.ai/about",
+  "why": "unlisted"
+ },
+ {
+  "url": "https://old.example/",
+  "why": "unlisted"
+ },
+ {
+  "url": "https://old.example/k",
+  "why": "unlisted"
+ }
+]

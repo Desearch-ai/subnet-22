@@ -14,11 +14,11 @@ use tokio::time::Instant;
 use crate::buckets::{Buckets, Changes, Json};
 use crate::links::{first_wave, LinkPace, LinkQueue};
 use crate::registry::{Change, Registry, Report};
-use crate::schedule::{HOUR, SECOND};
+use crate::schedule::{HOUR, NEWS_SLOW, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{is_listing, robots_allow, Crash, FollowLinks, Known, LinksAt, Visit, Visitor, LINKS_KIND};
+use crate::visit::{is_listing, lane_next, robots_allow, Crash, FollowLinks, Known, LaneFile, LinksAt, Visit, Visitor, LINKS_KIND};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -51,6 +51,14 @@ const LINKS_QUEUED: usize = 200_000;
 const LINKS_BUSY_WAIT: i64 = 60;
 /// Link work set by link work, or by the visit it handed a site to, comes no sooner than this.
 const LINKS_LEAST_WAIT: i64 = 10 * 60;
+/// A news site that a visit or link work is busy with is polled this many seconds later.
+const NEWS_BUSY_WAIT: i64 = 60;
+/// Seconds between two news lane polls of one site at the least; a site with many lane files has one read every this often, Crawl-delay aside.
+const NEWS_GAP: i64 = 10;
+/// How often the news sites polled every two minutes are chosen again, by the new pages their lane files found.
+const NEWS_TIER_EVERY: Duration = Duration::from_secs(300);
+/// The weight a poll's new pages an hour carry against a site's rate so far.
+const NEWS_RATE_WEIGHT: f64 = 0.3;
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -157,6 +165,7 @@ pub fn adopted(target: &str) -> (&'static str, State, Option<&'static str>) {
 fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     let bare = known.host.strip_prefix("www.").unwrap_or(&known.host);
     let updated: HashMap<&str, Option<i64>> = visit.sitemaps.iter().map(|u| (u.url.as_str(), u.next_check_at)).collect();
+    let lane: HashMap<&str, bool> = visit.sitemaps.iter().map(|u| (u.url.as_str(), u.lane)).collect();
     let mut times: Vec<i64> = known
         .sitemaps
         .values()
@@ -164,9 +173,11 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
         .filter(|s| updated.contains_key(s.url.as_str()) || !is_listing(s.kind.as_deref()) || s.next_check_at.is_some_and(|next| next > now))
         // Nor does a file robots.txt disallows, never read while it does; the next robots.txt read decides again.
         .filter(|s| updated.contains_key(s.url.as_str()) || robots_allow(&visit.robots_paths, bare, &s.url))
+        // Nor do the files the news lane polls on its own.
+        .filter(|s| !(visit.news_lane && lane.get(s.url.as_str()).copied().unwrap_or(s.lane)))
         .map(|s| updated.get(s.url.as_str()).copied().unwrap_or(s.next_check_at).unwrap_or(now))
         .collect();
-    times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));
+    times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url) && !(visit.news_lane && lane.get(**url).copied().unwrap_or(false))).filter_map(|(_, when)| *when));
     times.into_iter().min()
 }
 
@@ -176,9 +187,14 @@ fn wake_spread(hosts: usize) -> i64 {
     spread / SECOND
 }
 
-/// Listed domains found without sitemaps on a visit made while unlisted.
+/// Listed domains found without sitemaps on a visit made while unlisted, and ones set aside as gone while a sitemap they hold still works.
 fn unread(buckets: &Buckets) -> Vec<String> {
-    buckets.listed().into_iter().filter(|host| buckets.store(host).domain(host).ok().flatten().is_some_and(|record| records::listed_unread(&record))).collect()
+    buckets.listed().into_iter().filter(|host| buckets.store(host).domain(host).ok().flatten().is_some_and(|record| wakes(buckets, host, &record))).collect()
+}
+
+fn wakes(buckets: &Buckets, host: &str, record: &Json) -> bool {
+    let gone = record.get("reason").and_then(serde_json::Value::as_str) == Some("sitemap_gone");
+    records::listed_unread(record) || (gone && buckets.store(host).sitemaps(host).is_ok_and(|sitemaps| records::parked_with_sitemaps(record, &sitemaps)))
 }
 
 pub fn now_micros() -> i64 {
@@ -222,6 +238,8 @@ pub struct Stats {
     /// Link runs that handed their site to a visit at once.
     pub handoffs: u64,
     pub robots_requests: i64,
+    /// News lane polls that read a lane file.
+    pub news_polls: u64,
 }
 
 /// A count over the last hour, a minute at a time.
@@ -292,6 +310,19 @@ pub struct Loop {
     link_tasks: HashMap<Id, Arc<str>>,
     links_spread: i64,
     robots_hour: LastHour,
+    /// News lane polls waiting their turn, the runners that take them apart from the visits, and how many run at once.
+    news: LinkQueue,
+    news_runs: JoinSet<NewsFinished>,
+    news_tasks: HashMap<Id, Arc<str>>,
+    news_slots: usize,
+    /// Each news site's new pages an hour from its lane files, smoothed, and when they were last read; the best placed go in the fast tier.
+    news_rates: HashMap<Arc<str>, (f64, i64)>,
+    news_fast_hosts: usize,
+    /// Seconds the first polls of the listed news sites are spread over.
+    news_spread: i64,
+    news_tiered: Option<Instant>,
+    news_list_version: u64,
+    news_hour: LastHour,
 }
 
 impl Loop {
@@ -328,7 +359,25 @@ impl Loop {
             link_tasks: HashMap::new(),
             links_spread: 0,
             robots_hour: LastHour::default(),
+            news: LinkQueue::new(usize::MAX),
+            news_runs: JoinSet::new(),
+            news_tasks: HashMap::new(),
+            news_slots: 0,
+            news_rates: HashMap::new(),
+            news_fast_hosts: 0,
+            news_spread: NEWS_SLOW / SECOND,
+            news_tiered: None,
+            news_list_version: 0,
+            news_hour: LastHour::default(),
         }
+    }
+
+    /// News lane polls at once, how many news sites, those whose lane files find the most new pages, are polled every two minutes, and the seconds their first polls are spread over.
+    pub fn with_news(mut self, slots: usize, fast_hosts: usize, first_spread: i64) -> Self {
+        self.news_slots = slots;
+        self.news_fast_hosts = fast_hosts;
+        self.news_spread = first_spread;
+        self
     }
 
     /// Link runs started an hour at most, 0 for no limit, and how long after a site first qualifies its first run may come.
@@ -408,6 +457,9 @@ impl Loop {
                 Some(done) = self.link_runs.join_next_with_id(), if !self.link_runs.is_empty() => {
                     self.finish_links(done);
                 }
+                Some(done) = self.news_runs.join_next_with_id(), if !self.news_runs.is_empty() => {
+                    self.finish_news(done);
+                }
                 _ = tokio::time::sleep(TICK) => {}
             }
             if self.pending.len() >= FLUSH_VISITS || (!self.pending.is_empty() && flushed.elapsed() >= FLUSH_SECONDS) {
@@ -437,6 +489,13 @@ impl Loop {
             }
         }
         self.link_runs.abort_all();
+        while !self.news_runs.is_empty() {
+            match tokio::time::timeout_at(deadline, self.news_runs.join_next_with_id()).await {
+                Ok(Some(done)) => self.finish_news(done),
+                _ => break,
+            }
+        }
+        self.news_runs.abort_all();
         self.flush()?;
         self.sync().await;
         Ok(())
@@ -457,6 +516,17 @@ impl Loop {
             match self.link_runs.join_next_with_id().await {
                 Some(done) => {
                     self.finish_links(done);
+                    self.flush()?;
+                }
+                None => break,
+            }
+        }
+        // So do news lane polls.
+        loop {
+            self.fill_news(now_micros() / SECOND);
+            match self.news_runs.join_next_with_id().await {
+                Some(done) => {
+                    self.finish_news(done);
                     self.flush()?;
                 }
                 None => break,
@@ -514,6 +584,100 @@ impl Loop {
             }
         }
         self.fill_links(now);
+        self.fill_news(now);
+    }
+
+    /// Runners free, take the news sites whose lane files are due; a site being visited waits a minute.
+    fn fill_news(&mut self, now: i64) {
+        if self.disk_low || !self.visitor.news_lane {
+            return;
+        }
+        while self.news_runs.len() < self.news_slots {
+            let Some(host) = self.news.pop_due(now) else {
+                break;
+            };
+            if !self.busy.insert(host.clone()) {
+                self.news.push(&host, now + NEWS_BUSY_WAIT);
+                continue;
+            }
+            let handle = self.news_runs.spawn(news_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone()));
+            self.news_tasks.insert(handle.id(), host);
+        }
+    }
+
+    fn finish_news(&mut self, done: Result<(Id, NewsFinished), JoinError>) {
+        let id = match &done {
+            Ok((id, _)) => *id,
+            Err(error) => error.id(),
+        };
+        let Some(host) = self.news_tasks.remove(&id) else {
+            return;
+        };
+        match done {
+            Ok((_, NewsFinished::Done(write, known))) => self.pending.push((write, known)),
+            Ok((_, NewsFinished::Idle(next))) => {
+                if let Some(next) = next {
+                    self.news.push(&host, next.max(now_micros() / SECOND + NEWS_GAP));
+                }
+                self.release(&host);
+            }
+            Err(error) => {
+                eprintln!("[rs] a news poll of {host} failed: {error}");
+                self.news.push(&host, now_micros() / SECOND + HOUR / SECOND);
+                self.release(&host);
+            }
+        }
+    }
+
+    /// Puts a listed news site back on the news lane at its next lane file's time, after any visit or poll; one without lane files leaves it.
+    fn queue_news(&mut self, write: &DomainWrite, known: &Known) {
+        if !self.visitor.news_lane || !self.buckets.terms(&write.host).news {
+            return;
+        }
+        let now = write.checked_at / SECOND;
+        if write.visit.news_only {
+            let (rate, at) = self.news_rates.entry(Arc::from(write.host.as_str())).or_insert((0.0, now));
+            let hours = ((now - *at) as f64 / 3600.0).max(1.0 / 60.0);
+            *rate = (1.0 - NEWS_RATE_WEIGHT) * *rate + NEWS_RATE_WEIGHT * write.visit.new as f64 / hours;
+            *at = now;
+            self.stats.news_polls += u64::from(!write.visit.sitemaps.is_empty());
+            self.news_hour.add(now / 60, i64::from(!write.visit.sitemaps.is_empty()));
+        }
+        match next_lane(known, &write.visit, write.state, write.checked_at) {
+            Some(next) => {
+                let quiet = write.visit.quiet_until.map_or(0, |at| at / SECOND);
+                self.news.push(&write.host, (next / SECOND).max(now + NEWS_GAP).max(quiet));
+            }
+            None => self.news.remove(&write.host),
+        }
+    }
+
+    /// The news sites whose lane files find the most new pages an hour, polled every two minutes; the rest every twelve.
+    fn tier_news(&mut self) {
+        if !self.visitor.news_lane || self.news_tiered.is_some_and(|at| at.elapsed() < NEWS_TIER_EVERY) {
+            return;
+        }
+        self.news_tiered = Some(Instant::now());
+        let mut rates: Vec<(f64, &Arc<str>)> = self.news_rates.iter().filter(|(_, (rate, _))| *rate > 0.0).map(|(host, (rate, _))| (*rate, host)).collect();
+        rates.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let fast: HashSet<String> = rates.iter().take(self.news_fast_hosts).map(|(_, host)| host.to_string()).collect();
+        *self.visitor.news_fast.write().unwrap_or_else(|e| e.into_inner()) = fast;
+    }
+
+    /// Listed news sites the news lane does not hold yet, queued at times spread over one slow poll, as on a start or when the list changes.
+    fn queue_listed_news(&mut self) {
+        let version = self.buckets.list_version();
+        if !self.visitor.news_lane || version == 0 || version == self.news_list_version {
+            return;
+        }
+        self.news_list_version = version;
+        let now = now_micros() / SECOND;
+        let mut rng = rand::thread_rng();
+        for host in self.buckets.listed() {
+            if self.buckets.terms(&host).news && !self.news.contains(&host) && !self.busy.contains(host.as_str()) {
+                self.news.push(&host, now + rng.gen_range(0..=self.news_spread.max(0)));
+            }
+        }
     }
 
     /// Runners free and the hourly pace allowing, take the earliest due link work; a site being visited waits a minute.
@@ -647,7 +811,7 @@ impl Loop {
         }
         self.stats.new += write.visit.new;
         self.stats.listed += write.visit.listed;
-        if !write.visit.links_only {
+        if !write.visit.links_only && !write.visit.news_only {
             let outcome = format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-"));
             *self.stats.outcomes.entry(outcome).or_default() += 1;
         }
@@ -687,10 +851,12 @@ impl Loop {
         self.queue_links(&write, &mut record);
         changes.domain(&write.host, &record);
         store.write(changes)?;
-        // Link work alone keeps the site in the lane it waits in.
-        let backlog = if write.visit.links_only { self.backlog_of(&write.host, &record) } else { write.backlog };
+        // Link work and news polls alone keep the site in the lane it waits in.
+        let alone = write.visit.links_only || write.visit.news_only;
+        let backlog = if alone { self.backlog_of(&write.host, &record) } else { write.backlog };
         self.schedule(&write.host, &record, backlog);
-        if !write.visit.links_only {
+        self.queue_news(&write, known);
+        if !alone {
             self.unreported.push(Report::of(&write, urls));
         }
         Ok(())
@@ -754,6 +920,8 @@ impl Loop {
         }
         self.wake();
         self.look_for_unread();
+        self.queue_listed_news();
+        self.tier_news();
     }
 
     /// When the list changes, looks in the background for listed domains found without sitemaps on a visit made while it did not name them, and makes them due.
@@ -771,7 +939,7 @@ impl Loop {
         if !hosts.is_empty() {
             let spread = wake_spread(hosts.len());
             self.wake_by = now_micros() / SECOND + spread;
-            println!("[rs] {} listed domains without sitemaps, not yet visited as listed, come due within {} minutes", hosts.len(), spread / 60);
+            println!("[rs] {} listed domains without sitemaps, unvisited as listed or set aside while a sitemap still works, come due within {} minutes", hosts.len(), spread / 60);
         }
         self.to_wake = hosts;
     }
@@ -788,7 +956,7 @@ impl Loop {
             let Ok(Some(mut record)) = self.buckets.store(&host).domain(&host) else {
                 continue;
             };
-            if !records::listed_unread(&record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
+            if !wakes(&self.buckets, &host, &record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
                 continue;
             }
             let quiet = records::int(record.get("quiet")).unwrap_or(0);
@@ -862,12 +1030,19 @@ impl Loop {
             .map(|&lane| format!("{} {}/{} ({} due)", lane.as_str(), self.running[lane.index()], self.share(lane), thousands(self.timetable.queued(lane) as i64)))
             .collect();
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  robots.txt {}/h  link hand-offs {}  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{} ({} waiting)  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  robots.txt {}/h  link hand-offs {}  news polls {}/h ({} queued, {}/{} running, fetches {}/{}, {} fast)  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{} ({} waiting)  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
             thousands(self.robots_hour.total(now_micros() / (60 * SECOND))),
             thousands(self.stats.handoffs as i64),
+            thousands(self.news_hour.total(now_micros() / (60 * SECOND))),
+            thousands(self.news.len() as i64),
+            self.news_runs.len(),
+            self.news_slots,
+            self.visitor.news_bodies.busy(),
+            self.visitor.news_bodies.size(),
+            self.visitor.news_fast.read().map_or(0, |fast| fast.len()),
             self.visits.len(),
             lanes.join(" "),
             thousands(self.stats.new),
@@ -903,6 +1078,7 @@ impl Loop {
             "link_dropped": self.stats.link_dropped,
             "link_waits": self.stats.link_waits,
             "handoffs": self.stats.handoffs,
+            "news_polls": self.stats.news_polls,
             "robots_requests": self.stats.robots_requests,
             "links_queued": self.links.len(),
             "handoff_errors": self.buckets.handoff_errors.load(std::sync::atomic::Ordering::Relaxed),
@@ -933,6 +1109,48 @@ async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
 enum LinkFinished {
     Done(Box<DomainWrite>, Arc<Known>),
     Gone,
+}
+
+enum NewsFinished {
+    Done(Box<DomainWrite>, Arc<Known>),
+    /// Nothing read: back on the lane at its next lane file's time, or off it with none.
+    Idle(Option<i64>),
+}
+
+/// One news lane poll of a site taken off the queue; a site no longer active or listed leaves the lane at no cost to it.
+async fn news_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>) -> NewsFinished {
+    let reading = host.clone();
+    let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
+    let Ok(Some(known)) = loaded else {
+        return NewsFinished::Idle(None);
+    };
+    if known.categories.iter().any(|c| excluded.contains(c)) || exclusions::blocked_operator(&known.host) || known.state != State::Active {
+        return NewsFinished::Idle(None);
+    }
+    let known = Arc::new(known);
+    let now = now_micros();
+    match visitor.news(known.clone(), now).await {
+        Ok(visit) if visit.sitemaps.is_empty() && visit.requests == 0 => {
+            // Back when the site's delay allows; with a file due that robots.txt, stale or disallowing, kept unread, back in an hour, when a visit may have read it again.
+            let next = if visit.paced { visit.quiet_until } else { next_lane(&known, &visit, known.state, now).map(|at| if at <= now { now + HOUR } else { at }) };
+            NewsFinished::Idle(next.map(|at| at / SECOND))
+        }
+        Ok(visit) => NewsFinished::Done(Box::new(links_plan(&known, visit, now)), known),
+        Err(Crash(error)) => {
+            eprintln!("[rs] a news poll of {host} failed: {error}");
+            NewsFinished::Idle(Some(now / SECOND + HOUR / SECOND))
+        }
+    }
+}
+
+/// When a site's next lane file is due, from what its visit or poll read and what it held before; None for a site with none, or one no longer active.
+fn next_lane(known: &Known, visit: &Visit, state: State, now: i64) -> Option<i64> {
+    if state != State::Active {
+        return None;
+    }
+    let read: HashSet<&str> = visit.sitemaps.iter().map(|u| u.url.as_str()).collect();
+    let held = known.sitemaps.values().filter(|s| !read.contains(s.url.as_str())).map(LaneFile::of);
+    lane_next(held.chain(visit.sitemaps.iter().map(LaneFile::read)), now).map(|(at, _)| at)
 }
 
 /// Link work for a site taken off the queue; one excluded since, or no longer listed, leaves the queue at no cost to the site.

@@ -251,7 +251,7 @@ impl OutcomeReader {
         let mut recovered: HashMap<usize, Vec<(String, Vec<u8>)>> = HashMap::new();
         for row in rows {
             match row.outcome {
-                Outcome::Published | Outcome::Unchanged => counted.published += 1,
+                Outcome::Published => counted.published += 1,
                 Outcome::Failed => counted.failed += 1,
                 Outcome::Dropped => counted.dropped += 1,
             }
@@ -261,7 +261,7 @@ impl OutcomeReader {
             };
             let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
             let resent = self.resent.as_ref().filter(|resent| resent.active());
-            let published = matches!(row.outcome, Outcome::Published | Outcome::Unchanged);
+            let published = row.outcome == Outcome::Published;
             let rest = Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)).map(|key| key.key[domain.len() + 1..].to_vec());
             // A dropped task never reached the site, so it says nothing about the domain; a page sent once more for its domain's resend_before says little about its new pages.
             let tally = tallies.entry(domain.clone()).or_default();
@@ -269,7 +269,7 @@ impl OutcomeReader {
             let was_resend = resent.zip(rest.as_ref()).is_some_and(|(resent, rest)| resent.contains(&domain, rest));
             if !was_resend {
                 match row.outcome {
-                    Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
+                    Outcome::Published => tally.ok += 1.0,
                     Outcome::Failed => tally.failed += 1.0,
                     Outcome::Dropped => {}
                 }
@@ -290,7 +290,7 @@ impl OutcomeReader {
                 }
             }
             let next = match row.outcome {
-                Outcome::Published | Outcome::Unchanged => continue,
+                Outcome::Published => continue,
                 Outcome::Failed => Scheduled { why: Why::Failed, due: at.saturating_add(interval), at },
                 // A page whose task was lost goes again soon, but a burst of them is spread out, never later than its re-crawl.
                 Outcome::Dropped => {
