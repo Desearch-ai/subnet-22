@@ -53,9 +53,12 @@ bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
 bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
 ```
 
-The shared extraction runs in Python: `bulk wikipedia`, `medlineplus`, `eurlex`, `subnet-sites`, `subnet-github` and
-`bittensor-fetch` start `python -m bulk.page_worker` processes, and `bulk pmc` starts `python -m bulk.pmc_render`
-processes. `--python` names the interpreter (one with lxml), `--python-path` the repo root, and `--workers`
+The shared extraction runs in Python: `bulk wikipedia`, `medlineplus`, `eurlex`, `subnet-sites`, `subnet-github`,
+`bittensor-fetch` and `pmc` start `python -m desearch.extraction.worker` processes
+([`desearch/extraction/worker.py`](../desearch/extraction/worker.py)), which answer one length-framed request at a
+time; `desearch::worker` in [`crates/desearch`](../crates/desearch/) starts them and holds the request codes.
+`--python` names the interpreter (one with lxml), `--python-path` the repo root `desearch` is imported from (by
+default the nearest folder above the binary holding the worker, else the current directory), and `--workers`
 (`--render-workers` for PMC) how many.
 
 Then publish the folder into the bulk feed, in a local folder laid out as the pages bucket (`--log`) or in the pages

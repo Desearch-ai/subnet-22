@@ -330,6 +330,15 @@ Run one bot with `--task-api` at a time.
 SIGTERM and SIGINT stop the loop; visits still running after 30 seconds are dropped and simply fall
 due again.
 
+## Page builds
+
+`desearch-bot build` turns fetched records into a bulk run folder, and `refresh edgar|fred` fetches and builds the
+EDGAR filings and FRED pages. Both read pages with the shared extraction in `--workers` Python processes running the
+worker built into the binary, [`desearch/extraction/worker.py`](../desearch/extraction/worker.py) as
+`python -c`, which imports `desearch` from the checkout `--subnet22` names. `--python` names the interpreter (one
+with lxml, and pypdf for PDFs), `--worker` runs a worker script instead, and `--worker-memory-mb` caps each worker's
+address space.
+
 ## Tests
 
 ```bash
@@ -337,7 +346,8 @@ cargo test --release
 ```
 
 The parity tests replay fixed vectors for URL keys, joins, dates, signatures and language, byte for
-byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/world.rs` crawls a
+byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/refresh_parity.rs` a `python3` with
+lxml for the extraction workers, `tests/world.rs` crawls a
 small local web end to end, and `tests/dispatch.rs` runs the queue, its lanes, the outcome feed and
 the dispatcher against a fake task API.
 
