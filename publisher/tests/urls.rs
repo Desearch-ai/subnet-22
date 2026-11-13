@@ -1,4 +1,4 @@
-//! URLs canonicalised and keyed as Python's `app.canonical` does; the expected values come from running it.
+//! URLs canonicalised and keyed; the expected values come from Python's urllib.
 
 use desearch::canonical::{canonicalize, domain_of, unquote_plus};
 use publisher::records::page_key;

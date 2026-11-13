@@ -1,4 +1,4 @@
-//! The service against a local Redis (db 12) and the R2 stub: claims, acknowledgements, lost uploads, withdrawals, feeds and their holes.
+//! The service against a local Redis (db 12) and the storage stub: claims, acknowledgements, lost uploads, withdrawals, feeds and their holes.
 
 mod common;
 

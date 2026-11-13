@@ -1,4 +1,4 @@
-//! What became of every URL, in the rows `app.outcomes` writes for the bot that queued it.
+//! What became of every URL, in rows written for the bot that queued it.
 
 use std::sync::{Arc, LazyLock};
 

@@ -805,7 +805,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
     Ok(report)
 }
 
-/// The current version of one page from R2 alone: its shard's base and deltas, newest wins, withdrawn tasks dropped.
+/// The current version of one page from the store alone: its shard's base and deltas, newest wins, withdrawn tasks dropped.
 pub fn lookup(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageRow>> {
     Ok(winner(store, prefix, key)?.filter(|row| !row.removed))
 }

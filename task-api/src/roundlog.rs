@@ -53,7 +53,7 @@ pub struct Receipt {
 }
 
 impl Receipt {
-    /// The receipt's fields that are set, as `app.roundlog.receipt_body` builds them.
+    /// The receipt's fields that are set, as `tools/verify_round.py` rebuilds them.
     pub fn body(&self) -> Value {
         let mut body = Map::new();
         body.insert("round_id".into(), self.round_id.clone().into());

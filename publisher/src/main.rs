@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM; any number may run at once.
+    /// Publish from the task API's queue in Redis to the object store, configured from the environment, until SIGTERM; any number may run at once.
     Serve,
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),

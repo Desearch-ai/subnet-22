@@ -76,12 +76,12 @@ fn number<T: FromStr>(name: &str, default: T) -> Result<T> {
     }
 }
 
-/// The temp bucket uploads wait in and the permanent bucket pages are published to, as the Python service names them.
+/// The temp bucket uploads wait in and the permanent bucket pages are published to.
 pub fn buckets_from_env(errors: Arc<AtomicU64>) -> Result<(Bucket, Bucket)> {
     buckets_from(|name| std::env::var(name).ok().filter(|v| !v.is_empty()), errors)
 }
 
-/// Both buckets on the R2 endpoint, unless `PAGES_S3_ENDPOINT` puts the pages bucket on its own endpoint with its own keys.
+/// Both buckets on `CF_R2_ENDPOINT`, unless `PAGES_S3_ENDPOINT` puts the pages bucket on its own endpoint with its own keys.
 pub fn buckets_from(var: impl Fn(&str) -> Option<String>, errors: Arc<AtomicU64>) -> Result<(Bucket, Bucket)> {
     let required = |name: &str| var(name).with_context(|| format!("{name} is not set"));
     let endpoint = required("CF_R2_ENDPOINT")?;
@@ -609,7 +609,7 @@ pub async fn summarize(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
             Err(error) => format!("unknown ({error})"),
         };
         println!(
-            "minute: {} tasks/min, {} pages, {} URLs failed, {} lost, {} left to retry; backlog {backlog}; R2 {} errors, read {:.0} MB in {} requests",
+            "minute: {} tasks/min, {} pages, {} URLs failed, {} lost, {} left to retry; backlog {backlog}; storage {} errors, read {:.0} MB in {} requests",
             d[0],
             d[1],
             d[2],

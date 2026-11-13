@@ -1,4 +1,4 @@
-//! Files numbered in the order they were written, as `app.feeds.Feed` numbers them, so a reader follows them one number at a time.
+//! Files numbered in the order they were written, so a reader follows them one number at a time.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
