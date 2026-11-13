@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "medlineplus", "factbook", "cli"]
+members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "cli"]
 resolver = "3"
 
 [workspace.package]
@@ -26,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 bulk-core = { path = "core" }
 bulk-arxiv = { path = "arxiv" }
 bulk-arxiv-text = { path = "arxiv-text" }
@@ -35,6 +36,10 @@ bulk-wikipedia = { path = "wikipedia" }
 bulk-bittensor = { path = "bittensor" }
 bulk-medlineplus = { path = "medlineplus" }
 bulk-factbook = { path = "factbook" }
+bulk-uscode = { path = "uscode" }
+bulk-ecfr = { path = "ecfr" }
+bulk-ctgov = { path = "ctgov" }
+bulk-eurlex = { path = "eurlex" }
 
 [profile.release]
 debug = false

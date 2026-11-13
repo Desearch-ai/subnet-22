@@ -39,6 +39,16 @@ enum Command {
     SubnetGithub(bulk_bittensor::GithubArgs),
     /// Save the subnets' chain identities, websites and READMEs for `subnets`, `subnet-sites` and `subnet-github`.
     BittensorFetch(bulk_bittensor::fetch::FetchArgs),
+    /// ClinicalTrials.gov, a page per study, from the all-studies JSON zip.
+    Ctgov(bulk_ctgov::Args),
+    /// The eCFR, a page per section, from govinfo's title XML and eCFR's structures.
+    Ecfr(bulk_ecfr::Args),
+    /// EU acts in force and CJEU judgments in English, from the texts `eurlex-fetch` saved.
+    Eurlex(bulk_eurlex::Args),
+    /// List EUR-Lex's English acts in force and judgments through Cellar's SPARQL and save their texts from Cellar.
+    EurlexFetch(bulk_eurlex::FetchArgs),
+    /// The United States Code, a page per section, from an OLRC release point's zip.
+    Uscode(bulk_uscode::Args),
     /// The World Factbook's final edition, a page per entity, from factbook.json.
     Factbook(bulk_factbook::Args),
     /// MedlinePlus health topics, English, from the daily topics XML.
@@ -63,6 +73,11 @@ fn main() -> anyhow::Result<()> {
         Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
         Command::BittensorFetch(args) => bulk_bittensor::fetch::main(args),
+        Command::Ctgov(args) => bulk_ctgov::main(args),
+        Command::Ecfr(args) => bulk_ecfr::main(args),
+        Command::Eurlex(args) => bulk_eurlex::main(args),
+        Command::EurlexFetch(args) => bulk_eurlex::fetch_main(args),
+        Command::Uscode(args) => bulk_uscode::main(args),
         Command::Factbook(args) => bulk_factbook::main(args),
         Command::Medlineplus(args) => bulk_medlineplus::main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
