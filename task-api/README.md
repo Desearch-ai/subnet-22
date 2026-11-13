@@ -21,9 +21,9 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 | `tests/api/` | the API's tests, against a fake chain, Redis and an in-memory store |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
-The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
-(text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/). The publisher,
-which writes passed pages and vectors to the pages bucket and takes withdrawn ones down, is in
+The miner and validator are in [`neurons/`](../neurons/), with their shared code in
+[`desearch/`](../desearch/). The API shares [`crates/desearch/`](../crates/desearch/) with the publisher,
+which writes passed pages and vectors to the pages bucket and takes withdrawn ones down, in
 [`publisher/`](../publisher/).
 
 ## How it works
@@ -263,7 +263,7 @@ file, and is written at a few hundred MB a second.
 It needs two buckets:
 
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day.
-  `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default, as R2 signs), `CF_R2_ACCESS_KEY_ID` and
+  `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default), `CF_R2_ACCESS_KEY_ID` and
   `CF_R2_SECRET_ACCESS_KEY` reach it;
 - `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` after ten
   days, `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the uploads bucket's credentials unless
@@ -274,9 +274,8 @@ It needs two buckets:
 Validators read `subnet-22` without credentials. On a store that keeps buckets private and opens
 objects one by one, as OVHcloud Object Storage does, set `CF_R2_PUBLIC_OBJECTS=1` for the API and the
 publisher: the API writes its own files readable by anyone and opens each upload once its completion
-is checked, and the planner writes embed inputs the same way. On R2, serve the bucket on a custom
-domain instead, not the rate-limited `r2.dev` URL. Objects are readable but not listable, which is
-why the API keeps `validation/open.json`. Mainnet serves it at
+is checked, and the planner writes embed inputs the same way. Objects are readable but not listable,
+which is why the API keeps `validation/open.json`. Mainnet serves it at
 `https://subnet-22.s3.us-east-va.io.cloud.ovh.us`, the validator's default `--neuron.storage_url`.
 
 The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`).
