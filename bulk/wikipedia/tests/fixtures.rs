@@ -41,20 +41,20 @@ fn frames_match_page_html() {
 }
 
 #[test]
-fn hidden_categories_match_python() {
+fn hidden_categories_match_the_golden_run() {
     let mut out = Vec::new();
     bulk_wikipedia::hidden_categories(&[fixtures().join("input/ns14.ndjson")], &mut out).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), std::fs::read_to_string(fixtures().join("hidden-stdout.txt")).unwrap());
 }
 
 #[test]
-fn run_matches_the_python_run() {
+fn run_matches_the_golden_run() {
     let Some(python) = std::env::var("BULK_PYTHON").ok().filter(|p| !p.is_empty()) else {
         eprintln!("skipped: set BULK_PYTHON to a Python with the shared extraction to run the page worker");
         return;
     };
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let expected = fixtures().join("python");
+    let expected = fixtures().join("expected");
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("rust");
     let worker_args: Vec<OsString> = vec!["--hidden".into(), fixtures().join("input/hidden.txt").into_os_string()];
@@ -64,14 +64,14 @@ fn run_matches_the_python_run() {
     let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 0, 1, 3, &spawn).unwrap();
     let summary = batches.close(&counts).unwrap();
     let line = bulk_core::run::summary_line(&expected, &summary, &counts);
-    let python_line = std::fs::read_to_string(fixtures().join("stdout.txt")).unwrap();
-    assert_eq!(line.replace(&expected.to_string_lossy().into_owned(), "bulk/fixtures/wikipedia/python"), python_line.trim_end());
+    let expected_line = std::fs::read_to_string(fixtures().join("stdout.txt")).unwrap();
+    assert_eq!(line.replace(&expected.to_string_lossy().into_owned(), "bulk/fixtures/wikipedia/expected"), expected_line.trim_end());
     let diff = bulk_core::runs::diff(&out, &expected, 20).unwrap();
     assert!(diff.manifest_differences.is_empty() && diff.rows_differing == 0 && diff.rows_a == diff.rows_b, "{diff:#?}");
 }
 
 #[test]
-fn limit_stops_at_the_python_page() {
+fn limit_stops_at_the_golden_page() {
     let Some(python) = std::env::var("BULK_PYTHON").ok().filter(|p| !p.is_empty()) else {
         return;
     };
@@ -80,7 +80,7 @@ fn limit_stops_at_the_python_page() {
     let worker_args: Vec<OsString> = vec!["--hidden".into(), fixtures().join("input/hidden.txt").into_os_string()];
     let spawn = || Worker::spawn(&python, &root, PAGE_WORKER, &worker_args);
     let as_of = bulk_core::rows::parse_as_of("2026-11-01T00:00:00Z").unwrap();
-    // Python's counts at --limit 33: with --workers 4 one window holds every job, with 1 page 33 is in the second.
+    // The golden counts at --limit 33: with --workers 4 one window holds every job, with 1 page 33 is in the second.
     for (workers, want) in [
         (4, [("other_namespace", 1), ("deleted", 1), ("older_copy", 1), ("no_html", 1), ("pages", 33), ("disambiguation", 1)]),
         (1, [("other_namespace", 1), ("pages", 33), ("disambiguation", 1), ("deleted", 1), ("older_copy", 1), ("no_html", 1)]),

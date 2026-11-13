@@ -7,13 +7,9 @@ use bulk_pmc::render::RenderArgs;
 use bulk_pmc::Args;
 
 #[test]
-fn pmc_fixture_folder_run_matches_the_python_run() {
+fn pmc_fixture_folder_run_matches_the_golden_run() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/pmc");
-    let (input, expected) = (fixtures.join("input"), fixtures.join("python"));
-    if !input.is_dir() || !expected.join(bulk_core::rows::MANIFEST).is_file() {
-        eprintln!("skipped: no fixtures in {}", fixtures.display());
-        return;
-    }
+    let (input, expected) = (fixtures.join("input"), fixtures.join("expected"));
     let Some((python, root)) = support::python() else { return };
     let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(expected.join(bulk_core::rows::MANIFEST)).unwrap()).unwrap();
     let dir = tempfile::tempdir().unwrap();

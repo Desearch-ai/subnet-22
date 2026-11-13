@@ -165,13 +165,13 @@ fn snapshot_lines_become_pages_with_lone_surrogates_dropped_where_python_drops_t
 }
 
 #[test]
-fn a_python_run_over_the_same_pages_matches() {
+fn a_run_over_the_same_pages_matches_the_golden_run() {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("run");
     let mut batches = Batches::new(&out, "arxiv", "20261101", as_of()).unwrap();
     let counted = run(&[data("mixed/input/oai-000001.xml"), data("mixed/input/snapshot.json")], &mut batches, as_of(), 0).unwrap();
     batches.close(&counted).unwrap();
-    let diff = bulk_core::runs::diff(&out, &data("mixed/python"), 20).unwrap();
+    let diff = bulk_core::runs::diff(&out, &data("mixed/expected"), 20).unwrap();
     assert!(diff.same(), "{diff:#?}");
 }
 
