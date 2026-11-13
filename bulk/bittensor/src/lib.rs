@@ -1,11 +1,11 @@
-//! Bittensor subnets as pages, the shared extraction's part in `python -m bulk.page_worker`.
+//! Bittensor subnets as pages, the shared extraction's part in `python -m desearch.extraction.worker`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use bulk_core::worker::{PythonArgs, Worker, PAGE_WORKER};
+use bulk_core::worker::{PythonArgs, Worker};
 use bulk_core::{py, urlparse, Batches, Counts, RunArgs};
 use indexmap::IndexSet;
 use regex::Regex;
@@ -101,16 +101,16 @@ pub fn subnets_main(args: SubnetsArgs) -> Result<()> {
 }
 
 pub fn sites_main(args: SitesArgs) -> Result<()> {
-    let python_path = args.python.python_path(PAGE_WORKER);
-    let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &[]);
+    let python_path = args.python.python_path();
+    let spawn = || Worker::spawn(&args.python.python, &python_path, &[]);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, SITES_SOURCE)?;
     let counts = run_sites(&args.folder, &mut batches, as_of_us, worker_count(args.workers), &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)
 }
 
 pub fn github_main(args: GithubArgs) -> Result<()> {
-    let python_path = args.python.python_path(PAGE_WORKER);
-    let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &[]);
+    let python_path = args.python.python_path();
+    let spawn = || Worker::spawn(&args.python.python, &python_path, &[]);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, GITHUB_SOURCE)?;
     let counts = run_github(&args.folder, &mut batches, as_of_us, worker_count(args.workers), &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)

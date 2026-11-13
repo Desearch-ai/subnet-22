@@ -1,5 +1,5 @@
 //! Wikimedia Enterprise snapshots: each article's Parsoid HTML framed like the live page here, then read by the shared
-//! v2 extraction in `python -m bulk.page_worker` processes.
+//! v2 extraction in `python -m desearch.extraction.worker` processes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
@@ -9,7 +9,7 @@ use std::sync::mpsc::{channel, sync_channel, Receiver};
 use std::sync::{Condvar, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
-use bulk_core::worker::{page_from_json, PythonArgs, Worker, PAGE_WORKER};
+use bulk_core::worker::{page_from_json, PythonArgs, Worker, EXTRACT, MODULE, WIKIPEDIA};
 use bulk_core::{pyjson, upload_row, Batches, Counts, Page, RunArgs};
 use rayon::prelude::*;
 use serde_json::{json, Map, Value};
@@ -38,8 +38,6 @@ pub const RUST_FRAME_MAX_BYTES: usize = 4_000_000;
 const WINDOW_PER_WORKER: usize = 32;
 /// Results kept ahead of the next one written, so a slow article cannot let the rest pile up without end.
 const AHEAD_PER_WORKER: u64 = 256;
-const WIKIPEDIA_REQUEST: &[u8] = b"w";
-const EXTRACT_REQUEST: &[u8] = b"e";
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct Args {
@@ -276,16 +274,16 @@ pub fn read_article(worker: &mut Worker, article: &Value, line: &[u8], hidden: &
         Some((_, true)) => return Ok(Outcome::Disambiguation),
         Some((page, false)) => {
             let size = u32::try_from(url.len()).context("url over 4 GiB")?.to_be_bytes();
-            worker.ask(&[EXTRACT_REQUEST, &size, url.as_bytes(), page.as_bytes()])?
+            worker.ask(&[EXTRACT, &size, url.as_bytes(), page.as_bytes()])?
         }
         None => {
             *python_frames += 1;
-            worker.ask(&[WIKIPEDIA_REQUEST, line])?
+            worker.ask(&[WIKIPEDIA, line])?
         }
     };
     let answer: Value = serde_json::from_slice(&answer).context("a worker answer")?;
     if let Some(error) = answer.get("error") {
-        bail!("{PAGE_WORKER} failed on {url}: {error}\n{}", answer.get("detail").and_then(Value::as_str).unwrap_or(""));
+        bail!("{MODULE} failed on {url}: {error}\n{}", answer.get("detail").and_then(Value::as_str).unwrap_or(""));
     }
     if answer.get("disambiguation").is_some_and(|d| d == &Value::Bool(true)) {
         return Ok(Outcome::Disambiguation);
@@ -590,9 +588,9 @@ pub fn main(args: Args) -> Result<()> {
     let hidden_text = std::fs::read_to_string(&args.hidden).with_context(|| format!("reading {}", args.hidden.display()))?;
     let hidden: HashSet<String> = bulk_core::text::splitlines(&hidden_text).into_iter().map(str::to_string).collect();
     let workers = args.workers.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
-    let python_path = args.python.python_path(PAGE_WORKER);
+    let python_path = args.python.python_path();
     let worker_args: Vec<OsString> = vec!["--hidden".into(), args.hidden.clone().into_os_string()];
-    let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &worker_args);
+    let spawn = || Worker::spawn(&args.python.python, &python_path, &worker_args);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, SOURCE)?;
     let counts = run(&args.files, &mut batches, as_of_us, &hidden, args.run.limit, workers, args.page_workers.unwrap_or(workers), &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)

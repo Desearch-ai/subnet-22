@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use bulk_core::worker::{Worker, PAGE_WORKER};
+use bulk_core::worker::Worker;
 use bulk_core::Batches;
 use serde_json::Value;
 
@@ -58,7 +58,7 @@ fn run_matches_the_golden_run() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("rust");
     let worker_args: Vec<OsString> = vec!["--hidden".into(), fixtures().join("input/hidden.txt").into_os_string()];
-    let spawn = || Worker::spawn(&python, &root, PAGE_WORKER, &worker_args);
+    let spawn = || Worker::spawn(&python, &root, &worker_args);
     let as_of = bulk_core::rows::parse_as_of("2026-11-01T00:00:00Z").unwrap();
     let mut batches = Batches::new(&out, bulk_wikipedia::SOURCE, "fixture", as_of).unwrap();
     let counts = bulk_wikipedia::run(&[fixtures().join("input/articles.ndjson")], &mut batches, as_of, &hidden(), 0, 1, 3, &spawn).unwrap();
@@ -78,7 +78,7 @@ fn limit_stops_at_the_golden_page() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = tempfile::tempdir().unwrap();
     let worker_args: Vec<OsString> = vec!["--hidden".into(), fixtures().join("input/hidden.txt").into_os_string()];
-    let spawn = || Worker::spawn(&python, &root, PAGE_WORKER, &worker_args);
+    let spawn = || Worker::spawn(&python, &root, &worker_args);
     let as_of = bulk_core::rows::parse_as_of("2026-11-01T00:00:00Z").unwrap();
     // The golden counts at --limit 33: with --workers 4 one window holds every job, with 1 page 33 is in the second.
     for (workers, want) in [

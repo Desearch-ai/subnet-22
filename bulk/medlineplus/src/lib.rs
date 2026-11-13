@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use bulk_core::worker::{map_in_order, page_from_json, PythonArgs, Worker, PAGE_WORKER};
+use bulk_core::worker::{map_in_order, page_from_json, PythonArgs, Worker, EXTRACT};
 use bulk_core::{typed_page, upload_row, Batches, Counts, Line, Page, PaperMeta, RunArgs};
 
 pub const SOURCE: &str = "medlineplus";
@@ -12,7 +12,6 @@ pub const ARTICLE: &str = "article";
 const CONTENT_TYPE: &str = "application/xml";
 const CREDIT: &str = "Source: MedlinePlus, National Library of Medicine (public domain).";
 const ENGLISH: &str = "English";
-const EXTRACT: &[u8] = b"e";
 const WORKERS: usize = 4;
 
 #[derive(clap::Args, Clone, Debug)]
@@ -284,8 +283,8 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64, spawn: &(dyn Fn() 
 }
 
 pub fn main(args: Args) -> Result<()> {
-    let python_path = args.python.python_path(PAGE_WORKER);
-    let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &[]);
+    let python_path = args.python.python_path();
+    let spawn = || Worker::spawn(&args.python.python, &python_path, &[]);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, SOURCE)?;
     let counts = run(&args, &mut batches, as_of_us, &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)

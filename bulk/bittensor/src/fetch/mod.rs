@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bulk_core::worker::{PythonArgs, Worker, PAGE_WORKER};
+use bulk_core::worker::{PythonArgs, Worker, ANCHORS};
 use bulk_core::{py, pyjson, Counts};
 use desearch::chain::Chain;
 use serde_json::{json, Map, Value};
@@ -27,7 +27,6 @@ pub const SITES: &str = "sites";
 pub const GITHUB: &str = "github";
 pub const REMOVED: &str = "removed.json";
 pub const FETCH: &str = "fetch.json";
-const ANCHORS_REQUEST: &[u8] = b"a";
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct FetchArgs {
@@ -72,7 +71,7 @@ impl Pace {
     }
 }
 
-/// The `a` elements' hrefs as lxml parses a home page, from one `python -m bulk.page_worker` started when first needed.
+/// The `a` elements' hrefs as lxml parses a home page, from one `python -m desearch.extraction.worker` started when first needed.
 pub struct Anchors {
     spawn: Box<dyn Fn() -> Result<Worker> + Send + Sync>,
     worker: tokio::sync::Mutex<Option<Worker>>,
@@ -90,7 +89,7 @@ impl Anchors {
             if guard.is_none() {
                 *guard = Some((self.spawn)()?);
             }
-            guard.as_mut().expect("a worker").ask_json(&[ANCHORS_REQUEST, body])
+            guard.as_mut().expect("a worker").ask_json(&[ANCHORS, body])
         })?;
         if let Some(raised) = answer.get("raised") {
             let repr = raised.get("repr").and_then(Value::as_str).unwrap_or("").to_string();
@@ -232,9 +231,9 @@ pub async fn fetch(options: &Options, anchors: Arc<Anchors>) -> Result<Counts> {
 
 /// `bulk bittensor-fetch`: the fetch, then its counts on stdout; a short chain read exits 2.
 pub fn main(args: FetchArgs) -> Result<()> {
-    let python_path = args.python.python_path(PAGE_WORKER);
+    let python_path = args.python.python_path();
     let python = args.python.python.clone();
-    let anchors = Arc::new(Anchors::new(Box::new(move || Worker::spawn(&python, &python_path, PAGE_WORKER, &[]))));
+    let anchors = Arc::new(Anchors::new(Box::new(move || Worker::spawn(&python, &python_path, &[]))));
     let options = Options {
         out: args.out.clone(),
         previous: args.previous.clone(),

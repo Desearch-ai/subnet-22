@@ -14,10 +14,12 @@ use serde_json::{json, Value};
 use desearch_bot::pagebuild::{build, Options};
 
 const STUB: &str = r#"
-import json, sys
-for line in sys.stdin:
-    r = json.loads(line)
-    if r["op"] == "doc":
+import json, struct, sys
+src, sink = sys.stdin.buffer, sys.stdout.buffer
+while header := src.read(4):
+    data = src.read(struct.unpack(">I", header)[0])
+    op, r = data[:1], json.loads(data[1:])
+    if op == b"d":
         out = {"page": None, "which": "pdf_overtime"}
     else:
         page = dict(page_type="other", text_mode="full", title=r["url"].rsplit("/", 1)[-1], description="", lang="en",
@@ -25,7 +27,9 @@ for line in sys.stdin:
                     breadcrumbs=[], json_ld_types=[], headings=[], entity="", ld="", paywalled=None, robots=[],
                     text=r["html"])
         out = {"page": page, "blocked": "BLOCKED" in r.get("orig", r["html"])}
-    print(json.dumps(out), flush=True)
+    answer = json.dumps(out).encode()
+    sink.write(struct.pack(">I", len(answer)) + answer)
+    sink.flush()
 "#;
 
 fn write_records(path: &Path, records: &[Value]) {

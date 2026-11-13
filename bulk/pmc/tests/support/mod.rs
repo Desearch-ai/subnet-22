@@ -122,7 +122,7 @@ pub fn python() -> Option<(String, PathBuf)> {
     }
     let root = std::env::var_os("PYTHONPATH")
         .map(PathBuf::from)
-        .filter(|p| p.join("bulk/pmc_render.py").is_file())
+        .filter(|p| p.join(bulk_core::worker::MODULE_FILE).is_file())
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     python.map(|p| (p, root))
 }

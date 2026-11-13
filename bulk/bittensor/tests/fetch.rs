@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bulk_bittensor::fetch::{self, http::TestRoute, robots::Robots, yarl::Url, Anchors, Options, Pace};
-use bulk_core::worker::{Worker, PAGE_WORKER};
+use bulk_core::worker::Worker;
 use serde_json::Value;
 
 const UA: &str = fetch::USER_AGENT;
@@ -163,7 +163,7 @@ async fn the_replayed_fetch_matches_the_golden_run() {
         token: String::new(),
     };
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let anchors = Arc::new(Anchors::new(Box::new(move || Worker::spawn(&python, &root, PAGE_WORKER, &[]))));
+    let anchors = Arc::new(Anchors::new(Box::new(move || Worker::spawn(&python, &root, &[]))));
     let counts = fetch::fetch(&options, anchors).await.unwrap();
     assert!(server.misses.lock().unwrap().is_empty(), "{:?}", server.misses.lock().unwrap());
     let mut written = std::fs::read_to_string(out.join(fetch::FETCH)).unwrap();

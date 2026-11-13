@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use bulk_core::worker::{Worker, PAGE_WORKER};
+use bulk_core::worker::Worker;
 use bulk_core::{Batches, Counts};
 use serde_json::Value;
 
@@ -38,7 +38,7 @@ fn check_run(source: &str, line: usize, run: impl FnOnce(&mut Batches, i64) -> R
 
 fn spawn(python: &str) -> impl Fn() -> Result<Worker> + Sync + '_ {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    move || Worker::spawn(python, &root, PAGE_WORKER, &[])
+    move || Worker::spawn(python, &root, &[])
 }
 
 #[test]

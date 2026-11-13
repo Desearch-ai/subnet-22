@@ -3,6 +3,7 @@ mod support;
 use std::path::Path;
 use std::sync::Arc;
 
+use bulk_core::worker::PythonArgs;
 use bulk_core::{Line, RunArgs};
 use bulk_pmc::page::{assemble, Front};
 use bulk_pmc::render::{Parts, RenderArgs};
@@ -157,7 +158,7 @@ fn args(folder: &Path, out: &Path, python: &str, root: &Path, limit: u64, pmids:
         names: None,
         workers: 4,
         pmids_out: Some(pmids.to_path_buf()),
-        render: RenderArgs { python: python.into(), python_path: Some(root.to_path_buf()), render_workers: Some(3) },
+        render: RenderArgs { python: PythonArgs { python: python.into(), python_path: Some(root.to_path_buf()) }, render_workers: Some(3) },
     }
 }
 

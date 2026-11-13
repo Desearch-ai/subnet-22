@@ -17,6 +17,7 @@ blake2 = "0.10"
 bs58 = "0.5"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+desearch = { path = "../crates/desearch" }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 encoding_rs = "0.8"

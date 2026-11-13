@@ -304,7 +304,7 @@ struct BuildArgs {
     drop_mirrors: bool,
     #[arg(long, default_value = "python3")]
     python: String,
-    /// The extraction worker script; `<subnet22>/desearch-bot/worker/extract_worker.py` by default.
+    /// An extraction worker script; the one built into this binary by default.
     #[arg(long)]
     worker: Option<PathBuf>,
     #[arg(long, default_value_t = 4)]
@@ -324,7 +324,6 @@ fn build_run(args: BuildArgs) -> Result<()> {
         None => chrono::Utc::now().with_nanosecond(0).expect("zero nanoseconds").fixed_offset(),
     };
     let skip = args.skip.as_deref().map(desearch_bot::pagebuild::read_urls).transpose()?.unwrap_or_default();
-    let worker = args.worker.unwrap_or_else(|| args.subnet22.join("desearch-bot/worker/extract_worker.py"));
     let options = desearch_bot::pagebuild::Options {
         records: args.records,
         out: args.out,
@@ -334,7 +333,7 @@ fn build_run(args: BuildArgs) -> Result<()> {
         skip,
         drop_mirrors: args.drop_mirrors,
         python: args.python,
-        worker: Some(worker),
+        worker: args.worker,
         subnet22: args.subnet22,
         workers: args.workers,
         worker_memory_mb: args.worker_memory_mb,

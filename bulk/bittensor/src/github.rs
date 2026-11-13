@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use bulk_core::py::{self, when_truthy};
-use bulk_core::worker::{map_in_order, Worker};
+use bulk_core::worker::{map_in_order, Worker, BODY};
 use bulk_core::{typed_page, upload_row, Batches, Counts, Line, Page, PaperMeta};
 use desearch::text::head;
 use serde_json::Value;
@@ -15,7 +15,6 @@ use crate::{remove_named, DOCS};
 pub const GITHUB_SOURCE: &str = "subnet-github";
 pub const SITE: &str = "GitHub";
 pub const CONTENT_TYPE: &str = "text/html";
-const BODY_REQUEST: &[u8] = b"r";
 
 enum Step<'a> {
     Skip(&'static str),
@@ -77,7 +76,7 @@ fn wire_line(line: &Value) -> Result<Line> {
 
 /// The README's lines as `render` gives them for its HTML in a body, or None when lxml finds no body.
 fn rendered(worker: &mut Worker, html: &str) -> Result<Option<Vec<Line>>> {
-    let answer = worker.ask_json(&[BODY_REQUEST, html.as_bytes()])?;
+    let answer = worker.ask_json(&[BODY, html.as_bytes()])?;
     match answer.get("lines") {
         Some(Value::Null) => Ok(None),
         Some(Value::Array(lines)) => lines.iter().map(wire_line).collect::<Result<Vec<_>>>().map(Some),

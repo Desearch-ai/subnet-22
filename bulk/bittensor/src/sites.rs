@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
 use bulk_core::py::{self, when_truthy};
-use bulk_core::worker::{map_in_order, page_from_json, Worker};
+use bulk_core::worker::{map_in_order, page_from_json, Worker, BLOCKED, EXTRACT};
 use bulk_core::{upload_row, urlparse, Batches, Counts, Page};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -17,8 +17,6 @@ use crate::{remove_named, without_tracking};
 pub const SITES_SOURCE: &str = "subnet-sites";
 pub const MIN_TEXT_CHARS: usize = 200;
 pub const DEFAULT_CONTENT_TYPE: &str = "text/html";
-const EXTRACT_REQUEST: &[u8] = b"e";
-const BLOCKED_REQUEST: &[u8] = b"k";
 
 static APP_PATH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)/(?:app|console|dashboard|account|me)(?:/|\n?\z)|/5[1-9A-HJ-NP-Za-km-z]{47}(?:/|\n?\z)").expect("pattern compiles"));
@@ -63,12 +61,12 @@ fn fetched_pages(folder: &Path) -> Result<IndexMap<String, Fetched>> {
 fn read(worker: &mut Worker, fetched: &Fetched) -> Result<Read> {
     let size = u32::try_from(fetched.url.len())?.to_be_bytes();
     let html = py::decode_replace(&fetched.html);
-    let answer = worker.ask_json(&[EXTRACT_REQUEST, &size, fetched.url.as_bytes(), html.as_bytes()])?;
+    let answer = worker.ask_json(&[EXTRACT, &size, fetched.url.as_bytes(), html.as_bytes()])?;
     let page = page_from_json(answer.get("page").ok_or_else(|| anyhow!("an extract answer without a page"))?)?;
     let app_page = app_page(&fetched.url)?;
     let blocked = !app_page && {
         let request = json!({"status": 200, "html": py::text_replace(&fetched.html), "text": &page.text, "title": &page.title});
-        let answer = worker.ask_json(&[BLOCKED_REQUEST, serde_json::to_string(&request)?.as_bytes()])?;
+        let answer = worker.ask_json(&[BLOCKED, serde_json::to_string(&request)?.as_bytes()])?;
         answer.get("blocked").and_then(Value::as_bool).ok_or_else(|| anyhow!("a blocked answer without a verdict"))?
     };
     Ok(Read { page, app_page, blocked })

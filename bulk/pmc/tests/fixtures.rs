@@ -2,6 +2,7 @@ mod support;
 
 use std::path::PathBuf;
 
+use bulk_core::worker::PythonArgs;
 use bulk_core::RunArgs;
 use bulk_pmc::render::RenderArgs;
 use bulk_pmc::Args;
@@ -21,7 +22,7 @@ fn pmc_fixture_folder_run_matches_the_golden_run() {
         names: None,
         workers: 8,
         pmids_out: Some(dir.path().join("pmids.txt")),
-        render: RenderArgs { python, python_path: Some(root), render_workers: None },
+        render: RenderArgs { python: PythonArgs { python, python_path: Some(root) }, render_workers: None },
     };
     bulk_pmc::main(args).unwrap();
     let diff = bulk_core::runs::diff(&out, &expected, 20).unwrap();

@@ -1,15 +1,15 @@
 //! `desearch-bot build`: fetch records into a bulk run folder, with the shared Python extraction in worker processes.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
+use desearch::worker::{self, Program, Worker, CRAWLED, DOCUMENT};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,8 +20,8 @@ use crate::setrule::{self, SetRule};
 use crate::uploads::{Batches, Page, Row};
 
 pub const SOURCE: &str = "crawl";
-/// The extraction worker this binary was built with, run with `python -c` when no script is named.
-pub const WORKER: &str = include_str!("../worker/extract_worker.py");
+/// The shared extraction worker this binary was built with, run with `python -c` when no script is named.
+pub const WORKER: &str = include_str!("../../desearch/extraction/worker.py");
 
 pub struct Options {
     pub records: Vec<PathBuf>,
@@ -32,7 +32,7 @@ pub struct Options {
     pub skip: HashSet<String>,
     pub drop_mirrors: bool,
     pub python: String,
-    /// The worker script; none runs the built-in `WORKER`.
+    /// A worker script; none runs the built-in `WORKER`.
     pub worker: Option<PathBuf>,
     pub subnet22: PathBuf,
     pub workers: usize,
@@ -100,6 +100,8 @@ struct Answer {
     which: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
 }
 
 enum Done {
@@ -107,79 +109,57 @@ enum Done {
     Extracted(Value, Answer),
 }
 
-struct Worker {
-    child: Child,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl Worker {
-    fn start(o: &Options) -> Result<Self> {
-        let mut cmd = Command::new(&o.python);
-        match &o.worker {
-            Some(script) => cmd.arg(script),
-            None => cmd.arg("-c").arg(WORKER),
-        };
-        cmd.arg("--subnet22").arg(&o.subnet22).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
-        if o.worker_memory_mb > 0 {
-            let bytes = o.worker_memory_mb << 20;
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                cmd.pre_exec(move || {
-                    let limit = libc::rlimit { rlim_cur: bytes as libc::rlim_t, rlim_max: bytes as libc::rlim_t };
-                    if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+/// A worker that imports `desearch` from `--subnet22`, capped to `--worker-memory-mb`.
+fn start_worker(o: &Options) -> Result<Worker> {
+    let (program, name) = match &o.worker {
+        Some(script) => (Program::Script(script), format!("{} {}", o.python, script.display())),
+        None => (Program::Source(WORKER), format!("{} with its built-in worker", o.python)),
+    };
+    let mut cmd = worker::command(&o.python, &o.subnet22, program, &[]);
+    if o.worker_memory_mb > 0 {
+        let bytes = o.worker_memory_mb << 20;
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(move || {
+                let limit = libc::rlimit { rlim_cur: bytes as libc::rlim_t, rlim_max: bytes as libc::rlim_t };
+                if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
         }
-        let script = o.worker.as_ref().map_or("its built-in worker".to_string(), |w| w.display().to_string());
-        let mut child = cmd.spawn().with_context(|| format!("starting {} {script}", o.python))?;
-        let stdin = BufWriter::new(child.stdin.take().expect("piped stdin"));
-        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-        Ok(Self { child, stdin, stdout })
     }
-
-    fn ask(&mut self, request: &Value) -> Result<Answer> {
-        serde_json::to_writer(&mut self.stdin, request)?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        let mut line = String::new();
-        if self.stdout.read_line(&mut line)? == 0 {
-            bail!("the extraction worker exited");
-        }
-        Ok(serde_json::from_str(&line)?)
-    }
+    Worker::start(cmd, &name)
 }
 
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+fn ask(worker: &mut Worker, rec: &Value) -> Result<Answer> {
+    let (op, request) = request(rec);
+    Ok(serde_json::from_slice(&worker.ask(&[op, &serde_json::to_vec(&request)?])?)?)
 }
 
-fn request(rec: &Value) -> Value {
+/// The worker request for a record: a document, or an HTML page.
+fn request(rec: &Value) -> (&'static [u8], Value) {
     let url = rec["url"].as_str().unwrap_or_default();
     if truthy(rec.get("body_b64")) {
-        return json!({
-            "op": "doc",
-            "url": url,
-            "body_b64": rec["body_b64"],
-            "document": rec.get("document").cloned().unwrap_or(Value::Null),
-            "content_type": rec.get("content_type").cloned().unwrap_or(Value::String(String::new())),
-        });
+        return (
+            DOCUMENT,
+            json!({
+                "url": url,
+                "body_b64": rec["body_b64"],
+                "document": rec.get("document").cloned().unwrap_or(Value::Null),
+                "content_type": rec.get("content_type").cloned().unwrap_or(Value::String(String::new())),
+            }),
+        );
     }
     let html = rec["html"].as_str().unwrap_or_default();
     let whole = rec.get("source").and_then(Value::as_str) == Some("edgar");
     if pagecheck::is_fred_data(url) {
         let rewritten = pagecheck::fred_newest_first(html);
         if rewritten != html {
-            return json!({"op": "html", "url": url, "html": rewritten, "orig": html, "whole": whole});
+            return (CRAWLED, json!({"url": url, "html": rewritten, "orig": html, "whole": whole}));
         }
     }
-    json!({"op": "html", "url": url, "html": html, "whole": whole})
+    (CRAWLED, json!({"url": url, "html": html, "whole": whole}))
 }
 
 fn read_records(o: &Options, skip: &HashSet<String>, jobs: SyncSender<(u64, Job)>) -> Result<()> {
@@ -215,13 +195,13 @@ fn read_records(o: &Options, skip: &HashSet<String>, jobs: SyncSender<(u64, Job)
 }
 
 fn work(o: &Options, jobs: Arc<Mutex<Receiver<(u64, Job)>>>, done: SyncSender<(u64, Result<Done>)>) -> Result<()> {
-    let mut worker = Worker::start(o)?;
+    let mut worker = start_worker(o)?;
     loop {
         let next = jobs.lock().map_err(|_| anyhow!("job queue poisoned"))?.recv();
         let Ok((seq, job)) = next else { return Ok(()) };
         let result = match job {
             Job::Counted(key) => Ok(Done::Counted(key)),
-            Job::Extract(rec) => worker.ask(&request(&rec)).map(|a| Done::Extracted(rec, a)),
+            Job::Extract(rec) => ask(&mut worker, &rec).map(|a| Done::Extracted(rec, a)),
         };
         let failed = result.is_err();
         if done.send((seq, result)).is_err() || failed {
@@ -319,7 +299,7 @@ fn take(
 ) -> Result<()> {
     let url = rec["url"].as_str().unwrap_or_default();
     if let Some(error) = answer.error {
-        bail!("extraction of {url} failed: {error}");
+        bail!("extraction of {url} failed: {error}\n{}", answer.detail.unwrap_or_default());
     }
     let document = truthy(rec.get("body_b64"));
     let Some(mut page) = answer.page else {

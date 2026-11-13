@@ -10,3 +10,4 @@ pub mod r2;
 pub mod stub;
 pub mod text;
 pub mod time;
+pub mod worker;

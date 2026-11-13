@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 publish = false
-description = "What the Desearch Rust services share: URL canonicalisation, R2, numbered feeds, outcome files, hotkeys and the chain client"
+description = "What the Desearch Rust services share: URL canonicalisation, R2, numbered feeds, outcome files, hotkeys, the chain client and the Python extraction worker"
 
 [dependencies]
 anyhow = "1"

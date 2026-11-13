@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use bulk_core::http::USER_AGENT;
-use bulk_core::worker::{map_in_order, page_from_json, PythonArgs, Worker, PAGE_WORKER};
+use bulk_core::worker::{map_in_order, page_from_json, PythonArgs, Worker, EXTRACT};
 use bulk_core::{typed_page, upload_row, Batches, Counts, Line, Page, PaperMeta, RunArgs};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,6 @@ pub const WORKS: &str = "works.jsonl";
 const DOCS: &str = "docs";
 const MISSING: &str = "missing.txt";
 const PAGE_SIZE: usize = 10_000;
-const EXTRACT: &[u8] = b"e";
 const ACT: &str = "act";
 const JUDGMENT: &str = "judgment";
 const ACCEPT: &str = "application/xhtml+xml, text/html;q=0.9";
@@ -362,8 +361,8 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64, spawn: &(dyn Fn() 
 }
 
 pub fn main(args: Args) -> Result<()> {
-    let python_path = args.python.python_path(PAGE_WORKER);
-    let spawn = || Worker::spawn(&args.python.python, &python_path, PAGE_WORKER, &[]);
+    let python_path = args.python.python_path();
+    let spawn = || Worker::spawn(&args.python.python, &python_path, &[]);
     let (mut batches, as_of_us) = bulk_core::run::start(&args.run, SOURCE)?;
     let counts = run(&args, &mut batches, as_of_us, &spawn)?;
     bulk_core::run::finish(&args.run, batches, &counts)
