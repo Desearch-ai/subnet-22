@@ -1219,6 +1219,8 @@ class ScriptedFetcher:
 
     async def attempt(self, url: str, deadline=None, timeout=None) -> Fetched:
         self.calls.append((url, timeout))
+        # A real fetch waits on the network, which lets the other pages queue for a slot.
+        await asyncio.sleep(0)
         answers = self.script[url]
         return answers.pop(0) if len(answers) > 1 else answers[0]
 
