@@ -1,0 +1,19 @@
+[package]
+name = "bulk-factbook"
+description = "The World Factbook's final edition as a page per country at worldfactbookarchive.org"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+csv.workspace = true
+html-escape = "0.2"
+regex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

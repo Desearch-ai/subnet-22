@@ -39,6 +39,10 @@ enum Command {
     SubnetGithub(bulk_bittensor::GithubArgs),
     /// Save the subnets' chain identities, websites and READMEs for `subnets`, `subnet-sites` and `subnet-github`.
     BittensorFetch(bulk_bittensor::fetch::FetchArgs),
+    /// The World Factbook's final edition, a page per entity, from factbook.json.
+    Factbook(bulk_factbook::Args),
+    /// MedlinePlus health topics, English, from the daily topics XML.
+    Medlineplus(bulk_medlineplus::Args),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -59,6 +63,8 @@ fn main() -> anyhow::Result<()> {
         Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
         Command::BittensorFetch(args) => bulk_bittensor::fetch::main(args),
+        Command::Factbook(args) => bulk_factbook::main(args),
+        Command::Medlineplus(args) => bulk_medlineplus::main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }
