@@ -339,6 +339,8 @@ async fn number_late(pages: &Bucket, seq: u64, records: Vec<Record>) {
 fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
     Settings {
         dir,
+        embed_tasks_per_hour: 0.0,
+        bulk_task_share: 0.0,
         pages_per_hour,
         bulk_pages_per_hour: 0.0,
         passage_texts_per_hour: 0.0,
@@ -3747,6 +3749,33 @@ async fn a_bulk_only_site_plans_its_bulk_rows_and_never_its_crawled_pages() {
     assert!(!planned(&logged.url), "a crawled page in the log is refused");
     assert!(!planned(&stored.url), "a crawled page the backfill reads is refused");
     assert!(planner.counts.outside_set >= 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn under_a_task_budget_long_and_short_pages_cut_the_same_inputs_for_very_different_pages() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("task-budget");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let mut cut = Vec::new();
+    for (seq, paragraphs) in [(1, 2), (2, 40)] {
+        log(&pages, seq, (0..30).map(|n| v2(record(&format!("https://news.example/{paragraphs}/{n}"), &article(paragraphs), "article", "en"))).collect()).await;
+        // Three tasks banked: a short page is a tenth of an input, a long one's 21 texts half of one.
+        let mut tasks = settings(dir.join(format!("state-{seq}")), publisher::planner::NO_CEILING, seq as i64 - 1);
+        (tasks.embed_tasks_per_hour, tasks.bulk_task_share, tasks.fresh, tasks.budget_at_start) = (90.0, 0.25, None, Duration::from_secs(120));
+        (tasks.pages_per_input, tasks.texts_per_input) = (10, 42);
+        let mut planner = Planner::new(tasks, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+        planner.pass().await.unwrap();
+        planner.flush().await.unwrap();
+        cut.push((planner.counts.planned, planner.counts.inputs));
+    }
+    let [(short_pages, short_inputs), (long_pages, long_inputs)] = cut[..] else { unreachable!() };
+    assert!(short_pages >= 4 * long_pages, "short pages {short_pages}, long ones {long_pages}: the same tasks take far more short pages");
+    assert!((2..=3).contains(&short_inputs) && (2..=3).contains(&long_inputs), "about the 2.25 crawl tasks banked: {short_inputs} and {long_inputs} inputs");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

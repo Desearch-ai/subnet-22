@@ -165,7 +165,7 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    passages split at its markdown headings, never inside a table row, a list item or a code block, each
    starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
    fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
-   while `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
+   while `GET /v1/room?kind=embed` has room, and cuts at most `PLANNER_EMBED_TASKS_PER_HOUR` inputs an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
@@ -208,7 +208,9 @@ The planner keeps its place in the log and the version of every page it planned 
 | `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
-| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most, and with the fresh lane's handed over an hour at most, from the start; the log's pages past it wait and are planned later |
+| `PLANNER_EMBED_TASKS_PER_HOUR` | 2500 | embed tasks (inputs) planned and handed over an hour, every lane together; 0 budgets in pages alone |
+| `PLANNER_BULK_TASK_SHARE` | 0.25 | the bulk feed's share of the task budget; what one share leaves goes to the other |
+| `PLANNER_PAGES_PER_HOUR` | none (100000 with no task budget) | pages planned an hour at most outside the bulk feed; the log's pages past it wait and are planned later |
 | `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file at most |
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |

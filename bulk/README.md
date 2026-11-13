@@ -19,8 +19,8 @@ source files ─► bulk <source> ─► run folder ─► publisher bulk ─►
   crawled pages.
   - The compactor folds both feeds. Bulk pages sit before every change-log row in log order, and pages go by fetch time
     either way.
-  - The planner reads the bulk feed in a lane of its own, at most `PLANNER_BULK_PAGES_PER_HOUR` pages an hour beside
-    the change log's budget, and takes the pages the set's `bulk` rule admits. While the lane is on, the backfill
+  - The planner reads the bulk feed in a lane of its own, on `PLANNER_BULK_TASK_SHARE` of its embed task budget
+    (and at most `PLANNER_BULK_PAGES_PER_HOUR` pages an hour when that is set), and takes the pages the set's `bulk` rule admits. While the lane is on, the backfill
     leaves it the bulk files it has yet to read.
   - The indexer tails the bulk feed beside the change log.
 - **One id a row:** `bulk-<source>-<run>-<file>-<row>`, no miner, no validator. The task API never hands out such an id,

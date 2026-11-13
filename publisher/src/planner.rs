@@ -1,4 +1,4 @@
-//! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
+//! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly embed task budget and the room the API gives.
 
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::{ArrayRef, Int32Array, LargeStringArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
@@ -142,6 +142,10 @@ const LOCK_WAIT: Duration = Duration::from_secs(180);
 const LOCK_RETRY: Duration = Duration::from_secs(5);
 /// Budget left unspent, while the log brought too little or the API had no room, is kept up to this much, so a planner held back never plans or hands over a backlog at once.
 const BUDGET_BANKED: Duration = Duration::from_secs(120);
+/// A page budget set to this is no ceiling under the task budget.
+pub const NO_CEILING: f64 = 1e12;
+/// The task budget's banked tasks and when they were kept, `<unix time>\t<crawl>\t<bulk>`.
+const TASK_BUDGETS: &[u8] = b"task-budgets";
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -495,6 +499,10 @@ fn cut(text: &str, max: usize) -> String {
 
 pub struct Settings {
     pub dir: PathBuf,
+    /// Embed tasks an hour, one an input, for every lane; 0 budgets in pages alone.
+    pub embed_tasks_per_hour: f64,
+    /// The bulk feed's share of `embed_tasks_per_hour`; what a lane leaves goes to the other.
+    pub bulk_task_share: f64,
     /// Pages planned an hour at most; the rest of the log's pages are left for a later backfill.
     pub pages_per_hour: f64,
     /// Bulk feed pages planned an hour at most, a whole file at a time, beside `pages_per_hour`; 0 leaves the bulk feed unread.
@@ -567,10 +575,19 @@ impl Settings {
                 .collect(),
             None => HashSet::new(),
         };
+        let embed_tasks_per_hour: f64 = number("PLANNER_EMBED_TASKS_PER_HOUR", 2_500.0)?;
+        let bulk_task_share: f64 = number("PLANNER_BULK_TASK_SHARE", 0.25)?;
+        if !(0.0..=1.0).contains(&bulk_task_share) || embed_tasks_per_hour < 0.0 {
+            bail!("PLANNER_BULK_TASK_SHARE={bulk_task_share} is not a share from 0 to 1, or PLANNER_EMBED_TASKS_PER_HOUR={embed_tasks_per_hour} is below 0");
+        }
+        // With a task budget, the page budgets are ceilings, none unless set.
+        let tasks = embed_tasks_per_hour > 0.0;
         Ok(Settings {
             dir: PathBuf::from(text("PLANNER_DIR", "/home/publisher/planner")),
-            pages_per_hour: number("PLANNER_PAGES_PER_HOUR", 100_000.0)?,
-            bulk_pages_per_hour: number("PLANNER_BULK_PAGES_PER_HOUR", 0.0)?,
+            embed_tasks_per_hour,
+            bulk_task_share,
+            pages_per_hour: number("PLANNER_PAGES_PER_HOUR", if tasks { NO_CEILING } else { 100_000.0 })?,
+            bulk_pages_per_hour: number("PLANNER_BULK_PAGES_PER_HOUR", if tasks && bulk_task_share > 0.0 { NO_CEILING } else { 0.0 })?,
             passage_texts_per_hour: number("PLANNER_PASSAGE_TEXTS_PER_HOUR", 0.0)?,
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
             texts_per_input: number("PLANNER_TEXTS_PER_INPUT", 0)?,
@@ -1433,6 +1450,17 @@ impl State {
         Ok(matches!(fields.len(), 4 | 5).then(|| (fields[0], [fields[1], fields[2], fields[3], fields.get(4).copied().unwrap_or(f64::NAN)])))
     }
 
+    /// The task budget's banked tasks, crawl and bulk, and the Unix time they were kept.
+    pub fn task_budgets(&self) -> Result<Option<(f64, [f64; 2])>> {
+        let Some(raw) = self.db.get(TASK_BUDGETS)? else { return Ok(None) };
+        let fields: Vec<f64> = String::from_utf8_lossy(&raw).split('\t').filter_map(|field| field.parse().ok()).collect();
+        Ok((fields.len() == 3).then(|| (fields[0], [fields[1], fields[2]])))
+    }
+
+    pub fn keep_task_budgets(&self, at: f64, tokens: [f64; 2]) -> Result<()> {
+        Ok(self.db.put(TASK_BUDGETS, format!("{at}\t{}\t{}", tokens[0], tokens[1]))?)
+    }
+
     /// Keeps the budgets; with no passage budget, as a planner from before it read them.
     pub fn keep_budgets(&self, at: f64, tokens: [f64; 4]) -> Result<()> {
         let passages = if tokens[3].is_nan() { String::new() } else { format!("\t{}", tokens[3]) };
@@ -1740,9 +1768,15 @@ struct Buffer {
     passages: BTreeMap<i64, usize>,
     backfill: usize,
     texts: usize,
+    /// The tasks its pages were charged, crawl and bulk.
+    charged: [f64; 2],
 }
 
 impl Buffer {
+    fn fill(&self, caps: Caps) -> f64 {
+        caps.fill(self.pages.len(), self.chars, self.texts)
+    }
+
     fn count(&mut self, source: Source, add: bool) {
         let tally = |counts: &mut BTreeMap<i64, usize>, seq: i64| {
             let count = counts.entry(seq).or_default();
@@ -1888,6 +1922,8 @@ pub struct Planner {
     passage_read_through: i64,
     kept_passage_cursor: i64,
     passage_budget: Budget,
+    /// Embed tasks, when the budget is in tasks; the page budgets are then ceilings.
+    tasks: Option<Tasks>,
     passage_file: Option<(i64, VecDeque<PageRow>)>,
     /// The bulk file the passage lane last failed to read, and how many times in a row.
     passage_failing: (i64, u32),
@@ -1937,10 +1973,26 @@ impl Planner {
         let resume = |at: usize, per_hour: f64| Budget::resumed(per_hour, held, kept.map(|(when, tokens)| (when, tokens[at])));
         // Fresh pages read again after a restart stay fresh.
         let (budget, fresh_budget) = (resume(0, settings.pages_per_hour), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
-        let pace = settings.pages_per_hour
-            + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour)
-            + settings.bulk_pages_per_hour
-            + settings.passage_texts_per_hour / PASSAGES_A_PAGE;
+        // Under a task budget the hand-over goes at its pace, an input a task.
+        let pace = if settings.embed_tasks_per_hour > 0.0 {
+            settings.embed_tasks_per_hour
+        } else {
+            settings.pages_per_hour
+                + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour)
+                + settings.bulk_pages_per_hour
+                + settings.passage_texts_per_hour / PASSAGES_A_PAGE
+        };
+        let kept_tasks = state.task_budgets()?;
+        let tasks = (settings.embed_tasks_per_hour > 0.0).then(|| Tasks::new(settings.embed_tasks_per_hour, settings.bulk_task_share, held, kept_tasks));
+        if let Some(tasks) = &tasks {
+            println!(
+                "planner: {} embed tasks an hour, {} of them the bulk feed's, page ceilings {} and {}",
+                tasks.per_hour[0] + tasks.per_hour[1],
+                tasks.per_hour[1],
+                if settings.pages_per_hour < NO_CEILING { settings.pages_per_hour.to_string() } else { "none".into() },
+                if settings.bulk_pages_per_hour < NO_CEILING { settings.bulk_pages_per_hour.to_string() } else { "none".into() }
+            );
+        }
         let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, resume(1, settings.bulk_pages_per_hour), state.bulk_hole()?);
         let handing = (pace > 0.0).then(|| resume(2, pace));
         let (passage_read_through, passage_budget) = (state.passage_cursor()?, resume(3, settings.passage_texts_per_hour));
@@ -1996,6 +2048,7 @@ impl Planner {
             passage_read_through,
             kept_passage_cursor: passage_read_through,
             passage_budget,
+            tasks,
             passage_file: None,
             passage_failing: (0, 0),
             withdrawn,
@@ -2097,7 +2150,11 @@ impl Planner {
         let handing = self.handing.as_mut().map_or(0.0, Budget::banked);
         let passages = if self.settings.passage_texts_per_hour > 0.0 { self.passage_budget.banked() } else { f64::NAN };
         let tokens = [self.budget.banked(), self.bulk_budget.banked(), handing, passages];
-        self.state.keep_budgets(now_us() as f64 / 1e6, tokens)
+        let at = now_us() as f64 / 1e6;
+        if let Some(tasks) = self.tasks.as_mut() {
+            self.state.keep_task_budgets(at, tasks.banked())?;
+        }
+        self.state.keep_budgets(at, tokens)
     }
 
     /// Reads the site template tables again when their files changed.
@@ -2218,12 +2275,12 @@ impl Planner {
                 if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
                     return Ok((took, None));
                 }
-                if !self.budget.holds_after(reserve, worth) || !self.room_after(reserve) {
+                if !self.crawl_holds(reserve, worth) || !self.room_after(reserve) {
                     return Ok((took, (self.state.waiting_count() > 0).then_some(class)));
                 }
                 while ahead.len() < self.settings.reads.max(1) && listed < REPLAN_FILES_PER_PASS && !swept {
                     let expected: usize = ahead.iter().map(|(_, waiting, _)| waiting).sum();
-                    if !self.budget.holds_after(expected + reserve, worth) || !self.has_room_after(expected + reserve) {
+                    if !self.crawl_holds(expected + reserve, worth) || !self.has_room_after(expected + reserve) {
                         break;
                     }
                     match self.state.replan_group(class, after)? {
@@ -2306,7 +2363,27 @@ impl Planner {
 
     /// Whether the budget and the rest lane's room hold a page beyond `reserve`.
     fn has_place(&mut self, reserve: usize) -> bool {
-        self.budget.holds_after(reserve, 1) && self.room_after(reserve)
+        self.crawl_holds(reserve, 1) && self.room_after(reserve)
+    }
+
+    /// Whether the crawl's budgets, in pages and in tasks, hold `pages` beyond `reserve`.
+    fn crawl_holds(&mut self, reserve: usize, pages: usize) -> bool {
+        let per_input = self.pages_per_rest_input() as f64;
+        self.budget.holds_after(reserve, pages) && self.tasks.as_mut().is_none_or(|tasks| tasks.holds(Payer::Crawl, (reserve + pages) as f64 / per_input))
+    }
+
+    /// Whether the bulk feed's budgets hold a page.
+    fn bulk_has(&mut self) -> bool {
+        self.bulk_budget.has() && self.tasks.as_mut().is_none_or(|tasks| tasks.holds(Payer::Bulk, 0.0))
+    }
+
+    /// Whether the passage lane's budgets hold a text; its tasks are the bulk feed's.
+    fn passage_has(&mut self) -> bool {
+        self.passage_budget.has() && self.tasks.as_mut().is_none_or(|tasks| tasks.holds(Payer::Bulk, 0.0))
+    }
+
+    fn caps(&self) -> Caps {
+        Caps { pages: self.settings.pages_per_input, chars: self.settings.chars_per_input, texts: self.settings.texts_per_input }
     }
 
     /// Whether the rest lane has room for a page beyond `reserve` pages; with none kept, the cap on its inputs alone says.
@@ -2351,7 +2428,7 @@ impl Planner {
         loop {
             let open = self.bulk_file.as_ref().map(|(seq, pages)| (*seq, pages.is_empty()));
             // A file read through is done whatever is left; a page, or a new file, needs room and budget.
-            if !matches!(open, Some((_, true))) && (self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_budget.has()) {
+            if !matches!(open, Some((_, true))) && (self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_has()) {
                 break;
             }
             match open {
@@ -2387,7 +2464,7 @@ impl Planner {
     async fn bulk_replan(&mut self) -> Result<bool> {
         let mut took = false;
         for _ in 0..BULK_FILES_PER_PASS {
-            if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_budget.has() {
+            if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_has() {
                 break;
             }
             let Some((file, keys)) = self.state.bulk_replan_group(self.bulk_replan_after)? else {
@@ -2411,7 +2488,7 @@ impl Planner {
             };
             let (mut found, mut whole) = (HashSet::new(), true);
             for page in pages.into_iter().filter(|page| keys.contains(&page.key)) {
-                if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_budget.has() {
+                if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_has() {
                     whole = false;
                     break;
                 }
@@ -2505,7 +2582,7 @@ impl Planner {
         let (mut took, mut opened) = (false, 0);
         loop {
             let open = self.passage_file.as_ref().map(|(seq, pages)| (*seq, pages.is_empty()));
-            if !matches!(open, Some((_, true))) && (self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.passage_budget.has()) {
+            if !matches!(open, Some((_, true))) && (self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.passage_has()) {
                 break;
             }
             match open {
@@ -2586,7 +2663,7 @@ impl Planner {
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
     async fn backfill(&mut self, stopped: Option<Class>) -> Result<bool> {
         let reserve = self.reserve(Class::ALL[0], Source::Backfill);
-        if !self.settings.backfill || self.current.is_none() || !self.budget.holds_after(reserve, self.settings.pages_per_input) || !self.room_after(reserve) {
+        if !self.settings.backfill || self.current.is_none() || !self.crawl_holds(reserve, self.settings.pages_per_input) || !self.room_after(reserve) {
             return Ok(false);
         }
         let (most, mut read, started, planned) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now(), self.counts.planned);
@@ -2609,7 +2686,7 @@ impl Planner {
                 Ok(Some(page)) => {
                     // A page goes only with a place beyond what its class leaves to the log and better classes; else the sweep waits on it, as it is the log's spare budget.
                     let class = self.class_of(&page.key);
-                    let passage_waits = self.backfill_passages(&page) && !self.passage_budget.has();
+                    let passage_waits = self.backfill_passages(&page) && !self.passage_has();
                     if passage_waits || stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
                         self.reading.as_mut().expect("a shard being read").held = Some(page);
                         return Ok(read > 0);
@@ -3095,7 +3172,7 @@ impl Planner {
         }
         if lane == Lane::Rest
             && !lane_read
-            && !(if bulk_paid { self.bulk_budget.has() } else { self.budget.holds_after(reserve, 1) && self.budget.take() })
+            && !(if bulk_paid { self.bulk_has() } else { self.crawl_holds(reserve, 1) && self.budget.take() })
         {
             self.counts.over_budget += 1;
             self.keep_waiting(&page);
@@ -3119,11 +3196,19 @@ impl Planner {
         if bulk_paid {
             self.bulk_budget.spend(1);
         }
+        // A page is charged what it adds to its input, so an input costs a task whatever its pages are like.
+        let (payer, caps) = (if bulk_paid || passage { Payer::Bulk } else { Payer::Crawl }, self.caps());
         let buffer = self.buffer_mut(lane);
         if let Some(domain) = new_in {
             *buffer.new.entry(domain).or_default() += 1;
         }
+        let before = buffer.fill(caps);
         buffer.push(planned);
+        let cost = buffer.fill(caps) - before;
+        buffer.charged[payer as usize] += cost;
+        if let Some(tasks) = self.tasks.as_mut() {
+            tasks.spend(payer, cost);
+        }
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
         if lane == Lane::Rest && !bulk_paid && !passage {
@@ -3289,6 +3374,10 @@ impl Planner {
         // The backfill's place moves only past what the other lane still holds.
         let other = if lane == Lane::Fresh { Lane::Rest } else { Lane::Fresh };
         let backfill = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0).map(|reading| (reading.shard, reading.last.clone()));
+        let charged = self.buffer(lane).charged;
+        if let Some(tasks) = self.tasks.as_mut() {
+            tasks.settle(charged);
+        }
         let mut buffer = std::mem::take(self.buffer_mut(lane));
         if lane == Lane::Rest {
             self.rest_cut = (self.rest_cut.0 + buffer.pages.len(), self.rest_cut.1 + 1);
@@ -3403,7 +3492,7 @@ impl Planner {
             if handed == room {
                 break;
             }
-            let pages = parsed["pages"].as_array().map_or(0, Vec::len);
+            let pages = if self.tasks.is_some() { 1 } else { parsed["pages"].as_array().map_or(0, Vec::len) };
             if self.handing.as_mut().is_some_and(|handing| !handing.holds(pages)) {
                 paced = true;
                 break;
@@ -3622,6 +3711,94 @@ impl Budget {
 
     fn spend(&mut self, pages: usize) {
         self.tokens -= pages as f64;
+    }
+}
+
+/// The share of the task budget a page is paid from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Payer {
+    Crawl,
+    Bulk,
+}
+
+/// Embed tasks an hour, split between the crawl and the bulk feed; each banks up to `BUDGET_BANKED` of the whole, and what one cannot bank goes to the other.
+struct Tasks {
+    per_hour: [f64; 2],
+    tokens: [f64; 2],
+    refilled: Instant,
+}
+
+impl Tasks {
+    /// Holding `held` of the budget to start with, or going on from tokens banked at Unix time `at`, refilled for the time since, when that is more.
+    fn new(per_hour: f64, bulk_share: f64, held: Duration, kept: Option<(f64, [f64; 2])>) -> Tasks {
+        let per_hour = [per_hour * (1.0 - bulk_share), per_hour * bulk_share];
+        let share = (held.as_secs_f64() / BUDGET_BANKED.as_secs_f64()).min(1.0);
+        let cap = Budget::cap(per_hour[0] + per_hour[1]);
+        let mut tasks = Tasks { per_hour, tokens: [cap * share * (1.0 - bulk_share), cap * share * bulk_share], refilled: Instant::now() };
+        if let Some((at, kept)) = kept.filter(|(at, kept)| at.is_finite() && kept.iter().all(|tokens| tokens.is_finite())) {
+            let mut resumed = Tasks { per_hour, tokens: kept, refilled: Instant::now() };
+            resumed.add((now_us() as f64 / 1e6 - at).max(0.0) / 3600.0);
+            tasks.tokens = if held.is_zero() { resumed.tokens } else { [0, 1].map(|at| tasks.tokens[at].max(resumed.tokens[at])) };
+        }
+        tasks
+    }
+
+    fn cap(&self) -> f64 {
+        Budget::cap(self.per_hour[0] + self.per_hour[1])
+    }
+
+    fn add(&mut self, hours: f64) {
+        let cap = self.cap();
+        let raw = [0, 1].map(|at| self.tokens[at] + self.per_hour[at] * hours);
+        let over = raw.map(|tokens| (tokens - cap).max(0.0));
+        self.tokens = [0, 1].map(|at| (raw[at].min(cap) + over[1 - at]).min(cap));
+    }
+
+    fn refill(&mut self) {
+        self.add(self.refilled.elapsed().as_secs_f64() / 3600.0);
+        self.refilled = Instant::now();
+    }
+
+    fn banked(&mut self) -> [f64; 2] {
+        self.refill();
+        self.tokens
+    }
+
+    /// Whether the payer has tasks left, and `tasks` of them, or the most it ever holds when that is fewer.
+    fn holds(&mut self, payer: Payer, tasks: f64) -> bool {
+        self.refill();
+        let tokens = self.tokens[payer as usize];
+        tokens > 0.0 && tokens >= tasks.min(self.cap())
+    }
+
+    fn spend(&mut self, payer: Payer, tasks: f64) {
+        self.tokens[payer as usize] -= tasks;
+    }
+
+    /// Makes an input cost one task in all, paid back or charged by the share each payer was charged for its pages.
+    fn settle(&mut self, charged: [f64; 2]) {
+        let (total, owed) = (charged[0] + charged[1], 1.0 - charged[0] - charged[1]);
+        if total > 0.0 {
+            (0..2).for_each(|at| self.tokens[at] -= owed * charged[at] / total);
+        } else {
+            self.tokens[Payer::Crawl as usize] -= owed;
+        }
+    }
+}
+
+/// The caps that cut an input.
+#[derive(Clone, Copy)]
+struct Caps {
+    pages: usize,
+    chars: usize,
+    texts: usize,
+}
+
+impl Caps {
+    /// How much of an input these make, 1 or more once it is cut by the first cap they reach.
+    fn fill(&self, pages: usize, chars: usize, texts: usize) -> f64 {
+        let texts = if self.texts > 0 { texts as f64 / self.texts as f64 } else { 0.0 };
+        (pages as f64 / self.pages.max(1) as f64).max(chars as f64 / self.chars.max(1) as f64).max(texts)
     }
 }
 
@@ -4003,5 +4180,59 @@ mod tests {
         assert_eq!(state.wait("pages/academic.example/older", &version_in(1), 3, |_| false).unwrap(), Waited::Kept);
         assert_eq!(state.wait("pages/bench.example/3", &version_in(5), 3, |_| false).unwrap(), Waited::InPlaceOf(Class::Other));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The inputs cut in a clean hour of 2,500 tasks, after an hour to fill the banks, and the share the bulk feed paid; each lane offers pages of `chars` while it holds tasks, into one buffer as the rest lane's.
+    fn task_hour(crawl: Option<usize>, bulk: Option<usize>) -> (f64, f64) {
+        let caps = Caps { pages: 1_000, chars: 3_000_000, texts: 0 };
+        let mut tasks = Tasks::new(2_500.0, 0.25, Duration::ZERO, None);
+        let (mut inputs, mut bulk_paid, mut open, mut charged) = (0.0, 0.0, (0, 0), [0.0; 2]);
+        for second in 0..7_200 {
+            tasks.add(1.0 / 3600.0);
+            for (payer, chars) in [(Payer::Crawl, crawl), (Payer::Bulk, bulk)] {
+                let Some(chars) = chars else { continue };
+                while tasks.holds(payer, 0.0) {
+                    let before = caps.fill(open.0, open.1, 0);
+                    open = (open.0 + 1, open.1 + chars);
+                    let cost = caps.fill(open.0, open.1, 0) - before;
+                    charged[payer as usize] += cost;
+                    tasks.spend(payer, cost);
+                    if open.0 >= caps.pages || open.1 >= caps.chars {
+                        tasks.settle(charged);
+                        if second >= 3_600 {
+                            inputs += 1.0;
+                            bulk_paid += charged[1] / (charged[0] + charged[1]);
+                        }
+                        (open, charged) = ((0, 0), [0.0; 2]);
+                    }
+                }
+            }
+        }
+        (inputs, bulk_paid / inputs)
+    }
+
+    #[test]
+    fn the_task_budget_cuts_its_hourly_inputs_and_bulk_share_whatever_the_pages_are_like() {
+        // Long crawled pages beside short bulk rows, short crawled pages beside long bulk texts, and each lane alone.
+        for (crawl, bulk, share) in [(Some(12_000), Some(1_500), true), (Some(2_000), Some(60_000), true), (Some(12_000), None, false), (None, Some(800), false)] {
+            let (inputs, bulk_share) = task_hour(crawl, bulk);
+            assert!((inputs - 2_500.0).abs() <= 75.0, "{inputs} inputs in the hour for crawl {crawl:?} and bulk {bulk:?}");
+            if share {
+                assert!((bulk_share - 0.25).abs() <= 0.03, "the bulk feed paid {bulk_share} for crawl {crawl:?} and bulk {bulk:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_input_costs_one_task_however_full_it_was_cut() {
+        let mut tasks = Tasks::new(3_600.0, 0.25, Duration::ZERO, None);
+        tasks.tokens = [10.0, 10.0];
+        tasks.settle([0.3, 0.1]);
+        assert!((tasks.tokens[0] - 9.55).abs() < 1e-9 && (tasks.tokens[1] - 9.85).abs() < 1e-9, "a part-filled input is paid up to a task by each payer's share");
+        tasks.settle([0.9, 0.3]);
+        assert!((tasks.tokens[0] - 9.7).abs() < 1e-9 && (tasks.tokens[1] - 9.9).abs() < 1e-9, "an input over its cap pays back the excess");
+        tasks.tokens = [tasks.cap(), -1.0];
+        tasks.add(60.0 / 3600.0);
+        assert!(tasks.tokens[1] > 0.0 && tasks.tokens[0] == tasks.cap(), "what a full lane cannot bank goes to the other");
     }
 }
