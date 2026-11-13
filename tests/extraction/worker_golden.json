@@ -1,0 +1,1032 @@
+{
+ "article": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Council approves transit plan"
+   ],
+   "image": "",
+   "json_ld_types": [
+    "NewsArticle"
+   ],
+   "lang": "en",
+   "ld": "",
+   "modified": "",
+   "page_type": "article",
+   "paywalled": null,
+   "published": "2026-10-20T07:30:00Z",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "# Council approves transit plan\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.",
+   "text_mode": "main",
+   "title": "Council approves transit plan"
+  }
+ },
+ "challenge": {
+  "blocked": true,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "Just a moment...\nChecking your browser before accessing the site.",
+   "text_mode": "full",
+   "title": "Just a moment..."
+  }
+ },
+ "csv": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/files/annual_report-2025%20final.csv",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "annual report 2025 final\nname | city | score\nSmith, Ann | Paris | 10\nBob | Tokyo | 7",
+   "text_mode": "main",
+   "title": "annual report 2025 final"
+  },
+  "which": "csv"
+ },
+ "csv_bad_utf8": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/latin.csv",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "latin\ncaf� | cr�me\n� | ok",
+   "text_mode": "main",
+   "title": "latin"
+  },
+  "which": "csv"
+ },
+ "csv_by_content_type": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/download?id=7",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "download\nname | city | score\nSmith, Ann | Paris | 10\nBob | Tokyo | 7",
+   "text_mode": "main",
+   "title": "download"
+  },
+  "which": "csv"
+ },
+ "csv_named_by_the_record": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/table",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "table\nname | city | score\nSmith, Ann | Paris | 10\nBob | Tokyo | 7",
+   "text_mode": "main",
+   "title": "table"
+  },
+  "which": "csv"
+ },
+ "csv_only_blank_cells": {
+  "page": null,
+  "which": "empty"
+ },
+ "csv_rows_capped": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/big.csv",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 58338,
+    "sha256": "78f7ab4b222fa4f6f41342b2868c587874fd94f23297c975c0948b12feb8c4a2"
+   },
+   "text_mode": "main",
+   "title": "big"
+  },
+  "which": "csv"
+ },
+ "csv_too_large": {
+  "page": null,
+  "which": "data_too_large"
+ },
+ "edgar_article_not_whole": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Council approves transit plan"
+   ],
+   "image": "",
+   "json_ld_types": [
+    "NewsArticle"
+   ],
+   "lang": "en",
+   "ld": "",
+   "modified": "",
+   "page_type": "article",
+   "paywalled": null,
+   "published": "2026-10-20T07:30:00Z",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "# Council approves transit plan\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.",
+   "text_mode": "main",
+   "title": "Council approves transit plan"
+  }
+ },
+ "edgar_empty": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "",
+   "text_mode": "full",
+   "title": ""
+  }
+ },
+ "edgar_listing": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Filing Detail"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 2133,
+    "sha256": "c43711a72dbdb62d5d0c3ebef000676be30f22a6660afd361b649244946f4aad"
+   },
+   "text_mode": "full",
+   "title": "EDGAR Filing Documents for 0000001001-26-000001"
+  }
+ },
+ "edgar_listing_whole": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Filing Detail"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 2133,
+    "sha256": "c43711a72dbdb62d5d0c3ebef000676be30f22a6660afd361b649244946f4aad"
+   },
+   "text_mode": "full",
+   "title": "EDGAR Filing Documents for 0000001001-26-000001"
+  }
+ },
+ "edgar_not_whole": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 199921,
+    "sha256": "757b20fbbb96f66b2795d111f2742b9092f33e6bb77ffaaf35a2a8016851c365"
+   },
+   "text_mode": "full",
+   "title": "acme-10k.htm"
+  }
+ },
+ "edgar_r_file": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "listing",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 19972,
+    "sha256": "e990e630facc8c385afb74bd73e2c9777b0c634115670dea4c416e31c87c3086"
+   },
+   "text_mode": "full",
+   "title": "acme-10k.htm"
+  }
+ },
+ "edgar_text_submission": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 3949,
+    "sha256": "89b47ad69c795a0477c4ef19140ac33f1ef77b4527f094ca711474a8cb3cad25"
+   },
+   "text_mode": "full",
+   "title": ""
+  }
+ },
+ "edgar_whole": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 271902,
+    "sha256": "f0ebcfcc2dd79be24c55e5674d36b04803e9761d5bfe95c8612ace10f0af437e"
+   },
+   "text_mode": "full",
+   "title": "acme-10k.htm"
+  }
+ },
+ "host_named_file": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "data.example\na | b\n1 | 2",
+   "text_mode": "main",
+   "title": "data.example"
+  },
+  "which": "csv"
+ },
+ "html_is_not_a_document": {
+  "page": null,
+  "which": "not_a_document"
+ },
+ "json": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/x.json",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "x\n \"name\": \"Zürich\",\n \"values\": [\n  2.5,\n  null\n \"nested\": {\n  \"ok\": true",
+   "text_mode": "main",
+   "title": "x"
+  },
+  "which": "json"
+ },
+ "json_lone_surrogate": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/s.json",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "s\n \"text\": \"ab\"",
+   "text_mode": "main",
+   "title": "s"
+  },
+  "which": "json"
+ },
+ "json_unreadable": {
+  "page": null,
+  "which": "unreadable"
+ },
+ "jsonl": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/rows.jsonl",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "rows\n \"a\": 1\n \"b\": [",
+   "text_mode": "main",
+   "title": "rows"
+  },
+  "which": "jsonl"
+ },
+ "long_page_fetched_as_a_challenge": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Council approves transit plan"
+   ],
+   "image": "",
+   "json_ld_types": [
+    "NewsArticle"
+   ],
+   "lang": "en",
+   "ld": "",
+   "modified": "",
+   "page_type": "article",
+   "paywalled": null,
+   "published": "2026-10-20T07:30:00Z",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "# Council approves transit plan\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes.",
+   "text_mode": "main",
+   "title": "Council approves transit plan"
+  }
+ },
+ "not_edgar_whole": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 199921,
+    "sha256": "757b20fbbb96f66b2795d111f2742b9092f33e6bb77ffaaf35a2a8016851c365"
+   },
+   "text_mode": "full",
+   "title": "acme-10k.htm"
+  }
+ },
+ "pdf_blank_first_page": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/blank-first.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 2",
+    "Page 3",
+    "Page 4"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 4\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0)."
+  },
+  "which": "pdf"
+ },
+ "pdf_by_magic_bytes": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/view?doc=1",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "Acme Annual Report 2025\n## Page 1\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "Acme Annual Report 2025"
+  },
+  "which": "pdf"
+ },
+ "pdf_encrypted": {
+  "page": null,
+  "which": "encrypted"
+ },
+ "pdf_meta_title": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/reports/annual.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "Acme Annual Report 2025\n## Page 1\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "Acme Annual Report 2025"
+  },
+  "which": "pdf"
+ },
+ "pdf_no_title": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/r2.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0).\n## Page 1\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0)."
+  },
+  "which": "pdf"
+ },
+ "pdf_owner_password_only": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/open.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "Acme Annual Report 2025\n## Page 1\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "Acme Annual Report 2025"
+  },
+  "which": "pdf"
+ },
+ "pdf_pages_capped": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/many.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3",
+    "Page 4",
+    "Page 5",
+    "Page 6",
+    "Page 7",
+    "Page 8",
+    "Page 9",
+    "Page 10",
+    "Page 11",
+    "Page 12",
+    "Page 13",
+    "Page 14",
+    "Page 15",
+    "Page 16",
+    "Page 17",
+    "Page 18",
+    "Page 19",
+    "Page 20",
+    "Page 21",
+    "Page 22",
+    "Page 23",
+    "Page 24",
+    "Page 25",
+    "Page 26",
+    "Page 27",
+    "Page 28",
+    "Page 29",
+    "Page 30"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": {
+    "chars": 41394,
+    "sha256": "eedcf3919333f847761385af92719083f74f75279020e8291e73b54a0848ff33"
+   },
+   "text_mode": "main",
+   "title": "Many Pages"
+  },
+  "which": "pdf"
+ },
+ "pdf_poor_title": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://acme.example/r.pdf",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Page 1",
+    "Page 2",
+    "Page 3"
+   ],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0).\n## Page 1\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 1, line 3).\n## Page 2\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 2, line 3).\n## Page 3\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 0).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 1).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 2).\nThe company reported revenue growth across its segments during the fiscal year (page 3, line 3).",
+   "text_mode": "main",
+   "title": "The company reported revenue growth across its segments during the fiscal year (page 1, line 0)."
+  },
+  "which": "pdf"
+ },
+ "pdf_short": {
+  "page": null,
+  "which": "no_text_layer"
+ },
+ "pdf_unreadable": {
+  "page": null,
+  "which": "unreadable"
+ },
+ "short_page": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "GDP data\nGross domestic product, 2025: 29,184.9",
+   "text_mode": "full",
+   "title": "GDP data"
+  }
+ },
+ "short_page_fetched_as_a_challenge": {
+  "blocked": true,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "GDP data\nGross domestic product, 2025: 29,184.9",
+   "text_mode": "full",
+   "title": "GDP data"
+  }
+ },
+ "tsv": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/t.tsv",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "t\na | b | c\n1 |  | 3",
+   "text_mode": "main",
+   "title": "t"
+  },
+  "which": "tsv"
+ },
+ "txt": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/notes.txt",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "notes\nFirst line\nSecond line\nThird — line",
+   "text_mode": "main",
+   "title": "notes"
+  },
+  "which": "txt"
+ },
+ "txt_long": {
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "https://data.example/long.txt",
+   "description": "",
+   "entity": "",
+   "headings": [],
+   "image": "",
+   "json_ld_types": [],
+   "lang": "",
+   "ld": "",
+   "modified": "",
+   "page_type": "other",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "long\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "text_mode": "main",
+   "title": "long"
+  },
+  "which": "txt"
+ },
+ "txt_whitespace_only": {
+  "page": null,
+  "which": "empty"
+ },
+ "unicode_and_surrogates": {
+  "blocked": false,
+  "page": {
+   "author": "",
+   "breadcrumbs": [],
+   "canonical": "",
+   "description": "",
+   "entity": "",
+   "headings": [
+    "Café crème à Tōkyō"
+   ],
+   "image": "",
+   "json_ld_types": [
+    "NewsArticle"
+   ],
+   "lang": "fr",
+   "ld": "",
+   "modified": "",
+   "page_type": "landing",
+   "paywalled": null,
+   "published": "",
+   "robots": [],
+   "section": "",
+   "site_name": "",
+   "tags": [],
+   "text": "Café — 東京 🚆\n# Café crème à Tōkyō\nThe council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. The council approved the new transit plan after a long public debate about fares and routes. Ünïcödé 東京 🚆.",
+   "text_mode": "full",
+   "title": "Café — 東京 🚆"
+  }
+ },
+ "unknown_extension": {
+  "page": null,
+  "which": "not_a_document"
+ },
+ "xls": {
+  "page": null,
+  "which": "spreadsheet"
+ },
+ "xlsx_by_extension": {
+  "page": null,
+  "which": "spreadsheet"
+ }
+}
