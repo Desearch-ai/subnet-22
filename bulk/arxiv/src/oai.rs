@@ -101,14 +101,14 @@ fn item_of(record: Node) -> Result<OaiItem> {
     }))
 }
 
-/// `bulk.arxiv.oai_papers`: an error for a page lxml cannot parse, else each record, ending at the first bad one.
+/// An error for a page lxml cannot parse, else each record, ending at the first bad one.
 pub fn oai_papers(path: &Path) -> Result<Vec<Result<OaiItem>>> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let items = papers_in(&bytes).with_context(|| format!("parsing {}", path.display()))?;
     Ok(items.into_iter().map(|item| item.with_context(|| format!("in {}", path.display()))).collect())
 }
 
-/// `bulk.arxiv.oai_records`: deleted ids and abstract pages.
+/// Deleted ids and abstract pages.
 pub fn oai_records(path: &Path) -> Result<Vec<Result<Record>>> {
     Ok(oai_papers(path)?
         .into_iter()

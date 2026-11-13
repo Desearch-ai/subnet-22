@@ -1,4 +1,4 @@
-//! `bulk.arxiv.body_lines` and the patterns it uses, with Python's `\s`, `\w` and `\b`.
+//! A paper's body lines and the patterns that find them, with Python's `\s`, `\w` and `\b`.
 
 use std::sync::LazyLock;
 
@@ -36,7 +36,7 @@ fn opens_with_abstract(row: &str) -> bool {
     !chars.next().is_some_and(is_word)
 }
 
-/// `bulk.arxiv.body_lines`.
+/// The body of a paper's Markdown, from its abstract to its references.
 pub fn body_lines(markdown: &str) -> Vec<String> {
     let rows: Vec<&str> = markdown.split('\n').collect();
     let headings: Vec<usize> = (0..rows.len()).filter(|&i| heading(rows[i]).is_some()).collect();

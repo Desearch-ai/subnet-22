@@ -93,7 +93,7 @@ fn outcome(meta: &Value, xml: Option<&[u8]>, renderer: &Renderer) -> Result<Resu
     Ok(Ok(article_page(xml, meta, renderer)?))
 }
 
-/// `bulk.pmc.run`: pages of the versions taken; `pmids` collects their PMIDs for the PubMed run.
+/// Pages of the versions taken; `pmids` collects their PMIDs for the PubMed run.
 pub fn run<I>(articles: I, batches: &mut Batches, as_of_us: i64, limit: u64, mut pmids: Option<&mut Vec<String>>, renderer: Arc<Renderer>) -> Result<Counts>
 where
     I: Iterator<Item = Result<Article>>,

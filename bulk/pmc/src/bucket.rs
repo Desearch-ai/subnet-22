@@ -65,7 +65,6 @@ impl Newest {
     }
 }
 
-/// `bulk.pmc.latest_versions`.
 pub fn latest_versions<S: AsRef<str>>(keys: impl IntoIterator<Item = S>) -> IndexMap<String, String> {
     let mut newest = Newest::default();
     for key in keys {
@@ -84,7 +83,7 @@ fn open_text(path: &Path) -> Result<Box<dyn BufRead>> {
     })
 }
 
-/// `bulk.pmc.inventory_keys`: each metadata key in the S3 inventory CSV files, gzipped or not.
+/// Each metadata key in the S3 inventory CSV files, gzipped or not.
 pub fn inventory_keys(paths: &[PathBuf], mut each: impl FnMut(&str)) -> Result<()> {
     for path in paths {
         for row in CsvRows::new(open_text(path)?) {
@@ -111,7 +110,7 @@ pub fn sorted_names(paths: &[PathBuf]) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// `bulk.pmc.fetch`: None when the bucket answers 404.
+/// The key's bytes, or None when the bucket answers 404.
 pub fn fetch(client: &Client, base: &str, key: &str) -> Result<Option<Vec<u8>>> {
     client.get_retrying(&format!("{base}/{key}")).with_context(|| format!("reading {key}"))
 }
@@ -147,7 +146,7 @@ fn one(client: &Client, base: &str, name: &str) -> Result<Article> {
     }
 }
 
-/// `bulk.pmc.from_bucket`: in order, at most `workers * AHEAD_PER_WORKER` reads in flight; a 404 means the version is gone.
+/// The named versions in order, at most `workers * AHEAD_PER_WORKER` reads in flight; a 404 means the version is gone.
 pub fn from_bucket<I>(names: I, client: Arc<Client>, base: String, workers: usize) -> impl Iterator<Item = Result<Article>>
 where
     I: Iterator<Item = String>,
@@ -186,7 +185,7 @@ where
     })
 }
 
-/// `bulk.pmc.from_folder`: the `PMC*.json` files in name order, each with its `.xml` when taken.
+/// The `PMC*.json` files in name order, each with its `.xml` when taken.
 pub fn from_folder(folder: &Path) -> Result<impl Iterator<Item = Result<Article>>> {
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
     for entry in fs::read_dir(folder).with_context(|| format!("reading --folder {}", folder.display()))? {
@@ -209,7 +208,7 @@ pub fn from_folder(folder: &Path) -> Result<impl Iterator<Item = Result<Article>
     }))
 }
 
-/// `bulk.pmc.latest_inventory`: the newest daily inventory's CSV files, downloaded into `dest` unless there already.
+/// The newest daily inventory's CSV files, downloaded into `dest` unless there already.
 pub fn latest_inventory(dest: &Path, client: &Client, base: &str) -> Result<Vec<PathBuf>> {
     let listing = fetch_found(client, base, INVENTORY_LISTING)?;
     let listing = String::from_utf8(listing).context("the inventory listing")?;

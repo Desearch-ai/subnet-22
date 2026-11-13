@@ -1,4 +1,4 @@
-//! PubMed: baseline and update files as paper pages at pubmed.ncbi.nlm.nih.gov, as `bulk/pubmed.py` builds them.
+//! PubMed: baseline and update files as paper pages at pubmed.ncbi.nlm.nih.gov, with the PMIDs of deleted citations.
 
 pub mod xml;
 
@@ -52,17 +52,15 @@ const FILES_AHEAD: usize = 4;
 // Chunks a file further down the list may build before the run reaches it: about a whole file.
 const BUILT_AHEAD: usize = 256;
 
-/// `bulk.pubmed.url_of`.
 pub fn url_of(pmid: &str) -> String {
     format!("https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
 }
 
-/// `bulk.pubmed.text_of`.
 pub fn text_of(node: Option<&Element>) -> String {
     node.map(|n| collapse(&n.itertext())).unwrap_or_default()
 }
 
-/// `bulk.pubmed.full_date`: YYYY-MM-DD when the node names a year, month and day, else empty.
+/// YYYY-MM-DD when the node names a year, month and day, else empty.
 pub fn full_date(node: Option<&Element>) -> String {
     let Some(node) = node else {
         return String::new();
@@ -89,7 +87,6 @@ fn padded(digits: &str, width: usize) -> String {
     format!("{:0>width$}", if n.is_empty() { "0" } else { n })
 }
 
-/// `bulk.pubmed.author_name`.
 pub fn author_name(author: &Element) -> String {
     if let Some(collective) = author.findtext("CollectiveName").filter(|c| !c.is_empty()) {
         return collapse(collective);
@@ -101,7 +98,6 @@ fn joined(parts: &[Option<&str>], sep: &str) -> String {
     parts.iter().flatten().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join(sep)
 }
 
-/// `bulk.pubmed.abstract_lines`.
 pub fn abstract_lines(abstract_: &Element) -> Vec<Line> {
     let mut lines = Vec::new();
     for part in abstract_.iterfind("AbstractText") {
@@ -163,7 +159,7 @@ pub enum Article {
     Skipped(&'static str),
 }
 
-/// `bulk.pubmed.article_page`: an error where the Python raises.
+/// The citation's page, or why it has none; an error when it lacks a part every citation has.
 pub fn article_page(article: &Element) -> Result<Article> {
     let citation = article.find("MedlineCitation").ok_or_else(|| anyhow!("a PubmedArticle has no MedlineCitation"))?;
     let pmid = citation.findtext("PMID").unwrap_or("");
@@ -230,12 +226,12 @@ pub fn open(path: &Path) -> Result<Box<dyn BufRead + Send>> {
     })
 }
 
-/// `bulk.pubmed.records`: each PubmedArticle and DeleteCitation of one file, in file order.
+/// Each PubmedArticle and DeleteCitation of one file, in file order.
 pub fn records(path: &Path) -> Result<Records<Box<dyn BufRead + Send>>> {
     Ok(Records::new(open(path)?, RECORDS))
 }
 
-/// What one record does to the run, in the order `bulk.pubmed.run` does it.
+/// What one record does to the run, in the order the run applies it.
 enum Step {
     Remove(String),
     Count(&'static str),
@@ -314,7 +310,6 @@ fn build_pages(parsed: Receiver<Parsed>, skip: &HashSet<String>, as_of_us: i64, 
     }
 }
 
-/// `bulk.pubmed.run`.
 pub fn run(files: &[PathBuf], batches: &mut bulk_core::Batches, as_of_us: i64, skip: &HashSet<String>, limit: u64) -> Result<Counts> {
     let mut counts = Counts::default();
     let mut pages = 0u64;
