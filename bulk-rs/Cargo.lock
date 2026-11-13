@@ -400,6 +400,7 @@ dependencies = [
  "bulk-arxiv-text",
  "bulk-bittensor",
  "bulk-core",
+ "bulk-openalex",
  "bulk-pmc",
  "bulk-pubmed",
  "bulk-wikipedia",
@@ -475,6 +476,7 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
+ "bytes",
  "clap",
  "desearch",
  "indexmap",
@@ -487,6 +489,22 @@ dependencies = [
  "tempfile",
  "unicode-normalization",
  "unicode-properties",
+]
+
+[[package]]
+name = "bulk-openalex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "bulk-core",
+ "bulk-pmc",
+ "clap",
+ "desearch",
+ "parquet",
+ "regex",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
