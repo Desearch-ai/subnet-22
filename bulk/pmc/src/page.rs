@@ -1,4 +1,4 @@
-//! `bulk.pmc.article_page`: the front matter read here, the abstracts and body rendered by the Python worker.
+//! An article's page: the front matter read here, the abstracts and body rendered by the Python worker.
 
 use std::borrow::Cow;
 
@@ -70,7 +70,7 @@ fn own_text<'a>(node: Node<'a, '_>) -> &'a str {
     node.text().unwrap_or("")
 }
 
-/// `bulk.pmc.text_of`: the subtree's text, whitespace collapsed.
+/// The subtree's text, whitespace collapsed.
 pub fn text_of(node: Option<Node>) -> String {
     let Some(node) = node else { return String::new() };
     let text: String = node.descendants().filter(|n| n.is_text()).filter_map(|n| n.text()).collect();

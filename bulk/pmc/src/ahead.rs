@@ -1,4 +1,4 @@
-//! `bulk.pmc.bounded_map`: a map over a thread pool, in input order, with at most `ahead` calls submitted and not yet taken.
+//! A map over a thread pool, in input order, with at most `ahead` calls submitted and not yet taken.
 
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};

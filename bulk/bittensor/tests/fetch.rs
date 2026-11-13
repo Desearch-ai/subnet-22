@@ -113,11 +113,11 @@ fn summary(out: &str, counts: &bulk_core::Counts) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_chain_read_matches_python_at_its_block() {
+async fn the_chain_read_matches_the_golden_run_at_its_block() {
     let dir = fixtures().join("chain");
     let recorded = load(&dir.join("replay.json.gz"));
     let server = replay::start(&recorded["exchanges"], vec!["127.0.0.1".into()], 0).await;
-    let block = load(&dir.join("python/subnets-chain.json"))["block"].as_i64().unwrap();
+    let block = load(&dir.join("expected/subnets-chain.json"))["block"].as_i64().unwrap();
     let work = tempfile::tempdir().unwrap();
     let out = work.path().join("src");
     let options = Options {
@@ -133,11 +133,11 @@ async fn the_chain_read_matches_python_at_its_block() {
     };
     fetch::fetch(&options, no_anchors()).await.unwrap();
     assert!(server.misses.lock().unwrap().is_empty(), "{:?}", server.misses.lock().unwrap());
-    assert_same_files(&out, &dir.join("python"));
+    assert_same_files(&out, &dir.join("expected"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_replayed_fetch_matches_python() {
+async fn the_replayed_fetch_matches_the_golden_run() {
     let Some(python) = std::env::var("BULK_PYTHON").ok().filter(|p| !p.is_empty()) else {
         eprintln!("skipped: set BULK_PYTHON to a Python with lxml for the page worker");
         return;
@@ -169,7 +169,7 @@ async fn the_replayed_fetch_matches_python() {
     let mut written = std::fs::read_to_string(out.join(fetch::FETCH)).unwrap();
     written = written.replace(&bulk_core::run::path_str(&work.path().join("previous")), "previous");
     std::fs::write(out.join(fetch::FETCH), written).unwrap();
-    assert_same_files(&out, &dir.join("python"));
+    assert_same_files(&out, &dir.join("expected"));
     let stdout = std::fs::read_to_string(dir.join("stdout.txt")).unwrap();
     assert_eq!(summary("src", &counts), stdout.trim_end());
 }

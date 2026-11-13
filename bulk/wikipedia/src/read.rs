@@ -1,4 +1,4 @@
-//! Snapshot lines as `wikipedia.articles` reads them: a .tar.gz of NDJSON files, or one NDJSON file, gzipped or not.
+//! Snapshot lines from a .tar.gz of NDJSON files, or from one NDJSON file, gzipped or not.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};

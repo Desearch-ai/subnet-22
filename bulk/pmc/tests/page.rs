@@ -162,7 +162,7 @@ fn args(folder: &Path, out: &Path, python: &str, root: &Path, limit: u64, pmids:
 }
 
 #[test]
-fn pmc_folder_runs_match_the_python_run() {
+fn pmc_folder_runs_match_the_golden_runs() {
     let Some((python, root)) = python() else { return };
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/pmc-kinds");
     let dir = tempfile::tempdir().unwrap();
@@ -176,7 +176,7 @@ fn pmc_folder_runs_match_the_python_run() {
     for limit in [0, 2] {
         let (ours, our_pmids) = (dir.path().join(format!("rust-{limit}")), dir.path().join(format!("rust-{limit}.txt")));
         bulk_pmc::main(args(&folder, &ours, &python, &root, limit, &our_pmids)).unwrap();
-        let diff = bulk_core::runs::diff(&ours, &fixtures.join(format!("python-{limit}")), 5).unwrap();
+        let diff = bulk_core::runs::diff(&ours, &fixtures.join(format!("expected-{limit}")), 5).unwrap();
         assert!(diff.manifest_differences.is_empty() && diff.rows_differing == 0, "{diff:?}");
         assert_eq!(diff.rows_a, if limit == 0 { 3 } else { 2 });
         assert_eq!(std::fs::read_to_string(&our_pmids).unwrap(), std::fs::read_to_string(fixtures.join(format!("pmids-{limit}.txt"))).unwrap());

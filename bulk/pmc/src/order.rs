@@ -24,7 +24,7 @@ pub const OPENALEX_WORKS: &str = "https://openalex.s3.amazonaws.com/data/parquet
 pub const PUBMED_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/";
 pub const COLUMNS: [&str; 2] = ["ids", "cited_by_count"];
 
-/// `bulk.pmc.pmc_ids`: PMCID to its PMID and year, from NCBI's PMC-ids.csv.gz.
+/// PMCID to its PMID and year, from NCBI's PMC-ids.csv.gz.
 pub fn pmc_ids(path: &Path) -> Result<HashMap<String, (String, i64)>> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut rows = CsvRows::new(std::io::BufReader::new(MultiGzDecoder::new(std::io::BufReader::new(file))));
@@ -47,7 +47,7 @@ pub fn pmc_ids(path: &Path) -> Result<HashMap<String, (String, i64)>> {
     Ok(ids)
 }
 
-/// `bulk.pmc.order`: most cited per year since publication first, the newest PMCID first among equals.
+/// Most cited per year since publication first, the newest PMCID first among equals.
 pub fn order(names: &IndexMap<String, String>, ids: &HashMap<String, (String, i64)>, cited: &HashMap<String, i64>, year: i64) -> Vec<String> {
     let rank = |pmcid: &str| -> (f64, i64) {
         let per_year = match ids.get(pmcid) {
@@ -87,7 +87,7 @@ pub fn files_listed(client: &Client, manifest: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-/// `pmc.map_lookup(ids, "pmid", "first")` with its counts, for the rows whose PMID is wanted.
+/// The highest citation count of each wanted PMID, by the first `pmid` entry of each row's `ids` map.
 fn batch_citations(batch: &RecordBatch, wanted: &HashSet<String>, found: &mut HashMap<String, i64>) -> Result<()> {
     let ids = batch.column_by_name("ids").ok_or_else(|| anyhow!("no ids column"))?;
     let cited = batch.column_by_name("cited_by_count").ok_or_else(|| anyhow!("no cited_by_count column"))?;
@@ -131,7 +131,7 @@ pub fn file_citations(client: &RangeClient, url: &str, wanted: &HashSet<String>)
     Ok(found)
 }
 
-/// `bulk.pmc.citations` over the works files' URLs.
+/// Citation counts of the wanted PMIDs over the works files' URLs.
 pub fn citations(urls: &[String], client: Arc<RangeClient>, wanted: Arc<HashSet<String>>, workers: usize) -> Result<HashMap<String, i64>> {
     let mut counts: HashMap<String, i64> = HashMap::new();
     let files = bounded_map(urls.iter().cloned(), workers, workers.max(1) * 2, move |url: String| {

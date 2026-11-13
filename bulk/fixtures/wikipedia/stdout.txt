@@ -1,1 +1,1 @@
-{"out": "bulk/fixtures/wikipedia/python", "files": 1, "rows": 52, "removed": 0, "other_namespace": 1, "pages": 52, "disambiguation": 1, "deleted": 1, "older_copy": 1, "no_html": 1}
+{"out": "bulk/fixtures/wikipedia/expected", "files": 1, "rows": 52, "removed": 0, "other_namespace": 1, "pages": 52, "disambiguation": 1, "deleted": 1, "older_copy": 1, "no_html": 1}

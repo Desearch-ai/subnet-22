@@ -1,4 +1,4 @@
-//! The sources the runner keeps current, each as the commands its first load used.
+//! The sources the runner keeps current, each with its fetch and build commands.
 
 /// One build command whose run folder is diffed and published on its own.
 pub struct Build {
@@ -31,9 +31,9 @@ pub struct Source {
 
 pub const REPO: &str = "~/refresh/subnet-22";
 pub const PYTHON: &str = "~/refresh/venv/bin/python";
-/// The Rust bulk builders (subnet-22 `bulk/`), for the sources they cover.
+/// The bulk builders, subnet-22 `bulk/`.
 const BULK: &str = "~/refresh/bin/bulk";
-/// desearch-bot, whose `refresh edgar|fred` are the crawler's refresh commands in Rust.
+/// desearch-bot, whose `refresh edgar|fred` build the EDGAR and FRED pages.
 const BOT: &str = "~/refresh/bin/desearch-bot";
 const CRAWLER: &str = "~/desearch-engine.v8";
 const CRAWLER_PYTHON: &str = "~/venv/bin/python";

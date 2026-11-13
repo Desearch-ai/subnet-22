@@ -1,4 +1,4 @@
-//! Python's truthiness, `str()` and `isdigit()`/`int()`, as `bulk/pmc.py` applies them to metadata and dates.
+//! Python's truthiness, `str()` and `isdigit()`/`int()`, as the PMC build applies them to metadata and dates.
 
 use bulk_core::pyjson::float_repr;
 use serde_json::Value;

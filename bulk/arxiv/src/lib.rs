@@ -1,4 +1,4 @@
-//! arXiv: the OAI-PMH harvest and one abstract page a paper, as `bulk/arxiv.py` builds them.
+//! arXiv: the OAI-PMH harvest and one abstract page a paper, from OAI-PMH pages or the Kaggle metadata snapshot.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -91,7 +91,7 @@ pub fn heading_lines(paper: &Paper) -> Vec<Line> {
     vec![Line::new(authors_line(&paper.authors, MOST_AUTHORS)), Line::new(parts.join(" · "))]
 }
 
-/// `bulk.arxiv.framed`: the paper's page at `url` from its lines.
+/// The paper's page at `url` from its lines.
 pub fn framed(paper: &Paper, url: &str, lines: Vec<Line>) -> (String, Page) {
     let meta = PaperMeta {
         lang: "en".to_string(),
@@ -105,7 +105,7 @@ pub fn framed(paper: &Paper, url: &str, lines: Vec<Line>) -> (String, Page) {
     (url.to_string(), paper_page(&paper.title, lines, meta))
 }
 
-/// `bulk.arxiv.page_of`: the abstract page.
+/// The paper's abstract page.
 pub fn page_of(paper: &Paper) -> (String, Page) {
     let mut lines = heading_lines(paper);
     lines.push(Line::new("## Abstract"));
@@ -118,7 +118,7 @@ pub fn page_of(paper: &Paper) -> (String, Page) {
     framed(paper, &url_of(&paper.arxiv_id), lines)
 }
 
-/// `bulk.arxiv.harvest`: saves every OAI-PMH page for the date range, returning how many.
+/// Saves every OAI-PMH page for the date range, returning how many.
 pub fn harvest(out: &Path, since: &str, until: &str, user_agent: &str) -> Result<usize> {
     harvest_with(out, since, until, user_agent, OAI, Duration::from_secs_f64(DELAY_S))
 }
@@ -172,7 +172,7 @@ fn run_kaggle(path: &Path, batches: &mut Batches, as_of_us: i64, limit: u64, cou
     }
 }
 
-/// `bulk.arxiv.run` over OAI-PMH pages (.xml) or the Kaggle snapshot (.json).
+/// The abstract pages of OAI-PMH pages (.xml) or the Kaggle snapshot (.json).
 pub fn run(files: &[PathBuf], batches: &mut bulk_core::Batches, as_of_us: i64, limit: u64) -> Result<Counts> {
     let mut counts = Counts::default();
     let window = 2 * rayon::current_num_threads().max(1);
@@ -199,7 +199,7 @@ pub fn run(files: &[PathBuf], batches: &mut bulk_core::Batches, as_of_us: i64, l
     Ok(counts)
 }
 
-/// `bulk.arxiv.open_papers`: the openly licensed papers of OAI-PMH pages, by id.
+/// The openly licensed papers of OAI-PMH pages, by id.
 pub fn open_papers(paths: &[PathBuf]) -> Result<HashMap<String, Paper>> {
     let parsed: Vec<Result<Vec<Result<Paper>>>> = paths
         .par_iter()

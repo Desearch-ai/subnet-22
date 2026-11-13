@@ -45,14 +45,14 @@ struct Case {
 }
 
 #[test]
-fn body_lines_match_the_python_on_generated_markdown() {
+fn body_lines_match_the_golden_cases_on_generated_markdown() {
     let cases: Vec<Case> = serde_json::from_str(include_str!("fixtures/body_lines.json")).unwrap();
     assert!(cases.len() > 400);
     let mut failed = Vec::new();
     for (i, case) in cases.iter().enumerate() {
         let got = body_lines(&case.markdown);
         if got != case.lines {
-            failed.push(format!("case {i}: {:?}\n  python {:?}\n  rust   {:?}", case.markdown, case.lines, got));
+            failed.push(format!("case {i}: {:?}\n  expected {:?}\n  got      {:?}", case.markdown, case.lines, got));
         }
     }
     assert!(failed.is_empty(), "{} of {} differ:\n{}", failed.len(), cases.len(), failed.join("\n"));

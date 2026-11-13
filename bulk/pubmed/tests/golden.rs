@@ -1,4 +1,4 @@
-//! bulk-pubmed against expectations the Python wrote on hand-made PubMed XML, and against a real Python run when one is on hand.
+//! bulk-pubmed against golden records of hand-made PubMed XML, golden runs of small files and a golden run of a real slice.
 
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -75,13 +75,13 @@ fn records_json(xml: &str) -> (Vec<Value>, Option<anyhow::Error>) {
 
 fn assert_records(name: &str, got: &[Value], want: &[Value]) {
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
-        assert_eq!(g, w, "{name} record {i}:\nrust   {g}\npython {w}");
+        assert_eq!(g, w, "{name} record {i}:\ngot      {g}\nexpected {w}");
     }
     assert_eq!(got.len(), want.len(), "{name}: record count");
 }
 
 #[test]
-fn records_match_the_python() {
+fn records_match_the_golden_records() {
     let fixture = load(&fixtures().join("records.json"));
     for case in fixture["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -92,13 +92,13 @@ fn records_match_the_python() {
 }
 
 #[test]
-fn records_fail_where_the_python_raises() {
+fn records_fail_where_the_golden_records_fail() {
     let fixture = load(&fixtures().join("records.json"));
     for case in fixture["errors"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let (got, error) = records_json(case["xml"].as_str().unwrap());
         match case["parse_error"].as_str() {
-            Some(_) => assert!(error.is_some(), "{name}: the Python could not parse this, the Rust did"),
+            Some(_) => assert!(error.is_some(), "{name}: expected a parse error"),
             None => {
                 assert!(error.is_none(), "{name}: {error:?}");
                 assert_records(name, &got, case["records"].as_array().unwrap());
@@ -112,7 +112,7 @@ fn pairs(counts: &Counts) -> Vec<(String, u64)> {
 }
 
 #[test]
-fn runs_match_the_python_run_folders() {
+fn runs_match_the_golden_run_folders() {
     let as_of_us = parse_as_of(AS_OF).unwrap();
     for case in load(&fixtures().join("runs.json")).as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -125,14 +125,14 @@ fn runs_match_the_python_run_folders() {
         let mut batches = Batches::with_rows_per_file(&out, "pubmed", "20261101", as_of_us, rows_per_file).unwrap();
         let counts = run(&inputs, &mut batches, as_of_us, &skip, case["limit"].as_u64().unwrap());
         if case["error"].is_string() {
-            assert!(counts.is_err(), "{name}: the Python raised, the Rust did not");
+            assert!(counts.is_err(), "{name}: expected an error");
             continue;
         }
         let counts = counts.unwrap();
         let want: Vec<(String, u64)> = serde_json::from_value(case["counts"].clone()).unwrap();
         assert_eq!(pairs(&counts), want, "{name}: counts");
         batches.close(&counts).unwrap();
-        let found = bulk_core::runs::diff(&folder.join("python"), &out, 20).unwrap();
+        let found = bulk_core::runs::diff(&folder.join("expected"), &out, 20).unwrap();
         assert!(found.same(), "{name}: {found:#?}");
     }
 }
@@ -162,29 +162,19 @@ fn a_missing_file_fails_only_when_the_run_reaches_it() {
     assert_eq!(counts.get("pages"), 15);
 }
 
-/// A real slice: `bulk/fixtures/pubmed/{input,python}`, made by the command in its README.
 #[test]
-fn a_real_pubmed_slice_matches_the_python_run() {
+fn a_real_pubmed_slice_matches_the_golden_run() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/pubmed");
-    let python = root.join("python");
-    if !python.join("manifest.json").exists() {
-        eprintln!("skipped: no parity sample at {}", root.display());
-        return;
-    }
-    let manifest = load(&python.join("manifest.json"));
+    let expected = root.join("expected");
+    let manifest = load(&expected.join("manifest.json"));
     let as_of_us = parse_as_of(manifest["as_of"].as_str().unwrap()).unwrap();
-    let readme = std::fs::read_to_string(root.join("README")).unwrap_or_default();
-    let words: Vec<&str> = readme.split_whitespace().collect();
-    let flag = |name: &str| words.iter().position(|w| *w == name).map(|i| words[i + 1]);
-    let limit = flag("--limit").map_or(0, |n| n.parse().unwrap());
-    let skip = flag("--skip-pmids").map_or_else(HashSet::new, |p| bulk_pubmed::read_skip(&root.join(p)).unwrap());
-    let inputs: Vec<PathBuf> = words.iter().filter(|w| w.ends_with(".xml.gz") || w.ends_with(".xml")).map(|w| root.join(w)).collect();
-    assert!(!inputs.is_empty(), "the README names no input files");
+    let skip = bulk_pubmed::read_skip(&root.join("input/skip-pmids.txt")).unwrap();
+    let inputs = [root.join("input/pubmed26n1333.xml.gz"), root.join("input/pubmed26n1724.xml.gz")];
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("rust");
     let mut batches = Batches::new(&out, "pubmed", manifest["run"].as_str().unwrap(), as_of_us).unwrap();
-    let counts = run(&inputs, &mut batches, as_of_us, &skip, limit).unwrap();
+    let counts = run(&inputs, &mut batches, as_of_us, &skip, 0).unwrap();
     batches.close(&counts).unwrap();
-    let found = bulk_core::runs::diff(&python, &out, 20).unwrap();
+    let found = bulk_core::runs::diff(&expected, &out, 20).unwrap();
     assert!(found.same(), "{found:#?}");
 }

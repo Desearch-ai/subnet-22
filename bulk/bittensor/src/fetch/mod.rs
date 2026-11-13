@@ -58,7 +58,7 @@ pub struct FetchArgs {
     pub test_ca_cert: Option<PathBuf>,
 }
 
-/// Whether the crawl waits between requests as the Python one does; tests skip the waits.
+/// Whether the crawl waits between requests; tests skip the waits.
 #[derive(Clone, Copy, Debug)]
 pub struct Pace {
     pub waits: bool,

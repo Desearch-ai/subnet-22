@@ -1,8 +1,8 @@
 # Bulk ingest
 
-Some sources come from their own bulk data, not from crawling: Wikipedia snapshots, PubMed, PMC, arXiv and Common Pile's arXiv full texts. The ingest
-lane turns a source's records into page rows in the bulk feed, so the compactor, the planner, miners' embedding and the
-index treat them like crawled pages.
+Some sources come from their own bulk data, not from crawling, such as Wikipedia snapshots, PubMed, PMC and arXiv. The
+ingest lane turns a source's records into page rows in the bulk feed, so the compactor, the planner, miners' embedding
+and the index treat them like crawled pages.
 
 ```
 source files ─► bulk <source> ─► run folder ─► publisher bulk ─► bulk feed ─┬─► planner's bulk lane
@@ -53,19 +53,22 @@ bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
 bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
 ```
 
-The shared extraction stays in Python: `bulk wikipedia`, `subnet-sites`, `subnet-github` and `bittensor-fetch` start
-`python -m bulk.page_worker` processes, and `bulk pmc` starts `python -m bulk.pmc_render` processes. `--python` names
-the interpreter (one with lxml), `--python-path` the repo root, and `--workers` (`--render-workers` for PMC) how many.
+The shared extraction runs in Python: `bulk wikipedia`, `medlineplus`, `eurlex`, `subnet-sites`, `subnet-github` and
+`bittensor-fetch` start `python -m bulk.page_worker` processes, and `bulk pmc` starts `python -m bulk.pmc_render`
+processes. `--python` names the interpreter (one with lxml), `--python-path` the repo root, and `--workers`
+(`--render-workers` for PMC) how many.
 
-Then publish the folder, into a local folder laid out as the pages bucket or into the change feed `serve` writes:
+Then publish the folder into the bulk feed, in a local folder laid out as the pages bucket (`--log`) or in the pages
+bucket itself (`--r2`):
 
 ```bash
 publisher bulk runs/pubmed-n0001 --log /tmp/log
 publisher bulk runs/pubmed-n0001 --r2
 ```
 
-`--r2` reads the same environment as `publisher serve`. A run that stops picks up where it left off: `published.txt`
-in the run folder lists the batch files already published. Bulk files hold at most 10,000 pages and 32 MB of text.
+`--r2` writes to the S3-compatible store named by the same environment as `publisher serve`. A run that stops picks up
+where it left off: `published.txt` in the run folder lists the batch files already published. Bulk files hold at most
+10,000 pages and 32 MB of text.
 
 ## Sources
 
@@ -113,7 +116,8 @@ the source dropped. The sources and their commands are in `refresh/src/sources.r
 - **Incremental sources** such as arXiv fetch from `{since}`, the day of their last run that published, to `{until}`,
   today. A first run takes `--since`.
 - **Publish:** the runner leaves each diff in `~/refresh/outbox`. `refresh-pull` on the planner box takes it every 10
-  minutes, publishes it with `publish-one.sh` and sends the output back as a receipt in `~/refresh/receipts`.
+  minutes, publishes it with the publish script kept on that box and sends the output back as a receipt in
+  `~/refresh/receipts`.
 - **Hide:** pages a source dropped go to index-1 as exact-path rules in the source's own section of
   `hidden-urls.txt` (`refresh hide-section`, the forced command of the crawler box's key), rewritten whole each run,
   so a page that comes back is shown again.

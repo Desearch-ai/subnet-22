@@ -59,7 +59,7 @@ impl Client {
         }
     }
 
-    /// `bulk.pmc.fetch_url`: retries 500, 502, 503, 504, timeouts and connection errors with 2**attempt s waits; None on 404.
+    /// Retries 500, 502, 503, 504, timeouts and connection errors with 2**attempt s waits; None on 404.
     pub fn get_retrying(&self, url: &str) -> Result<Option<Vec<u8>>> {
         for attempt in 0..TRIES {
             let last = attempt == TRIES - 1;

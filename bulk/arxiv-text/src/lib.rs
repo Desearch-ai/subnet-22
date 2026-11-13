@@ -20,12 +20,10 @@ pub const CONTENT_TYPE: &str = "text/html";
 const BATCH_LINES: usize = 512;
 const BATCH_BYTES: usize = 256 << 20;
 
-/// `bulk.arxiv.body_lines`.
 pub fn body_lines(markdown: &str) -> Vec<String> {
     body::body_lines(markdown)
 }
 
-/// `bulk.arxiv.full_text_page`.
 pub fn full_text_page(paper: &Paper, body: Vec<String>) -> (String, Page) {
     let mut lines = bulk_arxiv::heading_lines(paper);
     lines.extend(body.into_iter().map(Line::new));
@@ -64,7 +62,6 @@ fn outcome(line: &[u8], papers: &HashMap<String, Paper>) -> Result<Outcome> {
     Ok(Outcome::Page(url, Box::new(page)))
 }
 
-/// `bulk.arxiv.run_text`.
 pub fn run_text(files: &[PathBuf], papers: &HashMap<String, Paper>, batches: &mut bulk_core::Batches, as_of_us: i64, limit: u64) -> Result<Counts> {
     let mut counts = Counts::default();
     for path in files {

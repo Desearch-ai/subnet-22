@@ -1,1 +1,1 @@
-"""Bulk sources turned into page rows the publisher reads like a miner's upload."""
+"""Python workers the bulk builders start: the shared page extraction and the PMC body renderer."""

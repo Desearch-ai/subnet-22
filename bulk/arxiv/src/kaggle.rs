@@ -187,7 +187,7 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
-/// `bulk.arxiv.kaggle_date`: the day of an RFC 2822 date in its own zone, or "" when Python's datetime rejects it.
+/// The day of an RFC 2822 date in its own zone, or "" when Python's datetime rejects it.
 pub fn kaggle_date(text: &str) -> String {
     let Some(([year, month, day, hour, minute, second], offset)) = parsedate_tz(text) else {
         return String::new();
@@ -399,7 +399,7 @@ pub fn lines(path: &Path) -> Result<Lines<std::io::BufReader<std::fs::File>>> {
     Ok(Lines { reader: std::io::BufReader::with_capacity(1 << 20, file), pending: Default::default() })
 }
 
-/// `bulk.arxiv.kaggle_records`: each line's abstract page, in order, ending at the first error.
+/// Each line's abstract page, in order, ending at the first error.
 pub fn kaggle_records(path: &Path) -> Result<impl Iterator<Item = Result<Record>>> {
     Ok(lines(path)?.map(|line| line.and_then(|line| kaggle_record(&line))))
 }

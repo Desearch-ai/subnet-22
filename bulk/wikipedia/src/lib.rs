@@ -34,7 +34,7 @@ pub const OG_IMAGE_MAX: f64 = 1200.0;
 pub const THUMB_STEPS: [i64; 9] = [20, 40, 60, 120, 250, 330, 500, 960, 1280];
 /// Articles framed longer than this go to the worker's frame, so the extraction's 8M-character cut falls where it does there.
 pub const RUST_FRAME_MAX_BYTES: usize = 4_000_000;
-/// The Python run reads `--workers` × 32 articles a window, which fixes the order its counts first appear in.
+/// A run reads `--workers` × 32 articles a window, which fixes the order its counts first appear in.
 const WINDOW_PER_WORKER: usize = 32;
 /// Results kept ahead of the next one written, so a slow article cannot let the rest pile up without end.
 const AHEAD_PER_WORKER: u64 = 256;
@@ -50,7 +50,7 @@ pub struct Args {
     /// Hidden category names, one per line, from `hidden-categories`.
     #[arg(long)]
     pub hidden: PathBuf,
-    /// The Python run's `--workers`, whose window sets the order of the counts; the CPU count by default.
+    /// Sets the window, and so the order of the counts; the CPU count by default.
     #[arg(long)]
     pub workers: Option<usize>,
     /// Processes that extract articles; `--workers` by default.
@@ -338,7 +338,7 @@ impl State {
     }
 }
 
-/// The filter `wikipedia.run` applies as it reads: namespace, deletions, older copies and empty bodies, each job with
+/// The filter a run applies as it reads: namespace, deletions, older copies and empty bodies, each job with
 /// its revision bump, in reading order.
 struct Filter {
     revisions: HashMap<i64, (i64, i64)>,
@@ -379,8 +379,8 @@ impl Filter {
     }
 }
 
-/// `wikipedia.run`: the pages of `paths` in reading order, in the count order of a Python run with `--workers` set to
-/// `window_workers`, read by `workers` page workers.
+/// The pages of `paths` in reading order, counted in windows of `window_workers` × 32 articles, read by `workers` page
+/// workers.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     paths: &[PathBuf],
@@ -510,7 +510,7 @@ fn extract(jobs: &Mutex<Receiver<Job>>, hidden: &HashSet<String>, ahead: u64, sp
     Ok(())
 }
 
-/// Applies the counts and rows in the Python run's order: each window's skips as it was read, then its results.
+/// Applies the counts and rows window by window: each window's skips as it was read, then its results.
 fn collect(events: &Receiver<Event>, batches: &mut Batches, as_of_us: i64, limit: u64, window: usize, state: &State, counts: &mut Counts) -> Result<()> {
     let mut next = 0u64;
     loop {

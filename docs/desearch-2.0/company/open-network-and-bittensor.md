@@ -27,7 +27,7 @@ Different contributors can specialize. A source operator may improve coverage or
 
 Bittensor is therefore part of how we intend to build the product, not an unrelated label on an API. Its value must appear in useful contributions, better coverage, adopted improvements and viable participant economics.
 
-The protocol does not decide which pages customers need or automatically discover the best model. Desearch must design the tasks and evaluation. The [incentives overview](../desearch-2.0/04-incentives-and-rewards.md) explains how assessed work would connect to subnet rewards.
+The protocol does not decide which pages customers need or automatically discover the best model. Desearch must design the tasks and evaluation. The [incentives overview](../desearch-2.0/04-incentives-and-rewards.md) explains how assessed work connects to subnet rewards.
 
 Each program needs useful results and viable costs, including the work of checking and integrating contributions. We will use that evidence to improve tasks, expand useful work or stop work that does not justify continuing.
 
@@ -35,7 +35,7 @@ The [first-phase plan](../desearch-2.0/02-direction-and-first-phase.md) explains
 
 ## Evaluation and decision responsibilities
 
-The proposed design separates subnet assessment from product adoption. [Incentives and rewards](../desearch-2.0/04-incentives-and-rewards.md#from-completed-work-to-rewards) explains the work-to-reward path; [the technical overview](../desearch-2.0/03-first-phase-technical-overview.md#how-accepted-work-becomes-searchable) explains the separate release path into customer search. Crawling runs today; the rest of 2.0 is planned.
+The proposed design separates subnet assessment from product adoption. [Incentives and rewards](../desearch-2.0/04-incentives-and-rewards.md#from-completed-work-to-rewards) explains the work-to-reward path; [the technical overview](../desearch-2.0/03-first-phase-technical-overview.md#how-accepted-work-becomes-searchable) explains the separate release path into customer search. Crawling and embedding run today; the later programs are planned.
 
 Desearch defines the problems and participation terms. Contributors identify their outputs, configuration, origins and usage rights. Evaluators produce evidence under stated methods; they may be validators or other designated assessors.
 
