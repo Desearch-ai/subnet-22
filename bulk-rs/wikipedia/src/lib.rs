@@ -1,5 +1,5 @@
-//! Wikimedia Enterprise snapshots as `bulk/wikipedia.py` builds them: each article's Parsoid HTML framed like the live
-//! page here, then read by the shared v2 extraction in `python -m bulk.page_worker` processes.
+//! Wikimedia Enterprise snapshots: each article's Parsoid HTML framed like the live page here, then read by the shared
+//! v2 extraction in `python -m bulk.page_worker` processes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
@@ -32,7 +32,7 @@ pub const HIDDEN_MARK: &str = "mw:PageProp/hiddencat";
 pub const DISAMBIGUATION_MARK: &str = "mw:PageProp/disambiguation";
 pub const OG_IMAGE_MAX: f64 = 1200.0;
 pub const THUMB_STEPS: [i64; 9] = [20, 40, 60, 120, 250, 330, 500, 960, 1280];
-/// Articles framed longer than this go to the Python frame, so the extraction's 8M-character cut falls where it does there.
+/// Articles framed longer than this go to the worker's frame, so the extraction's 8M-character cut falls where it does there.
 pub const RUST_FRAME_MAX_BYTES: usize = 4_000_000;
 /// The Python run reads `--workers` × 32 articles a window, which fixes the order its counts first appear in.
 const WINDOW_PER_WORKER: usize = 32;
@@ -147,8 +147,8 @@ fn category_name(href: &str) -> String {
     html::unquote(before_hash).replace('_', " ")
 }
 
-/// `page_html`: the page as the live site frames this revision's Parsoid HTML, and whether it is a disambiguation page;
-/// None when the body cannot be cut out as lxml would serialise it, so the Python frame must do.
+/// The page as the live site frames this revision's Parsoid HTML, and whether it is a disambiguation page;
+/// None when the body cannot be cut out as lxml would serialise it, so the worker's `page_html` must do.
 pub fn frame(article: &Value, hidden: &HashSet<String>) -> Result<Option<(String, bool)>> {
     let body_html = field(dict(article, "article_body")?, "html").and_then(Value::as_str).unwrap_or("");
     let Some(inner) = html::body_inner(body_html) else {

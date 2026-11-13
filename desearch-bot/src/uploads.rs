@@ -1,4 +1,4 @@
-//! Upload-shaped rows in the numbered parquet files and manifest `publisher bulk` reads, as `bulk/rows.py` writes them.
+//! Upload-shaped rows in the numbered parquet files and manifest `publisher bulk` reads, as `bulk` writes them.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};

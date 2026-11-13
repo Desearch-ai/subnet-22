@@ -1,4 +1,4 @@
-//! Upload-shaped rows and the folder of batch files `publisher bulk` publishes, as `bulk/rows.py` writes them.
+//! Upload-shaped rows and the folder of batch files `publisher bulk` publishes.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -75,17 +75,17 @@ pub struct Row {
     pub page: Page,
 }
 
-/// `bulk.rows.upload_row`.
+/// A built page as one upload row.
 pub fn upload_row(url: &str, page: Page, fetched_at_us: i64, content_type: &str) -> Row {
     Row { url: url.to_string(), fetched_at_us, content_type: content_type.to_string(), page }
 }
 
-/// `bulk.rows.paper_page`: the title line, then cleaned lines with `##` headings.
+/// A paper page: the title line, then cleaned lines with `##` headings.
 pub fn paper_page(title: &str, lines: Vec<Line>, meta: PaperMeta) -> Page {
     typed_page(PAPER, title, lines, meta)
 }
 
-/// `bulk.rows.typed_page`: a page of `page_type` in v2's text conventions, the title line then cleaned lines.
+/// A page of `page_type` in v2's text conventions, the title line then cleaned lines.
 pub fn typed_page(page_type: &str, title: &str, lines: Vec<Line>, meta: PaperMeta) -> Page {
     let text = finish(title, &clean(lines, false), MAX_TEXT_CHARS);
     let mut tags = meta.tags;
@@ -107,7 +107,7 @@ pub fn typed_page(page_type: &str, title: &str, lines: Vec<Line>, meta: PaperMet
     }
 }
 
-/// `bulk.rows.authors_line`, `most` being 10 in every source.
+/// The first `most` author names, then "et al."; `most` is 10 in every source.
 pub fn authors_line(names: &[String], most: usize) -> String {
     let names: Vec<&str> = names.iter().map(String::as_str).filter(|n| !n.is_empty()).collect();
     if names.len() > most {
@@ -120,7 +120,7 @@ pub fn authors_line(names: &[String], most: usize) -> String {
 const MIN_US: i64 = -62_135_596_800_000_000;
 const END_US: i64 = 253_402_300_800_000_000;
 
-/// `bulk.rows.parse_as_of`, as microseconds since the epoch in UTC.
+/// `--as-of`, an ISO time with a zone, as microseconds since the epoch in UTC.
 pub fn parse_as_of(text: &str) -> Result<i64> {
     let replaced = text.replace('Z', "+00:00");
     let Some(moment) = fromisoformat(&replaced) else {
@@ -292,7 +292,7 @@ pub struct Summary {
     pub removed: usize,
 }
 
-/// `bulk.rows.Batches`: rows written to numbered parquet files in one folder, with a manifest naming the source, run and time.
+/// Rows written to numbered parquet files in one folder, with a manifest naming the source, run and time.
 pub struct Batches {
     out: PathBuf,
     source: String,
