@@ -303,10 +303,32 @@ stores. With the bot stopped, `desearch-bot unresend` takes every waiting resend
 pages' marks and forgets each domain's walked value; install a list without `resend_before` first.
 
 `tools/crawl_list.py` builds the list from the registry. `tools/v1_set.py` writes the v1 set, each
-v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under their caps and floors.
-`tools/resend_waves.py` splits the sites with pages to send again into waves, and `crawl_list.py
---resend-before DATE --resend-hosts FILE` gives the hosts of the waves applied so far their
-`resend_before`. `tools/build-v1.sh` runs the three on the bot box.
+v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under their caps and floors,
+and `crawl_list.py --resend-before DATE --resend-hosts FILE` gives the hosts in FILE their
+`resend_before`.
+
+`tools/build-v1.sh` runs both on the bot box. It builds `v1-set.json` and the v1 crawl list into
+`~ubuntu/crawl-1b/v1` from the registry, read-only, and the staged inputs, and checks every input
+before it writes anything, so a bad one leaves the set and the list as they were. These variables
+change what it builds:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `NEWS` | `A` | `B` takes every news site from 2020 |
+| `UNDATED` | `out` | `article` takes undated news articles |
+| `RESEND_WAVES` | 0 | N gives the sites in resend wave files 1 to N (`resend-waves-$NEWS/resend-wave-NN.txt`) `resend_before` 2026-10-27 |
+| `NODE2_MIN_WEIGHT` | 2 | sites outside the set weighted below it stay off the list; 1 keeps the weight-1 sites |
+| `NODE2_HOURS` | 0 | H holds each site outside the set that stays to its stored pages divided by H an hour; 0 sets no limit |
+| `REJOIN` | none | a file of hosts whose `send_cap` goes one up, so the list walker queues their stored pages again |
+| `RECHECKED` | none | a TSV of host and verdict; a host whose verdict is `ok` passes the homepage language, text and error checks |
+| `VERDICTS` | none | the site check's TSV; the hosts it puts out stay out for quality |
+| `LANDING_RANK` | none | listed sites ranked N or higher that no other entry takes or shuts become landing sites, which send their homepage and first-level pages only |
+| `DEEP_RANK` | none | company landing sites ranked N or higher go three levels down |
+| `WHOLE_RANK` | none | media, organization and reference landing sites ranked N or higher go whole once the site check keeps them |
+| `WIDENED_BEFORE` | none | a date: the sites `DEEP_RANK` and `WHOLE_RANK` take send their pages last sent before it once more, up to their cap |
+| `SUBDOMAINS` | 0 | 1 takes the docs, help, support, newsroom, investor and news subdomains of those sites as their parents are |
+| `PSL` | `/opt/desearch-bot/data/public_suffix_list.dat` | the public suffix list `DEEP_RANK`, `WHOLE_RANK` and `SUBDOMAINS` read; they never take a suffix |
+| `HUBS` | 0 | 1 takes the undated hub pages of the news sites taken for all years, whose homepages and hubs the bot sends again hourly or daily |
 
 Run one bot with `--task-api` at a time.
 

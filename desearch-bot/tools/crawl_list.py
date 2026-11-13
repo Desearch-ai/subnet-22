@@ -73,7 +73,7 @@ CRAWLED_STATES = {"active", "no_sitemap", "failing"}
 # Only these list pages from their sitemaps, so only these go in the bot's list; the decisions file has the rest.
 SENDING_STATES = {"active", "failing"}
 RECHECKED = {"no_text", "homepage_error"}
-# Homepage checks a recheck that read the site as the bot does (recheck_hosts.py) can overrule.
+# Homepage checks a recheck that read the site as the bot does can overrule.
 MISFIRES = RECHECKED | {"not_english"}
 TOP_RANK = 10_000
 LOW_CAP = 10_000
@@ -788,11 +788,11 @@ def main(argv: list[str] | None = None) -> None:
         "--rejoin-hosts",
         action="append",
         default=[],
-        help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again (unqueued.py lists them)",
+        help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again",
     )
     parser.add_argument(
         "--rechecked",
-        help="recheck_hosts.py's TSV of host and verdict: a host it read as ok passes the homepage language, text and error checks",
+        help="a TSV with host and verdict columns: a host whose verdict is ok passes the homepage language, text and error checks",
     )
     parser.add_argument(
         "--widened-before",
