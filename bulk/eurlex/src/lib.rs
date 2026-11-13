@@ -4,7 +4,8 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,6 +30,7 @@ const ACT: &str = "act";
 const JUDGMENT: &str = "judgment";
 const ACCEPT: &str = "application/xhtml+xml, text/html;q=0.9";
 const FAILING_IN_ROW: usize = 10;
+const ATTEMPTS: u64 = 8;
 static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"__\[unreferenced:[^\]]*\]__").expect("a valid pattern"));
 
 const PREFIX: &str = "PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n";
@@ -67,6 +69,9 @@ pub struct FetchArgs {
     /// Stop after this many texts fetched, for trials.
     #[arg(long, default_value_t = 0)]
     pub limit: usize,
+    /// Requests waiting on Cellar at once, all under --per-second.
+    #[arg(long, default_value_t = 8)]
+    pub parallel: usize,
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -177,41 +182,56 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
         .collect();
     let mut missing_file = OpenOptions::new().create(true).append(true).open(args.out.join(MISSING))?;
     let gap = Duration::from_secs_f64(1.0 / args.per_second.max(0.01));
-    let (mut fetched, mut absent, mut failed, mut failing_in_row, mut last) = (0usize, 0usize, 0usize, 0usize, Instant::now() - gap);
-    for w in &works {
-        let path = doc_path(&args.out, &w.celex);
-        if path.exists() || missing.contains(&w.celex) {
-            continue;
-        }
-        let wait = gap.saturating_sub(last.elapsed());
-        std::thread::sleep(wait);
-        last = Instant::now();
-        let text = get_text(&client, &w.celex);
-        failing_in_row = if matches!(text, Text::Failing(_)) { failing_in_row + 1 } else { 0 };
-        match text {
-            Text::Found(body) => {
-                std::fs::write(path.with_extension("part"), &body)?;
-                std::fs::rename(path.with_extension("part"), &path)?;
-                fetched += 1;
-            }
-            Text::Failing(why) if failing_in_row >= FAILING_IN_ROW => bail!("{FAILING_IN_ROW} works in a row failed, the last: {why}"),
-            text => {
-                if let Text::Failing(why) = text {
-                    eprintln!("{why}; tried again after a week");
-                    failed += 1;
-                } else {
-                    absent += 1;
+    let todo: Vec<&Work> = works.iter().filter(|w| !missing.contains(&w.celex) && !doc_path(&args.out, &w.celex).exists()).collect();
+    let (next, pace) = (AtomicUsize::new(0), Mutex::new(Instant::now() - gap));
+    let (mut fetched, mut absent, mut failed, mut failing_in_row) = (0usize, 0usize, 0usize, 0usize);
+    std::thread::scope(|scope| -> Result<()> {
+        let (sender, texts) = mpsc::channel();
+        for _ in 0..args.parallel.max(1) {
+            let (sender, client, todo, next, pace) = (sender.clone(), &client, &todo, &next, &pace);
+            scope.spawn(move || {
+                while let Some(w) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    {
+                        let mut last = pace.lock().expect("pace lock");
+                        std::thread::sleep(gap.saturating_sub(last.elapsed()));
+                        *last = Instant::now();
+                    }
+                    if sender.send((*w, get_text(client, &w.celex))).is_err() {
+                        break;
+                    }
                 }
-                writeln!(missing_file, "{}\t{}", w.celex, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?;
+            });
+        }
+        drop(sender);
+        for (w, text) in texts {
+            let path = doc_path(&args.out, &w.celex);
+            failing_in_row = if matches!(text, Text::Failing(_)) { failing_in_row + 1 } else { 0 };
+            match text {
+                Text::Found(body) => {
+                    std::fs::write(path.with_extension("part"), &body)?;
+                    std::fs::rename(path.with_extension("part"), &path)?;
+                    fetched += 1;
+                }
+                Text::Failing(why) if failing_in_row >= FAILING_IN_ROW => bail!("{FAILING_IN_ROW} works in a row failed, the last: {why}"),
+                text => {
+                    if let Text::Failing(why) = text {
+                        eprintln!("{why}; tried again after a week");
+                        failed += 1;
+                    } else {
+                        absent += 1;
+                    }
+                    writeln!(missing_file, "{}\t{}", w.celex, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?;
+                }
+            }
+            if (fetched + absent + failed) % 1000 == 0 {
+                println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "failed": failed}));
+            }
+            if args.limit > 0 && fetched >= args.limit {
+                break;
             }
         }
-        if (fetched + absent + failed) % 1000 == 0 {
-            println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "failed": failed}));
-        }
-        if args.limit > 0 && fetched >= args.limit {
-            break;
-        }
-    }
+        Ok(())
+    })?;
     println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "failed": failed, "works": works.len()}));
     Ok(())
 }
@@ -236,7 +256,7 @@ fn get_text(client: &reqwest::blocking::Client, celex: &str) -> Text {
 fn get_as(client: &reqwest::blocking::Client, celex: &str, accept: &str) -> Text {
     let url = format!("{CELLAR}/{celex}");
     let mut why = String::new();
-    for attempt in 0..5u64 {
+    for attempt in 0..ATTEMPTS {
         match client.get(&url).header("Accept", accept).header("Accept-Language", "eng").send() {
             Ok(r) if r.status().is_success() => match r.bytes() {
                 Ok(body) => return Text::Found(body.to_vec()),
@@ -246,8 +266,8 @@ fn get_as(client: &reqwest::blocking::Client, celex: &str, accept: &str) -> Text
             Ok(r) => why = format!("Cellar answered {} for {celex} as {accept}", r.status()),
             Err(e) => why = format!("GET {url}: {e}"),
         }
-        if attempt < 4 {
-            std::thread::sleep(Duration::from_secs(5 * (attempt + 1)));
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(Duration::from_secs(2 * (attempt + 1)));
         }
     }
     Text::Failing(why)
