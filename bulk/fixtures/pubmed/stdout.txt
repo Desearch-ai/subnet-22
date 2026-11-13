@@ -1,1 +1,0 @@
-{"out": "python", "files": 1, "rows": 167, "removed": 12, "pages": 167, "skipped_pmid": 3, "no_abstract": 24, "deleted": 12}
