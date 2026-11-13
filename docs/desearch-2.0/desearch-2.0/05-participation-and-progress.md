@@ -1,8 +1,8 @@
 # Desearch 2.0: participation and progress
 
-## What changes now?
+## What runs now
 
-Crawling is now SN22's work, replacing AI and X search. Validators set weights from crawl shares: miners are paid by their share of verified pages ([emission](../../emission.md)). A validator started with `run.sh` moves over automatically; miners switch to the crawl miner ([miner](../../miner.md)).
+SN22's work is crawling and embedding. Validators set weights from both: miners are paid by their share of verified pages and embedded text ([emission](../../emission.md)). Setup is in the [miner](../../miner.md) and [validator](../../validator.md) guides.
 
 The later programs are planned work and future compute needs, not open programs. No equipment purchase or new submission for them is requested now.
 
@@ -19,21 +19,17 @@ The plan is described in [direction and first phase](02-direction-and-first-phas
 
 These roles describe the direction, not finalized assignments or open work. Initially, running a selected embedding model is an execution task; creating a better model is a separate opportunity.
 
-For how work would count toward rewards, read [incentives and rewards](04-incentives-and-rewards.md). The [contribution roadmap](02-direction-and-first-phase.md#how-the-networks-work-can-expand) explains planned opportunities beyond the first CRAWL/EMBED tasks.
+For how work counts toward rewards, read [incentives and rewards](04-incentives-and-rewards.md). The [contribution roadmap](02-direction-and-first-phase.md#how-the-networks-work-can-expand) explains planned opportunities beyond the first CRAWL/EMBED tasks.
 
-## Hardware planning for the first phase
+## Hardware
 
-Embedding miners will need access to GPU-equipped machines for the planned first phase. Validators checking embedding work will also need GPU capacity. The model and tested hardware requirements are not final. Do not buy equipment based on this proposal; wait for the tested requirements and participation notice.
+| Work                            | Why compute is needed                                         | Requirements                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Embedding miners                | Run the selected model on prepared text to generate vectors   | An NVIDIA GPU; see the [miner guide](../../miner.md#requirements)                                                |
+| Validators checking embeddings  | Run the same model to reproduce a sample of miners' vectors   | Optional: a validator without its own model server uses Desearch's; see the [validator guide](../../validator.md#requirements) |
+| Crawling and content extraction | Fetch pages and extract their text under the task's rules     | No GPU; proxies, as the [miner guide](../../miner.md#4-crawling) explains                                        |
 
-| Work                            | Why compute is needed                                                                         | What not to assume                                                                 |
-| ------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Embedding miners                | Run the selected model on prepared text to generate vectors                                   | This is model execution, not first-phase model training                            |
-| Validators checking embeddings  | Run the selected model to reproduce and assess outputs under the published checking procedure | Validator workloads and hardware specifications need not be identical to miners'   |
-| Crawling and content extraction | Fetch pages and prepare source-linked text under the task's requirements                      | The embedding GPU requirement is not a blanket requirement for every crawling task |
-
-The first-phase release documentation will include tested minimum and recommended configurations before participation or migration is requested. It will specify supported GPUs and memory, CPU/RAM, storage, network and software requirements for the relevant roles, along with tested workload limits. Exact models, hardware sizes and checking workloads are not specified in this proposal.
-
-Having a GPU alone will not establish eligibility or guarantee rewards. Read the [technical overview](03-first-phase-technical-overview.md) for how the work fits together, and the program-opening requirements below before committing resources.
+Embedding is model execution, not model training. Having a GPU alone does not establish eligibility or guarantee rewards. Read the [technical overview](03-first-phase-technical-overview.md) for how the work fits together.
 
 ## What supporters should be able to see
 

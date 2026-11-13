@@ -1,15 +1,15 @@
 # Desearch 2.0: incentives and rewards
 
-Miners contribute useful data and retrieval capabilities, with assessed work counting toward subnet rewards. For crawling the rules are set: miners are paid by their share of verified pages ([emission](../../emission.md)). For embedding and later programs, detailed rules will follow implementation and testing, before participation is requested.
+Miners contribute useful data and retrieval capabilities, with assessed work counting toward subnet rewards. For crawling and embedding the rules are set: miners are paid by their share of verified work ([emission](../../emission.md)). For later programs, detailed rules will follow implementation and testing, before participation is requested.
 
-## What the first phase would recognize
+## What the first phase recognizes
 
-The initial programs would assess correct execution of `CRAWL` and `EMBED` tasks. Miners do not need to invent a model for this work.
+The first programs assess correct execution of `CRAWL` and `EMBED` tasks. Miners do not need to invent a model for this work.
 
 - **Crawling:** return requested source content and records under the task's rules, not arbitrary page uploads.
 - **Embeddings:** compute representations for assigned text using the selected model. GPU ownership alone is not a contribution.
 
-The team would select useful work; validators would assess outputs. See the [technical overview](03-first-phase-technical-overview.md) for the checks.
+The team selects useful work; validators assess outputs. See the [technical overview](03-first-phase-technical-overview.md) for the checks.
 
 ## From completed work to rewards
 
@@ -20,16 +20,16 @@ The intended path is:
 1. **Know the rules before working.** Each program must state what work is available, who can receive it and what counts as valid completion.
 2. **Submit attributable work.** Outputs must identify the miner, task, inputs and required configuration so the submission can be checked.
 3. **Assess the contribution.** Validators check the relevant outputs and record the result. The program rules must distinguish valid, invalid and unverifiable work, including source failures and duplicate submissions.
-4. **Convert assessed work into scores and weights.** The first-phase rules must define how accepted work is combined and compared across miners and task types. For crawling, a miner's score is its share of the pages verified in the last 24 hours; how embedding work combines with it will be set before embedding opens.
+4. **Convert assessed work into scores and weights.** The rules define how accepted work is combined and compared across miners and task types. Crawling and embedding are each paid from their own part of the emission: a miner's share of the pages verified in the last 24 hours, and of the characters of the texts it embedded.
 5. **Apply the protocol.** Eligible validators submit weights: their relative assessments of miners. Bittensor's consensus uses those weights to determine miner reward shares. Validator dividends follow the protocol's own rules, not a Desearch fee for every check. See the [official emissions explanation](https://www.bittensor.com/docs/concepts/emissions#yuma-consensus).
 
 A task score is therefore not a fixed token payment. Completing twice as many tasks does not by itself guarantee twice the rewards. Task eligibility, the scoring rules and protocol allocation all matter.
 
 ## A simple example
 
-An embedding miner receives approved text chunks and a specific model, then returns the corresponding vectors. Validators check the submission and reproduce outputs under the announced procedure.
+An embedding miner receives approved text chunks and a specific model, then returns the corresponding vectors. Validators check a drawn share of submissions by embedding a sample of the texts again.
 
-Passing work can qualify for scoring. A batch made with the wrong model or missing required vectors does not meet the same contract. Published rules must determine how failures and disputes are handled; a failed check is not automatically misconduct.
+Passing work can qualify for scoring. A batch made with the wrong model or missing required vectors does not meet the same contract. The [published rules](../../emission.md) set how failures are handled.
 
 This explains valid execution, not an amount earned. The miner need not develop a better model or personally serve customer queries.
 
@@ -49,6 +49,6 @@ These opportunities need different tests: correct execution for running a select
 
 ## When the detailed rules will be available
 
-After implementation and testing, we will publish the scoring rules with worked examples, task-allocation rules, failure and dispute handling, and the mapping from scores to weights. Those details and the effective change notice must be available before participation is requested; they are not selected by this overview.
+The crawling and embedding rules are in [emission](../../emission.md). For a later program, after implementation and testing, we will publish the scoring rules with worked examples, task-allocation rules, failure and dispute handling, and the mapping from scores to weights. Those details and the effective change notice must be available before participation is requested; they are not selected by this overview.
 
-The [participation notice](05-participation-and-progress.md#before-a-program-opens) sets out the other requirements, including hardware, eligibility and usage rights. No work beyond crawling, and no equipment purchase, is requested now.
+The [participation notice](05-participation-and-progress.md#before-a-program-opens) sets out the other requirements, including hardware, eligibility and usage rights. No work beyond crawling and embedding is requested now.

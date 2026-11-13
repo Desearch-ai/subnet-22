@@ -20,11 +20,11 @@ The underlying collection should retain useful source information independently 
 
 ## Where we are now
 
-Crawling, the first task family, is running on SN22: miners crawl assigned pages, validators check a drawn share of the uploads, and passed pages are published to the collection ([how it works](../../architecture.md)). Embedding, the index build and the later programs below are planned work, not a deployed system. The history describes 1.0; this chapter describes what comes next.
+Crawling and embedding, the first task families, run on SN22: miners crawl assigned pages and embed their text with Desearch's model, validators check a drawn share of both, and passed pages and vectors are published to the collection the index is built from ([how it works](../../architecture.md)). The later programs below are planned work. The history describes 1.0; this chapter describes 2.0.
 
-No program beyond crawling is open yet. Implementation and test results will be reported as they become available.
+No program beyond crawling and embedding is open yet. Implementation and test results will be reported as they become available.
 
-## The first planned work
+## The first-phase work
 
 **Crawl and refresh a bounded collection.** Contributors fetch permitted pages and extract content. The preparation process checks source records, filters unwanted material, removes duplicates and organizes accepted text.
 
@@ -32,11 +32,11 @@ No program beyond crawling is open yet. Implementation and test results will be 
 
 **Build and test the searchable foundation.** Accepted content and representations enter a maintained index. We compare the resulting search against a reproducible baseline before routing customer traffic to it.
 
-Initially, the team would operate the work queue, stored collection, index and customer-serving system. Miners would build and maintain the inputs to the index outside the customer query path. This is not a promise of decentralized storage or live query serving by miners.
+The team operates the work queue, stored collection, index and customer-serving system. Miners build and maintain the inputs to the index outside the customer query path. This is not a promise of decentralized storage or live query serving by miners.
 
-An ordinary indexed query should use a tested version without waiting for a miner to complete a new task or a validator to make a decision. Updates enter through assessment and release review, with monitoring and rollback. The speed and quality benefit still needs measurement.
+An ordinary indexed query uses a tested version without waiting for a miner to complete a new task or a validator to make a decision. Updates enter through assessment and release review, with monitoring and rollback. The speed and quality benefit still needs measurement.
 
-The [first-phase technical overview](03-first-phase-technical-overview.md) explains task inputs and outputs, validator checks and the path into customer search. Operators should also read the [GPU planning notice](05-participation-and-progress.md#hardware-planning-for-the-first-phase).
+The [first-phase technical overview](03-first-phase-technical-overview.md) explains task inputs and outputs, validator checks and the path into customer search. Operators should also read the [hardware notes](05-participation-and-progress.md#hardware).
 
 ## The first reviewable checkpoint
 
