@@ -31,6 +31,8 @@ const ACCEPT: &str = "application/xhtml+xml, text/html;q=0.9";
 const FAILING_IN_ROW: usize = 10;
 const ATTEMPTS: u64 = 8;
 static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"__\[unreferenced:[^\]]*\]__").expect("a valid pattern"));
+static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]+_[0-9A-Z]+(\.[0-9A-Za-z]+)*\.xml$").expect("a valid pattern"));
+const NOTICES: [&str; 2] = ["Avis juridique important", "Important legal notice"];
 
 const PREFIX: &str = "PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n";
 const ENGLISH: &str = "?expr cdm:expression_belongs_to_work ?work ; cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/ENG> ; cdm:expression_title ?title .";
@@ -317,12 +319,20 @@ pub fn page_of(w: &Work, body: Vec<Line>) -> (String, Page) {
     (url, typed_page(LAW, &title, lines, meta))
 }
 
-fn body_lines(text: &str) -> Vec<Line> {
+/// Cellar's page furniture above a text: its file name, the EUR-Lex page title, the legal notice link and the CELEX heading.
+fn is_furniture(line: &str, celex: &str) -> bool {
+    let line = line.trim();
+    let line = line.strip_prefix("# ").unwrap_or(line);
+    line == celex || line == format!("EUR-Lex - {celex} - EN") || NOTICES.contains(&line) || FILE_NAME.is_match(line)
+}
+
+fn body_lines(text: &str, celex: &str) -> Vec<Line> {
     let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     if lines.first().is_some_and(|l| l.starts_with("# ")) {
         lines.remove(0);
     }
-    lines.into_iter().map(Line::new).collect()
+    let furniture = lines.iter().take_while(|l| is_furniture(l, celex)).count();
+    lines.into_iter().skip(furniture).map(Line::new).collect()
 }
 
 pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64, spawn: &(dyn Fn() -> Result<Worker> + Sync)) -> Result<Counts> {
@@ -339,7 +349,7 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64, spawn: &(dyn Fn() 
     for chunk in works.chunks(2_000) {
         let texts = map_in_order(chunk, args.workers, spawn, &read)?;
         for (w, text) in chunk.iter().zip(texts) {
-            let body = body_lines(&text);
+            let body = body_lines(&text, &w.celex);
             if body.is_empty() {
                 counts.add("empty", 1);
                 continue;
@@ -401,5 +411,15 @@ mod tests {
         assert!(lines[1].starts_with("Source: EUR-Lex, © European Union."));
         assert_eq!(lines[2], "CELEX: 32016R0679. ELI: http://data.europa.eu/eli/reg/2016/679/oj. Date: 2016-04-27.");
         assert_eq!(&lines[3..], ["Article 1", "Subject-matter and objectives"]);
+    }
+
+    #[test]
+    fn cellar_furniture_above_a_text_is_left_out() {
+        let text = |lines: &[&str]| body_lines(&lines.join("\n"), "31954S0030").into_iter().map(|l| l.text).collect::<Vec<_>>();
+        let html = ["EUR-Lex - 31954S0030 - EN", "Avis juridique important", "# 31954S0030", "ECSC High Authority: Decision No 30-54", "Official Journal 018, 01/08/1954 P. 0469 - 0469"];
+        assert_eq!(text(&html), ["ECSC High Authority: Decision No 30-54", "Official Journal 018, 01/08/1954 P. 0469 - 0469"]);
+        let xhtml = ["L_2021126EN.01000101.xml", "| 13.4.2021 | EN | Official Journal of the European Union | L 126/1 |", "31954S0030 is cited below"];
+        assert_eq!(text(&xhtml), &xhtml[1..]);
+        assert_eq!(text(&["L_202401234EN.000101.fmx.xml", "31954S0030", "JUDGMENT OF THE COURT", "Important legal notice"]), ["JUDGMENT OF THE COURT", "Important legal notice"]);
     }
 }
