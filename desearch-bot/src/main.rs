@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
 use desearch_bot::allowed::Allowed;
-use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Escaped, Resources, BUCKETS};
+use desearch_bot::buckets::{bucket_of, Buckets, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
@@ -40,10 +40,6 @@ struct Cli {
 enum Command {
     /// Crawl the buckets this process owns, around the clock.
     Run(Box<RunArgs>),
-    /// Delete pages and sitemaps kept with a sitemap's XML escapes; counts them unless given `--backup-dir`. Run it with the crawl loop stopped.
-    RemoveEscaped(RemoveEscapedArgs),
-    /// Put back what `remove-escaped` deleted, from its backup folder. Run it with the crawl loop stopped.
-    RestoreEscaped(RestoreEscapedArgs),
     /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
     DropDomains(DropDomainsArgs),
     /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
@@ -420,27 +416,6 @@ struct DropDomainsArgs {
 }
 
 #[derive(clap::Args)]
-struct RemoveEscapedArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    buckets_dir: PathBuf,
-    #[arg(long, default_value = "0-255")]
-    buckets: String,
-    /// Delete, after saving every deleted entry here, one file per store; without it nothing is deleted.
-    #[arg(long)]
-    backup_dir: Option<PathBuf>,
-}
-
-#[derive(clap::Args)]
-struct RestoreEscapedArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    buckets_dir: PathBuf,
-    #[arg(long, default_value = "0-255")]
-    buckets: String,
-    #[arg(long)]
-    backup_dir: PathBuf,
-}
-
-#[derive(clap::Args)]
 struct RunArgs {
     /// Visits in flight at once.
     #[arg(long, default_value_t = 840)]
@@ -571,8 +546,6 @@ fn main() -> Result<()> {
     let args = match Cli::parse().command {
         Command::Refresh(args) => return refresh(args),
         Command::Run(args) => *args,
-        Command::RemoveEscaped(args) => return remove_escaped(args),
-        Command::RestoreEscaped(args) => return restore_escaped(args),
         Command::DropDomains(args) => return drop_domains(args),
         Command::CopyBuckets(args) => return copy_buckets(args),
         Command::Unresend(args) => return unresend(args),
@@ -847,39 +820,6 @@ async fn run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
-    if let Some(dir) = &args.backup_dir {
-        std::fs::create_dir_all(dir)?;
-    }
-    let owned = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
-    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let stores: Vec<&BucketStore> = buckets.stores().collect();
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
-    let backup_dir = args.backup_dir.as_deref();
-    let found = std::thread::scope(|scope| {
-        let handles: Vec<_> = stores
-            .chunks(stores.len().div_ceil(threads).max(1))
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk.iter().try_fold(Escaped::default(), |sum, store| {
-                        let backup = backup_dir.map(|dir| dir.join(format!("{}.bin", store.name())));
-                        let found = store.remove_escaped(backup.as_deref())?;
-                        anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
-                    })
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().expect("a store pass panicked")).try_fold(Escaped::default(), |sum, found| {
-            let found = found?;
-            anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
-        })
-    })?;
-    let done = if backup_dir.is_some() { "deleted" } else { "found" };
-    println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
-    Ok(())
-}
-
 fn unresend(args: UnresendArgs) -> Result<()> {
     let owned = parse_buckets(&args.buckets)?;
     let resources = Resources::new(1 << 30, 512 << 20, owned.len());
@@ -907,21 +847,6 @@ fn drop_domains(args: DropDomainsArgs) -> Result<()> {
         let done = if args.delete { format!("deleted in {:.0}s", started.elapsed().as_secs_f64()) } else { "nothing deleted without --delete".into() };
         println!("{domain}: {} ready pages, {} URLs in its last sitemaps; {done}", found.ready, found.urls);
     }
-    Ok(())
-}
-
-fn restore_escaped(args: RestoreEscapedArgs) -> Result<()> {
-    let owned = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
-    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let mut restored = 0;
-    for store in buckets.stores() {
-        let backup = args.backup_dir.join(format!("{}.bin", store.name()));
-        if backup.exists() {
-            restored += store.restore(&backup)?;
-        }
-    }
-    println!("restored {restored} entries");
     Ok(())
 }
 
