@@ -17,6 +17,7 @@ bulk-arxiv-text.workspace = true
 bulk-bittensor.workspace = true
 bulk-core.workspace = true
 bulk-pmc.workspace = true
+bulk-openalex.workspace = true
 bulk-pubmed.workspace = true
 bulk-wikipedia.workspace = true
 clap.workspace = true

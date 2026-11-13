@@ -27,6 +27,8 @@ enum Command {
     PmcOrder(bulk_pmc::OrderArgs),
     /// PMIDs of the PMC versions taken, from metadata alone.
     PmcPmids(bulk_pmc::PmidsArgs),
+    /// OpenAlex works with an abstract, from the works Parquet snapshot, as pages at doi.org.
+    Openalex(bulk_openalex::Args),
     /// Wikimedia Enterprise snapshots of English Wikipedia and its sister projects.
     Wikipedia(bulk_wikipedia::Args),
     /// Print the hidden categories of a category-namespace snapshot.
@@ -53,6 +55,7 @@ fn main() -> anyhow::Result<()> {
         Command::PmcInventory(args) => bulk_pmc::inventory_main(args),
         Command::PmcOrder(args) => bulk_pmc::order_main(args),
         Command::PmcPmids(args) => bulk_pmc::pmids_main(args),
+        Command::Openalex(args) => bulk_openalex::main(args),
         Command::Wikipedia(args) => bulk_wikipedia::main(args),
         Command::HiddenCategories(args) => bulk_wikipedia::hidden_main(args),
         Command::Subnets(args) => bulk_bittensor::subnets_main(args),
