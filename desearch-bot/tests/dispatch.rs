@@ -651,7 +651,7 @@ fn outcomes_tally_each_domains_yield_once_per_file_under_the_domain_its_host_was
     let rows = [
         outcome("https://example.com/a", Outcome::Published, 2000),
         outcome("https://www.example.com/b", Outcome::Failed, 2001),
-        outcome("http://blog.example.com/c", Outcome::Unchanged, 2002),
+        outcome("http://blog.example.com/c", Outcome::Published, 2002),
         outcome("https://example.com/d", Outcome::Dropped, 2003),
         outcome("https://shop.example.org/e", Outcome::Failed, 2004),
         outcome("https://unknown.net/f", Outcome::Published, 2005),
@@ -793,10 +793,10 @@ fn a_batch_id_depends_only_on_the_batch() {
 fn outcome_files_parse_with_the_host_each_url_was_queued_under() {
     let data = std::fs::read(format!("{}/tests/data/outcomes.parquet", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rows = outcomes::read_parquet(data.into()).unwrap();
-    assert_eq!(rows.len(), 4, "an outcome this bot does not know is skipped");
+    assert_eq!(rows.len(), 3, "an outcome this bot does not know is skipped");
     assert_eq!(rows[0], OutcomeRow { url: "https://example.com/news/a".into(), host: "example.com".into(), outcome: Outcome::Published, at: 1_759_400_000_500_000 });
-    assert_eq!(rows.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Published, Outcome::Unchanged, Outcome::Failed, Outcome::Dropped]);
-    assert_eq!(rows.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["example.com", "example.com", "blog.example.com", "example.com"]);
+    assert_eq!(rows.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Published, Outcome::Failed, Outcome::Dropped]);
+    assert_eq!(rows.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["example.com", "blog.example.com", "example.com"]);
 
     let dir = Dir::new("outcome-files");
     let buckets = known(&dir, &["example.com"]);
@@ -805,7 +805,7 @@ fn outcome_files_parse_with_the_host_each_url_was_queued_under() {
     store.record_listing("example.com", 7, listed.iter().map(|u| (urls::parse(u, "example.com").unwrap(), 10, false)).collect(), 100).unwrap();
     store.mark_sent(&take(store, 10), 1_759_399_000, &rules()).unwrap();
     let counted = OutcomeReader::new(rules(), 1000).apply(&buckets, &rows, 1_759_400_100).unwrap();
-    assert_eq!((counted.published, counted.failed, counted.dropped, counted.dropped_now, counted.unknown), (2, 1, 1, 1, 0));
+    assert_eq!((counted.published, counted.failed, counted.dropped, counted.dropped_now, counted.unknown), (1, 1, 1, 1, 0));
     assert_eq!(store.next_send("example.com", b"blog.example.com/c").unwrap().map(|n| (n.why, n.due)), Some((Why::Failed, 1_759_400_002 + RECRAWL)));
     assert_eq!(store.next_send("example.com", b"example.com/d").unwrap().map(|n| (n.why, n.due)), Some((Why::Dropped, 1_759_400_100)));
     assert_eq!(store.url(&urls::parse(listed[0], "example.com").unwrap()).unwrap().unwrap().crawled_at, 0, "a published page is not looked up");
@@ -1105,8 +1105,8 @@ async fn the_outcome_feed_is_read_from_its_newest_file_and_skips_ahead_when_an_h
     let read: Vec<u64> = fake.lock().unwrap().asked.iter().filter_map(|p| p.strip_prefix("/outcomes/f")?.strip_suffix(".parquet")?.parse().ok()).collect();
     assert_eq!(read, [5, 6, 7, 8, 9, 10, 11, 12, 13, 40], "the newest file first, one run of eight, then a jump to the newest");
     assert_eq!(progress.skipped.load(std::sync::atomic::Ordering::Relaxed), 26);
-    assert_eq!(progress.outcomes.load(std::sync::atomic::Ordering::Relaxed), 40);
-    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(30.0), "three judged rows a file, ten files");
+    assert_eq!(progress.outcomes.load(std::sync::atomic::Ordering::Relaxed), 30);
+    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(20.0), "two judged rows a file, ten files");
 }
 
 /// A list file the test rewrites, read again on demand.

@@ -489,7 +489,6 @@ pub struct Pick {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Published,
-    Unchanged,
     Failed,
     Dropped,
 }
@@ -498,7 +497,6 @@ impl Outcome {
     pub fn parse(value: &str) -> Option<Outcome> {
         match value {
             "published" => Some(Outcome::Published),
-            "unchanged" => Some(Outcome::Unchanged),
             "failed" => Some(Outcome::Failed),
             "dropped" => Some(Outcome::Dropped),
             _ => None,
