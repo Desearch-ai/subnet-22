@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of DailyMed drug labels from its daily update zips
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+Unit=refresh@dailymed.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

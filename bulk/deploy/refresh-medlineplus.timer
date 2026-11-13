@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of MedlinePlus health topics and Genetics summaries
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Unit=refresh@medlineplus.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

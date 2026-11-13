@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of EUR-Lex acts in force and CJEU judgments through Cellar
+
+[Timer]
+OnCalendar=Sat *-*-* 01:00:00 UTC
+Unit=refresh@eurlex.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
