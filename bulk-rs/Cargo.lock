@@ -410,11 +410,15 @@ dependencies = [
  "bulk-bittensor",
  "bulk-core",
  "bulk-ctgov",
+ "bulk-dailymed",
  "bulk-ecfr",
  "bulk-eurlex",
  "bulk-factbook",
+ "bulk-fedreg",
+ "bulk-gutenberg",
  "bulk-medlineplus",
  "bulk-pmc",
+ "bulk-pubchem",
  "bulk-pubmed",
  "bulk-uscode",
  "bulk-wikipedia",
@@ -518,6 +522,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-dailymed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "roxmltree",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "bulk-ecfr"
 version = "0.1.0"
 dependencies = [
@@ -558,6 +574,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-fedreg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "chrono",
+ "clap",
+ "regex",
+ "reqwest",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
+name = "bulk-gutenberg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "csv",
+ "regex",
+ "tar",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "bulk-medlineplus"
 version = "0.1.0"
 dependencies = [
@@ -590,6 +637,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-properties",
+]
+
+[[package]]
+name = "bulk-pubchem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "indexmap",
+ "reqwest",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

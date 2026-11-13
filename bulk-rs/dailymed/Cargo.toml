@@ -1,0 +1,17 @@
+[package]
+name = "bulk-dailymed"
+description = "DailyMed's human prescription and OTC drug labels as a page per label at dailymed.nlm.nih.gov"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+roxmltree.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

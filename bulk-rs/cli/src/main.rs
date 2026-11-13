@@ -41,6 +41,8 @@ enum Command {
     BittensorFetch(bulk_bittensor::fetch::FetchArgs),
     /// ClinicalTrials.gov, a page per study, from the all-studies JSON zip.
     Ctgov(bulk_ctgov::Args),
+    /// DailyMed's human prescription and OTC drug labels, from its full release zips.
+    Dailymed(bulk_dailymed::Args),
     /// The eCFR, a page per section, from govinfo's title XML and eCFR's structures.
     Ecfr(bulk_ecfr::Args),
     /// EU acts in force and CJEU judgments in English, from the texts `eurlex-fetch` saved.
@@ -49,10 +51,20 @@ enum Command {
     EurlexFetch(bulk_eurlex::FetchArgs),
     /// The United States Code, a page per section, from an OLRC release point's zip.
     Uscode(bulk_uscode::Args),
+    /// The Federal Register, a page per document, from govinfo's yearly zips and the index `fedreg-index` saved.
+    Fedreg(bulk_fedreg::Args),
+    /// Index the Federal Register's documents by day through federalregister.gov's API.
+    FedregIndex(bulk_fedreg::IndexArgs),
+    /// Project Gutenberg's English public-domain books, each cut to its opening.
+    Gutenberg(bulk_gutenberg::Args),
     /// The World Factbook's final edition, a page per entity, from factbook.json.
     Factbook(bulk_factbook::Args),
     /// MedlinePlus health topics, English, from the daily topics XML.
     Medlineplus(bulk_medlineplus::Args),
+    /// PubChem compounds with a description from an openly licensed source, from the pages `pubchem-fetch` saved.
+    Pubchem(bulk_pubchem::Args),
+    /// Save every page of a PubChem heading's compound annotations from PUG-View.
+    PubchemFetch(bulk_pubchem::FetchArgs),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -74,12 +86,18 @@ fn main() -> anyhow::Result<()> {
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
         Command::BittensorFetch(args) => bulk_bittensor::fetch::main(args),
         Command::Ctgov(args) => bulk_ctgov::main(args),
+        Command::Dailymed(args) => bulk_dailymed::main(args),
         Command::Ecfr(args) => bulk_ecfr::main(args),
         Command::Eurlex(args) => bulk_eurlex::main(args),
         Command::EurlexFetch(args) => bulk_eurlex::fetch_main(args),
         Command::Uscode(args) => bulk_uscode::main(args),
+        Command::Gutenberg(args) => bulk_gutenberg::main(args),
+        Command::Fedreg(args) => bulk_fedreg::main(args),
+        Command::FedregIndex(args) => bulk_fedreg::index_main(args),
         Command::Factbook(args) => bulk_factbook::main(args),
         Command::Medlineplus(args) => bulk_medlineplus::main(args),
+        Command::Pubchem(args) => bulk_pubchem::main(args),
+        Command::PubchemFetch(args) => bulk_pubchem::fetch_main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }
