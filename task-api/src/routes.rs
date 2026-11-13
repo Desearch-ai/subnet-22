@@ -38,7 +38,7 @@ const CLAIM_DRAWS: usize = 4;
 const COMPLETED_TTL_S: u64 = 900;
 const COMPLETE_WAIT: Duration = Duration::from_secs(20);
 const COMPLETE_POLL: Duration = Duration::from_millis(250);
-/// R2's clock and ours may differ by this much.
+/// The store's clock and ours may differ by this much.
 const CLOCK_SLACK_S: f64 = 2.0;
 const SLOW_S: f64 = 5.0;
 const LINK_SLACK_S: u64 = 60;

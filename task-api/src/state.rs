@@ -166,7 +166,7 @@ impl State {
         })
     }
 
-    /// The buckets the settings name, both on the R2 endpoint unless the pages bucket has its own.
+    /// The buckets the settings name, both on `CF_R2_ENDPOINT` unless the pages bucket has its own.
     pub fn buckets(settings: &Settings) -> Result<(Bucket, Bucket)> {
         let http = desearch::r2::client()?;
         let credentials =

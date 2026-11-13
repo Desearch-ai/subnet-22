@@ -9,12 +9,10 @@ use clap::{Parser, Subcommand};
 
 use desearch::feeds::BULK;
 use desearch::r2::{self, Bucket, Credentials};
-use desearch::stub;
-use publisher::compactor::{self, R2Store, Split, Store};
-use publisher::index::VersionIndex;
+use publisher::compactor::{self, R2Store, Split};
 use publisher::local::{LocalFeed, LocalLog, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{build, bulk, outcomes, planner, service};
+use publisher::{bulk, outcomes, planner, service};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -29,17 +27,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM; any number may run at once.
+    /// Publish from the task API's queue in Redis to the object store, configured from the environment, until SIGTERM; any number may run at once.
     Serve,
-    /// Take down the pages of a version index whose URL kept a sitemap's XML escapes; counts them unless given `--backup`.
-    RemoveEscaped {
-        /// The version index the publisher kept before it published without one.
-        #[arg(long)]
-        index: PathBuf,
-        /// Remove, after saving every removed index entry to this new file as JSON lines.
-        #[arg(long)]
-        backup: Option<PathBuf>,
-    },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
     /// Publish a bulk run's batch files from `bulk` into the bulk feed: a folder laid out as the pages bucket with `--log`, or the pages bucket with `--r2`.
@@ -71,45 +60,16 @@ enum Command {
         #[arg(long)]
         explain: bool,
     },
-    /// Compare every page of the current state with a version index the publisher kept, or else with a plain fold of the change log; for test runs.
+    /// Compare every page of the current state with a plain fold of the change log; for test runs.
     CompareCurrent {
         #[arg(long, default_value = "current/")]
         prefix: String,
-        #[arg(long)]
-        index: Option<PathBuf>,
         /// Only shards `a..b`, so a check of a full-size state fits in memory.
         #[arg(long, default_value = "0..1024")]
         shards: String,
     },
-    /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
-    BuildCurrent {
-        #[arg(long)]
-        snapshot: String,
-        #[arg(long)]
-        work: PathBuf,
-        #[arg(long, default_value = "current/")]
-        prefix: String,
-        /// Shards `a..b`, for a trial on part of the data.
-        #[arg(long, default_value = "0..1024")]
-        shards: String,
-        /// Change files `a..b`: only pages whose current row is in them, for a trial.
-        #[arg(long)]
-        seqs: Option<String>,
-        #[arg(long, default_value_t = 16)]
-        threads: usize,
-        /// Build without the snapshot's pages that name no change file row, instead of refusing.
-        #[arg(long)]
-        allow_unlocated: bool,
-    },
     /// Turn published pages that need a vector into embed inputs for the task API, following the change log until SIGTERM.
     Plan,
-    /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
-    StubR2 {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long, default_value = "127.0.0.1:9000")]
-        listen: String,
-    },
 }
 
 #[derive(clap::Args)]
@@ -153,9 +113,6 @@ fn main() -> Result<()> {
             runtime.shutdown_timeout(Duration::from_secs(5));
             served
         }
-        Command::RemoveEscaped { index, backup } => {
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(&index, backup))
-        }
         Command::Local(args) => local(args),
         Command::Bulk(args) => bulk(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
@@ -180,41 +137,25 @@ fn main() -> Result<()> {
             println!("{checked} pages checked in change files {sampled:?}: {removed} removed by a later change, {} wrong", wrong.len());
             Ok(())
         }
-        Command::CompareCurrent { prefix, index, shards } => {
+        Command::CompareCurrent { prefix, shards } => {
             let shards = range::<usize>(&shards)?;
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = current_store(&runtime, &prefix, pages_store(&runtime)?)?;
-            let (compared, against) = match index {
-                Some(index) => (compactor::compare(&store, &prefix, &VersionIndex::open_read_only(&index, 64 << 20)?, &shards, 16)?, "index"),
-                None => (compactor::compare_log(&store, &prefix, &shards, 16)?, "change log"),
-            };
+            let compared = compactor::compare_log(&store, &prefix, &shards, 16)?;
             for (what, keys) in [("missing", &compared.missing), ("extra", &compared.extra), ("other version", &compared.other_version)] {
                 for key in keys.iter().take(20) {
                     println!("{what}: {key}");
                 }
             }
             println!(
-                "{against} {} pages ({} of withdrawn tasks still draining), current {} pages: {} missing, {} extra, {} at another version",
-                compared.index_pages,
-                compared.draining,
+                "change log {} pages, current {} pages: {} missing, {} extra, {} at another version",
+                compared.log_pages,
                 compared.current_pages,
                 compared.missing.len(),
                 compared.extra.len(),
                 compared.other_version.len()
             );
             Ok(())
-        }
-        Command::BuildCurrent { snapshot, work, prefix, shards, seqs, threads, allow_unlocated } => {
-            build_current(&snapshot, work, prefix, &shards, seqs.as_deref(), threads, allow_unlocated)
-        }
-        Command::StubR2 { root, listen } => {
-            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            runtime.block_on(async {
-                let stub = stub::start(root.clone(), &listen).await?;
-                println!("serving {} as R2 on http://{}", root.display(), stub.addr);
-                tokio::signal::ctrl_c().await?;
-                anyhow::Ok(())
-            })
         }
     }
 }
@@ -452,52 +393,4 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             }
         }
     }
-}
-
-/// Copies a large object to a local file a part at a time, so it never sits whole in memory.
-fn download(store: &R2Store, key: &str, path: &std::path::Path) -> Result<()> {
-    use std::io::Write;
-    let head = store.handle.block_on(store.bucket.head(key)).map_err(|e| anyhow::anyhow!("{key}: {e}"))?.with_context(|| format!("{key} does not exist"))?;
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let part = 64u64 << 20;
-    let mut at = 0;
-    while at < head.size {
-        let end = (at + part).min(head.size);
-        let bytes = store.handle.block_on(store.bucket.get_range(key, at..end, Some(&head.etag))).map_err(|e| anyhow::anyhow!("{key}: {e}"))?;
-        file.write_all(&bytes)?;
-        at = end;
-    }
-    file.flush()?;
-    Ok(())
-}
-
-fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, seqs: Option<&str>, threads: usize, allow_unlocated: bool) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let log = pages_store(&runtime)?;
-    std::fs::create_dir_all(&work)?;
-    let local = if std::path::Path::new(snapshot).exists() {
-        PathBuf::from(snapshot)
-    } else {
-        let local = work.join("snapshot.parquet");
-        if !local.exists() {
-            let started = Instant::now();
-            download(&log, snapshot, &local)?;
-            println!("{snapshot} downloaded in {:.0}s", started.elapsed().as_secs_f64());
-        }
-        local
-    };
-    let store = current_store(&runtime, &prefix, log)?;
-    let settings = build::Settings {
-        prefix,
-        work,
-        threads,
-        shards: range(shards)?,
-        seqs: seqs.map(range).transpose()?.unwrap_or(0..i64::MAX),
-        spill_bytes: 2 << 30,
-        allow_unlocated,
-    };
-    let started = Instant::now();
-    let report = build::build(&store as &dyn Store, &local, &settings)?;
-    println!("{report:?} in {:.0}s", started.elapsed().as_secs_f64());
-    Ok(())
 }

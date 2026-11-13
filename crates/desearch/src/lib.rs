@@ -1,4 +1,4 @@
-//! What the SN22 Rust services share, each part matching the Python it replaced byte for byte.
+//! What the SN22 Rust services share.
 
 pub mod canonical;
 #[cfg(feature = "chain")]

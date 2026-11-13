@@ -10,18 +10,8 @@ use crate::sampling::RECHECK_UPLOADS;
 pub const KEEP_DAYS: f64 = 30.0;
 const DAY: f64 = 86_400.0;
 
-fn has_table(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [name], |row| row.get::<_, i64>(0))? > 0)
-}
-
-fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", [table, column], |row| row.get::<_, i64>(0))? > 0)
-}
-
-/// Checks kept before they had a kind were all crawl checks; their per-hotkey state is copied once into the per-kind table.
 pub fn create(conn: &Connection) -> Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let had_states = has_table(&tx, "check_states")?;
     tx.execute_batch(&format!(
         "
         CREATE TABLE IF NOT EXISTS checks (
@@ -44,16 +34,7 @@ pub fn create(conn: &Connection) -> Result<()> {
         );
         "
     ))?;
-    if !has_column(&tx, "checks", "kind")? {
-        tx.execute_batch(&format!("ALTER TABLE checks ADD COLUMN kind TEXT NOT NULL DEFAULT '{CRAWL}'"))?;
-    }
     tx.execute_batch("CREATE INDEX IF NOT EXISTS checks_kind ON checks (hotkey, kind, at)")?;
-    if !had_states && has_table(&tx, "check_state")? {
-        tx.execute(
-            "INSERT INTO check_states (hotkey, kind, recheck_left, last_pass_at) SELECT hotkey, ?, recheck_left, last_pass_at FROM check_state",
-            [CRAWL],
-        )?;
-    }
     tx.commit()?;
     Ok(())
 }
@@ -139,37 +120,6 @@ mod tests {
     use crate::budgets::EMBED;
 
     const NOW: f64 = 1_800_000_000.0;
-
-    fn before_kinds() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE checks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, hotkey TEXT NOT NULL, task_id TEXT NOT NULL, at REAL NOT NULL, upload_at REAL NOT NULL,
-                passed INTEGER NOT NULL, errors_judged INTEGER NOT NULL DEFAULT 0, errors_unconfirmed INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX checks_hotkey ON checks (hotkey, at);
-            CREATE TABLE check_state (hotkey TEXT PRIMARY KEY, recheck_left INTEGER NOT NULL DEFAULT 0, last_pass_at REAL NOT NULL DEFAULT 0);
-            INSERT INTO checks (hotkey, task_id, at, upload_at, passed) VALUES ('m', 't1', 1, 1, 1), ('m', 't2', 2, 2, 0);
-            INSERT INTO check_state VALUES ('m', 7, 1.0);
-            ",
-        )
-        .unwrap();
-        conn
-    }
-
-    #[test]
-    fn checks_kept_before_kinds_are_crawl_checks_and_their_state_is_copied_once() {
-        let conn = before_kinds();
-        create(&conn).unwrap();
-        assert_eq!((passes(&conn, "m", CRAWL).unwrap(), fails_in_recent(&conn, "m", CRAWL).unwrap()), (1, 1));
-        assert_eq!((passes(&conn, "m", EMBED).unwrap(), fails_in_recent(&conn, "m", EMBED).unwrap()), (0, 0));
-        assert_eq!((recheck_left(&conn, "m", CRAWL).unwrap(), last_pass_at(&conn, "m", CRAWL).unwrap()), (7, 1.0));
-        assert_eq!(recheck_left(&conn, "m", EMBED).unwrap(), 0);
-        took_recheck(&conn, "m", CRAWL).unwrap();
-        create(&conn).unwrap();
-        assert_eq!(recheck_left(&conn, "m", CRAWL).unwrap(), 6, "copied only the first time");
-    }
 
     #[test]
     fn each_kind_keeps_its_own_passes_fails_and_rechecks() {

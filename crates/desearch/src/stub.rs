@@ -1,4 +1,4 @@
-//! A stand-in for R2 that keeps objects as files under one folder, for tests and local runs; it checks no signatures.
+//! A stand-in for the S3-compatible store that keeps objects as files under one folder, for tests and local runs; it checks no signatures.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;

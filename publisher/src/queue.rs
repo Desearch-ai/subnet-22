@@ -1,4 +1,4 @@
-//! The task API's publish queue in Redis, driven with the same keys and the same Lua as `app.queues.PublishQueue`.
+//! The publish queue the task API fills in Redis, from which the publisher claims, acknowledges and gives back jobs.
 
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,25 +28,8 @@ pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
 pub const EMBED_PUBLISHED: &str = "embed:published:";
 /// Embed tasks with malformed vectors, for the task API to check their miner's next uploads.
 pub const EMBED_MALFORMED: &str = "embed:malformed";
-/// Byte for byte the text in `app/queues.py`, so both load the script under one SHA.
-pub const PCLAIM: &str = "
-local jobs = {}
-while #jobs < tonumber(ARGV[1]) do
-  local task_id = redis.call('LPOP', KEYS[1])
-  if not task_id then break end
-  local job = redis.call('GET', 'pjob:' .. task_id)
-  if job then
-    redis.call('ZADD', KEYS[2], ARGV[2], task_id)
-    table.insert(jobs, job)
-  end
-end
-return jobs
-";
-pub const PACK: &str = "
-redis.call('ZREM', KEYS[1], ARGV[1])
-if redis.call('ZREM', KEYS[2], ARGV[1]) == 1 then redis.call('INCR', KEYS[3]) end
-return redis.call('DEL', 'pjob:' .. ARGV[1], 'ptries:' .. ARGV[1])
-";
+pub const PCLAIM: &str = include_str!("lua/pclaim.lua");
+pub const PACK: &str = include_str!("lua/pack.lua");
 /// Back on the queue at once and without a try counted, since a failed pass is the publisher's fault, not the job's.
 const GIVE_BACK: &str = "
 local back = 0

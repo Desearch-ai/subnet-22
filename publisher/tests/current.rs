@@ -259,42 +259,6 @@ fn a_number_not_written_yet_ends_the_cycle_without_skipping_it() {
 }
 
 #[test]
-fn a_build_from_an_index_snapshot_matches_it_and_the_compactor_carries_on_after_it() {
-    let root = scratch("build");
-    let mut log = Log::new(root.join("bucket"));
-    let store = LocalStore { root: root.join("bucket") };
-    let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
-    let urls: Vec<String> = (0..200).map(|i| format!("https://news.example/built-{i}")).collect();
-    let first: Vec<Change> = urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "v1")).collect();
-    let seq = log.append(&first);
-    index.store(&publisher::index::entries(&first, seq)).unwrap();
-    let second: Vec<Change> = urls[..50].iter().map(|u| page(u, "2026-10-08T11:00:00+00:00", "t2", "v2")).collect();
-    let through = log.append(&second);
-    index.store(&publisher::index::entries(&second, through)).unwrap();
-    let snapshot = root.join("snapshot.parquet");
-    publisher::snapshot::write_parquet(&index, std::fs::File::create(&snapshot).unwrap()).unwrap();
-
-    let settings = publisher::build::Settings {
-        prefix: "current/".into(),
-        work: root.join("build-work"),
-        threads: 4,
-        shards: 0..SHARDS,
-        seqs: 0..i64::MAX,
-        spill_bytes: 4096,
-        allow_unlocated: false,
-    };
-    let report = publisher::build::build(&store, &snapshot, &settings).unwrap();
-    assert_eq!((report.wanted, report.written, report.misplaced, report.other_version, report.through_seq), (200, 200, 0, 0, through));
-    assert_eq!(text_of(&store, &urls[0]).as_deref(), Some("v2"));
-    assert_eq!(text_of(&store, &urls[100]).as_deref(), Some("v1"));
-
-    log.append(&[page(&urls[100], "2026-10-08T12:00:00+00:00", "t3", "v3")]);
-    let carried = compactor::cycle(&store, &self::settings(root.join("work")), 1.0).unwrap();
-    assert_eq!((carried.from, carried.rows), (through + 1, 1));
-    assert_eq!(text_of(&store, &urls[100]).as_deref(), Some("v3"));
-}
-
-#[test]
 fn the_check_counts_a_page_removed_later_as_removed_and_a_lost_page_as_wrong() {
     let root = scratch("check");
     let mut log = Log::new(root.join("bucket"));
@@ -379,58 +343,6 @@ fn a_removal_between_two_versions_holds_whichever_cycles_the_rows_land_in() {
     log.append(&[page("https://news.example/other", "2026-10-08T13:00:00+00:00", "t3", "x")]);
     compactor::cycle(&store, &settings, 3_000.0).unwrap();
     assert_eq!(text_of(&store, url).as_deref(), Some("fetched earlier, logged after"), "and once merged");
-}
-
-#[test]
-fn a_snapshot_page_with_no_change_file_row_is_read_from_its_page_object_and_one_with_neither_stops_the_build() {
-    let root = scratch("unlocated");
-    let mut log = Log::new(root.join("bucket"));
-    let store = LocalStore { root: root.join("bucket") };
-    let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
-    let located = vec![page("https://news.example/located", "2026-10-08T10:00:00+00:00", "t1", "from the log")];
-    let seq = log.append(&located);
-    index.store(&publisher::index::entries(&located, seq)).unwrap();
-    for (url, kept) in [("https://news.example/kept-object", true), ("https://news.example/no-object", false)] {
-        let record = record(url, "2026-10-05T10:00:00+00:00", "t0", &format!("old text of {url}"));
-        let key = page_key(url).unwrap();
-        if kept {
-            let doc = serde_json::json!({
-                "url": record.url, "domain": record.domain, "title": record.title, "text": record.text, "fetched_at": record.fetched_at,
-                "content_sha1": record.content_sha1, "assigned_url": record.assigned_url, "task_id": record.task_id, "miner": record.miner,
-                "validators": record.validators, "json_ld_types": ["NewsArticle"], "status": 200, "published": "", "author": "", "lang": "",
-                "captured_at": "", "doc_id": "", "headings": [], "source": "subnet22", "final_url": null, "canonical": null,
-                "page_type": null, "description": null, "text_sha256": null, "validator": null
-            });
-            store.put(&key, Bytes::from(zstd::encode_all(serde_json::to_vec(&doc).unwrap().as_slice(), 3).unwrap())).unwrap();
-        }
-        let current = publisher::index::Current {
-            url: url.into(),
-            version: record_version(&record),
-            fetched_at: record.fetched_at.clone(),
-            task_id: "t0".into(),
-            content_sha1: record.content_sha1.clone(),
-            change_seq: None,
-            change_row: None,
-        };
-        index.store(&[(key, current)]).unwrap();
-    }
-    let snapshot = root.join("snapshot.parquet");
-    publisher::snapshot::write_parquet(&index, std::fs::File::create(&snapshot).unwrap()).unwrap();
-    let settings = |work: &str, allow_unlocated: bool| publisher::build::Settings {
-        prefix: "current/".into(),
-        work: root.join(work),
-        threads: 4,
-        shards: 0..SHARDS,
-        seqs: 0..i64::MAX,
-        spill_bytes: 4096,
-        allow_unlocated,
-    };
-    let refused = publisher::build::build(&store, &snapshot, &settings("refused", false)).unwrap_err();
-    assert!(refused.to_string().starts_with("1 pages of the snapshot have neither"), "{refused}");
-    let report = publisher::build::build(&store, &snapshot, &settings("allowed", true)).unwrap();
-    assert_eq!((report.unlocated, report.filled, report.other_version, report.written), (2, 1, 0, 2));
-    assert_eq!(text_of(&store, "https://news.example/kept-object").as_deref(), Some("old text of https://news.example/kept-object"));
-    assert_eq!(text_of(&store, "https://news.example/located").as_deref(), Some("from the log"));
 }
 
 #[test]
@@ -519,7 +431,7 @@ fn the_compacted_state_matches_a_plain_fold_of_the_log_through_combines_rewrites
         compactor::cycle(&store, &settings, 1_000.0 * round as f64).unwrap();
     }
     let compared = compactor::compare_log(&store, "current/", &(0..SHARDS), 4).unwrap();
-    assert!(compared.index_pages > 20);
+    assert!(compared.log_pages > 20);
     assert_eq!((compared.missing, compared.extra, compared.other_version), (vec![], vec![], vec![]));
 }
 
@@ -584,7 +496,7 @@ fn a_log_of_v1_and_v2_pages_folds_by_fetch_time_and_the_compactor_keeps_every_v2
     assert_eq!(record_of(&store, d), Some(v2_record(d, &at(13), "t3", "# v2 d")), "a delta keeps every v2 field");
     assert_eq!(record_of(&store, a), Some(record(a, &at(14), "t3", "v1 a again")), "a v1 page is v1 again, nothing of the v2 one left");
     let compared = compactor::compare_log(&store, "current/", &(0..SHARDS), 4).unwrap();
-    assert_eq!((compared.index_pages, compared.missing, compared.extra, compared.other_version), (4, vec![], vec![], vec![]));
+    assert_eq!((compared.log_pages, compared.missing, compared.extra, compared.other_version), (4, vec![], vec![], vec![]));
 }
 
 #[test]
