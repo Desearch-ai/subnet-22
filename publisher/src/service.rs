@@ -1,24 +1,20 @@
 //! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use redis::aio::ConnectionManager;
-use regex::Regex;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::bulk;
-use crate::changes::{self, Body, Change, Kind};
-use crate::index::{Current, VersionIndex};
 use crate::outcomes;
 use crate::queue::{PublishQueue, PublishedVectors};
 use crate::reading::{RangeRead, Remote, Traffic};
@@ -653,84 +649,6 @@ pub async fn serve() -> Result<()> {
     run(shared.clone(), stop, shared.settings.idle_exit).await?;
     println!("publisher stopped");
     Ok(())
-}
-
-/// A page URL kept from a sitemap address whose XML escapes were never decoded, as in `?amp%3Bid=1`.
-static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[?&]amp%3B|&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-f]+);").expect("a valid pattern"));
-const REMOVED_PER_FILE: usize = 10_000;
-
-pub fn escaped(url: &str) -> bool {
-    ESCAPED.is_match(url)
-}
-
-/// `remove_escaped` on the version index at `index`, with the storage and Redis `serve` uses.
-pub async fn remove_escaped_from_env(index: &Path, backup: Option<PathBuf>) -> Result<()> {
-    let settings = Settings::from_env()?;
-    let metrics = Arc::new(Metrics::default());
-    let (temp, pages) = buckets_from_env(metrics.r2_errors.clone())?;
-    pages.check().await?;
-    let shared = Shared::connect(settings, temp, pages, metrics).await?;
-    let index = Arc::new(VersionIndex::open(index, 256 << 20)?);
-    remove_escaped(&shared, &index, backup.as_deref()).await?;
-    Ok(())
-}
-
-/// Takes down every page whose URL still carries a sitemap's XML escapes, in change files of `removed` rows, each index entry saved to `backup` first as a JSON line; without a backup it only counts them.
-pub async fn remove_escaped(shared: &Shared, index: &Arc<VersionIndex>, backup: Option<&Path>) -> Result<usize> {
-    let scanning = index.clone();
-    let found: Vec<(String, Current)> = tokio::task::spawn_blocking(move || {
-        let mut found = Vec::new();
-        scanning.scan(|key, current| {
-            if escaped(&current.url) {
-                found.push((key, current));
-            }
-            Ok(())
-        })?;
-        anyhow::Ok(found)
-    })
-    .await??;
-    println!("{} pages carry escaped URLs", found.len());
-    for (key, current) in found.iter().take(5) {
-        println!("  {key} {}", current.url);
-    }
-    let Some(backup) = backup.filter(|_| !found.is_empty()) else {
-        return Ok(found.len());
-    };
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(backup).with_context(|| format!("creating {}", backup.display()))?;
-    let mut saved = std::io::BufWriter::new(file);
-    let count = found.len();
-    let now = now_us();
-    let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
-    let index = index.clone();
-    tokio::task::spawn_blocking(move || {
-        for chunk in found.chunks(REMOVED_PER_FILE) {
-            for (key, current) in chunk {
-                let entry = serde_json::json!({
-                    "key": key, "url": current.url, "version": current.version, "fetched_at": current.fetched_at, "task_id": current.task_id,
-                    "content_sha1": current.content_sha1, "change_seq": current.change_seq, "change_row": current.change_row,
-                });
-                writeln!(saved, "{entry}")?;
-            }
-            saved.flush()?;
-            saved.get_ref().sync_data()?;
-            let removed: Vec<Change> = chunk
-                .iter()
-                .map(|(key, current)| Change {
-                    key: key.clone(),
-                    kind: Kind::Removed,
-                    previous_content_sha1: current.content_sha1.clone(),
-                    published_at: iso(now),
-                    body: Body::Removed { url: current.url.clone(), domain: desearch::canonical::domain_of(&current.url).unwrap_or_default() },
-                })
-                .collect();
-            let seq = feed.append(changes::encode(&removed)?, removed.len())?;
-            index.remove(&chunk.iter().map(|(key, current)| (key.clone(), current.version.clone())).collect::<Vec<_>>())?;
-            println!("removed {} pages in change file {seq}", removed.len());
-        }
-        index.flush()
-    })
-    .await??;
-    Ok(count)
 }
 
 pub fn now_us() -> i64 {

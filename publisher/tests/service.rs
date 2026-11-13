@@ -19,10 +19,8 @@ use desearch::feeds::{CHANGES, PENDING_GRACE_S};
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use publisher::index::{Current, VersionIndex};
 use publisher::queue::PublishQueue;
 use publisher::service::{self, Metrics, Settings, Shared};
-use publisher::snapshot::Multipart;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
@@ -591,21 +589,9 @@ async fn large_objects_go_up_in_parts_and_reads_survive_errors() {
     let errors = Arc::new(AtomicU64::new(0));
     let pages = bucket(stub.addr, PAGES, "pre/", errors.clone());
     let data: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
-    let (handle, uploaded) = (tokio::runtime::Handle::current(), data.clone());
-    let target = pages.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut upload = Multipart::new(target, "big.bin".into(), handle).with_part_bytes(64 << 10);
-        upload.write_all(&uploaded).unwrap();
-        upload.finish().unwrap();
-    })
-    .await
-    .unwrap();
+    pages.put_in_parts("big.bin", Bytes::from(data.clone()), PARQUET, 64 << 10, 3).await.unwrap();
     assert_eq!(stub.state.object(PAGES, "pre/big.bin").unwrap(), data);
-    assert!(stub.state.count("PUT") >= 7, "{} parts", stub.state.count("PUT"));
-    let puts = stub.state.count("PUT");
-    pages.put_in_parts("parts.bin", Bytes::from(data.clone()), PARQUET, 64 << 10, 3).await.unwrap();
-    assert_eq!(stub.state.object(PAGES, "pre/parts.bin").unwrap(), data);
-    assert_eq!(stub.state.count("PUT") - puts, 7, "seven parts of at most 64 KiB");
+    assert_eq!(stub.state.count("PUT"), 7, "seven parts of at most 64 KiB");
 
     stub.state.fail("GET", &format!("{PAGES}/pre/big.bin"), 3);
     let read = pages.get_range("big.bin", 4..12, None).await.unwrap();
@@ -616,61 +602,6 @@ async fn large_objects_go_up_in_parts_and_reads_survive_errors() {
     assert!(matches!(pages.get("missing").await, Err(r2::Error::Missing)));
     stub.state.fail("PUT", &format!("{PAGES}/pre/doomed"), 10);
     assert!(pages.put("doomed", Bytes::from_static(b"x"), PARQUET, None).await.is_err(), "gives up after its attempts");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pages_kept_with_sitemap_escapes_are_taken_down() {
-    let Some((_turn, _redis)) = redis_db().await else {
-        eprintln!("skipped: no Redis on {REDIS}");
-        return;
-    };
-    let dir = scratch("escaped");
-    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
-    let state = stub.state.clone();
-    let metrics = Arc::new(Metrics::default());
-    let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
-    let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
-    let settings =
-        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 2, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
-    let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics).await.unwrap();
-    let urls = ["https://ex.com/story", "https://ex.com/shop?amp%3Bp=2669&post_type=product", "https://ex.com/Q&amp;A"].map(String::from);
-    let index = Arc::new(VersionIndex::open(&dir.join("index"), 8 << 20).unwrap());
-    let entries: Vec<(String, Current)> = urls
-        .iter()
-        .enumerate()
-        .map(|(row, url)| {
-            let current = Current {
-                url: url.clone(),
-                version: format!("{row:040}"),
-                fetched_at: "2026-10-08T10:00:00+00:00".into(),
-                task_id: "t1".into(),
-                content_sha1: "c".repeat(40),
-                change_seq: Some(1),
-                change_row: Some(row as i64),
-            };
-            (format!("pages/ex.com/{row:040x}"), current)
-        })
-        .collect();
-    index.store(&entries).unwrap();
-
-    assert_eq!(service::remove_escaped(&shared, &index, None).await.unwrap(), 2);
-    assert_eq!(index.pages().unwrap().len(), 3, "counting changes nothing");
-    let backup = dir.join("escaped.jsonl");
-    assert_eq!(service::remove_escaped(&shared, &index, Some(&backup)).await.unwrap(), 2);
-    let saved: Vec<Value> = std::fs::read_to_string(&backup).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-    assert_eq!(saved.len(), 2);
-    assert!(saved.iter().all(|entry| entry["change_seq"].as_i64().is_some() && entry["version"].as_str().is_some_and(|v| !v.is_empty())));
-    let kept: Vec<String> = index.pages().unwrap().into_iter().map(|(_, current)| current.url).collect();
-    assert_eq!(kept, ["https://ex.com/story"]);
-    let latest = json_object(&state, PAGES, "changes/latest.json").unwrap()["seq"].as_u64().unwrap();
-    let numbered = json_object(&state, PAGES, &format!("changes/seq/{latest:012}.json")).unwrap();
-    let removed = rows(&state.object(PAGES, numbered["key"].as_str().unwrap()).unwrap());
-    assert_eq!(column(&removed, "kind"), ["removed"; 2]);
-    let mut taken = column(&removed, "url");
-    taken.sort();
-    assert_eq!(taken, ["https://ex.com/Q&amp;A", "https://ex.com/shop?amp%3Bp=2669&post_type=product"]);
-    assert_eq!(service::remove_escaped(&shared, &index, Some(&dir.join("again.jsonl"))).await.unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

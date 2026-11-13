@@ -2,13 +2,11 @@
 
 pub mod backfill;
 pub mod blocked;
-pub mod build;
 pub mod bulk;
 pub mod changes;
 pub mod clean;
 pub mod compactor;
 pub mod current;
-pub mod index;
 pub mod lang;
 pub mod local;
 pub mod outcomes;
@@ -18,6 +16,5 @@ pub mod reading;
 pub mod records;
 pub mod service;
 pub mod set;
-pub mod snapshot;
 pub mod vectors;
 pub mod worker;
