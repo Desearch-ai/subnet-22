@@ -157,13 +157,6 @@ impl Bucket {
         Ok(body)
     }
 
-    /// The last `bytes` bytes of an object.
-    pub async fn get_tail(&self, key: &str, bytes: u64) -> Result<Bytes, Error> {
-        let mut headers = HeaderMap::new();
-        headers.insert(reqwest::header::RANGE, value(&format!("bytes=-{bytes}")));
-        Ok(self.call(Method::GET, Some(key), &[], headers, Bytes::new(), READ).await?.1)
-    }
-
     pub async fn get(&self, key: &str) -> Result<Bytes, Error> {
         self.get_matching(key, None).await
     }

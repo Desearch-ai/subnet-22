@@ -230,7 +230,7 @@ async fn a_task_dropped_after_its_last_attempt_reaches_the_outcome_feed() {
         json!({"kind": "crawl", "attempts": h.state.settings.max_attempts - 1, "round_id": task["round_id"], "miner": h.miner.ss58(), "urls": task["urls"]});
     lifecycle::requeue(&h.state, &task_id(&task), &job, "fail").await.unwrap();
     assert_eq!(h.json_object("outcomes/latest.json"), Some(json!({"seq": 1})));
-    let index = h.json_object(&desearch::outcomes::seq_key("outcomes", 1)).unwrap();
+    let index = h.json_object(&desearch::feeds::OUTCOMES.seq_key(1)).unwrap();
     assert_eq!(index["rows"], 3);
     let rows = outcome_rows(&h.object(index["key"].as_str().unwrap()).unwrap());
     let mut sent: Vec<String> = task["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap().to_string()).collect();
@@ -309,7 +309,7 @@ async fn a_take_back_refuses_the_task_s_publish_job_and_sends_its_urls_again() {
     while h.json_object("outcomes/latest.json").is_none() && Instant::now() < deadline + Duration::from_secs(5) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let index = h.json_object(&desearch::outcomes::seq_key("outcomes", 1)).expect("an outcome file for the take-back");
+    let index = h.json_object(&desearch::feeds::OUTCOMES.seq_key(1)).expect("an outcome file for the take-back");
     let rows = outcome_rows(&h.object(index["key"].as_str().unwrap()).unwrap());
     let mut sent: Vec<String> = task["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap().to_string()).collect();
     let mut dropped: Vec<String> = rows.iter().map(|(url, _)| url.clone()).collect();
