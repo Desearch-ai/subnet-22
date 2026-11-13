@@ -13,8 +13,8 @@ use crate::sources::{Build, Source};
 const DAY1: &str = "2026-11-09T02:00:00Z";
 const DAY2: &str = "2026-11-16T02:00:00Z";
 const DAY2_SECS: u64 = 1_794_794_400;
-const FULL: Build = Build { name: "subnets", argv: &[], full_list: true, volatile: false };
-const PARTIAL: Build = Build { name: "subnets", argv: &[], full_list: false, volatile: false };
+const FULL: Build = Build { name: "subnets", argv: &[], full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] };
+const PARTIAL: Build = Build { name: "subnets", argv: &[], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] };
 
 fn run_folder(path: &Path, pages: &[(String, String)], fetched_us: i64, removed: &[&str]) -> std::path::PathBuf {
     std::fs::create_dir_all(path).unwrap();
@@ -113,7 +113,7 @@ fn a_large_change_is_flagged_and_removed_txt_counts() {
 fn copy_source(name: &'static str, prepared: &Path, fetch: &'static [&'static [&'static str]]) -> Source {
     let argv: &'static [&'static str] =
         Box::leak(vec!["cp", "-R", Box::leak(prepared.display().to_string().into_boxed_str()) as &str, "{out}"].into_boxed_slice());
-    let builds: &'static [Build] = Box::leak(vec![Build { name: "subnets", argv, full_list: true, volatile: false }].into_boxed_slice());
+    let builds: &'static [Build] = Box::leak(vec![Build { name: "subnets", argv, full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] }].into_boxed_slice());
     Source { name, fetch, builds, cwd: "/", python: "/usr/bin/true", memory_bytes: 0, timeout_s: 60 }
 }
 
@@ -283,4 +283,20 @@ fn a_finished_build_can_be_published_without_fetching_again() {
 fn a_home_path_is_expanded() {
     let home = std::env::var("HOME").unwrap();
     assert_eq!(run::expand("~/refresh/bin/bulk", &Default::default()), [format!("{home}/refresh/bin/bulk")]);
+}
+
+#[test]
+fn a_volatile_line_alone_is_no_change() {
+    const DATED: Build = Build { name: "subnets", argv: &[], full_list: false, volatile: false, volatile_lines: &["Source: dated"], volatile_columns: &[] };
+    let dir = tempfile::tempdir().unwrap();
+    let page = |day: &str, body: &str| vec![("https://clinicaltrials.gov/study/NCT1".to_string(), format!("Title\nSource: dated, processed on {day}.\n{body}"))];
+    let first = run_folder(&dir.path().join("a"), &page("2026-11-12", "Phase 2"), 1, &[]);
+    let mut con = diff::open_state(&dir.path().join("state.sqlite")).unwrap();
+    diff::seed(&mut con, &DATED, &[first]).unwrap();
+    let same = run_folder(&dir.path().join("b"), &page("2026-11-19", "Phase 2"), 2, &[]);
+    let counts = diff::diff(&con, &DATED, &same, &dir.path().join("out-b"), "b", DAY2).unwrap();
+    assert_eq!((counts.unchanged, counts.changed), (1, 0));
+    let changed = run_folder(&dir.path().join("c"), &page("2026-11-19", "Phase 3"), 2, &[]);
+    let counts = diff::diff(&con, &DATED, &changed, &dir.path().join("out-c"), "c", DAY2).unwrap();
+    assert_eq!((counts.unchanged, counts.changed), (0, 1));
 }

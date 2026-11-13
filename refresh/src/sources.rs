@@ -8,6 +8,10 @@ pub struct Build {
     pub full_list: bool,
     /// Pages carry live numbers, so most change every run and a large share changing is no alarm.
     pub volatile: bool,
+    /// Text lines starting with one of these are left out of a page's hash, such as a credit line naming the run's date.
+    pub volatile_lines: &'static [&'static str],
+    /// Columns left out of a page's hash, such as a modified date every run sets.
+    pub volatile_columns: &'static [&'static str],
 }
 
 pub struct Source {
@@ -46,18 +50,24 @@ pub const SOURCES: &[Source] = &[
                 argv: &[BULK, "subnets", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/subnets-chain.json"],
                 full_list: true,
                 volatile: true,
+                volatile_lines: &[],
+                volatile_columns: &[],
             },
             Build {
                 name: "subnet-sites",
                 argv: &[BULK, "subnet-sites", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--workers", "4", "--python", "{python}", "{work}/src/sites"],
                 full_list: true,
                 volatile: false,
+                volatile_lines: &[],
+                volatile_columns: &[],
             },
             Build {
                 name: "subnet-github",
                 argv: &[BULK, "subnet-github", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--workers", "4", "--python", "{python}", "{work}/src/github"],
                 full_list: true,
                 volatile: false,
+                volatile_lines: &[],
+                volatile_columns: &[],
             },
         ],
         cwd: "",
@@ -73,6 +83,8 @@ pub const SOURCES: &[Source] = &[
             argv: &[BULK, "arxiv", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/oai/*.xml"],
             full_list: false,
             volatile: false,
+            volatile_lines: &[],
+            volatile_columns: &[],
         }],
         cwd: "",
         python: "",
@@ -87,6 +99,8 @@ pub const SOURCES: &[Source] = &[
             argv: &[BOT, "refresh", "edgar", "--since", "{since}", "--until", "{until}", "--out", "{out}", "--per-second", "8", "--python", "{python}"],
             full_list: false,
             volatile: false,
+            volatile_lines: &[],
+            volatile_columns: &[],
         }],
         cwd: CRAWLER,
         python: CRAWLER_PYTHON,
@@ -96,7 +110,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "fred",
         fetch: &[],
-        builds: &[Build { name: "fred", argv: &[BOT, "refresh", "fred", "--out", "{out}", "--python", "{python}"], full_list: false, volatile: true }],
+        builds: &[Build { name: "fred", argv: &[BOT, "refresh", "fred", "--out", "{out}", "--python", "{python}"], full_list: false, volatile: true, volatile_lines: &[], volatile_columns: &[] }],
         cwd: CRAWLER,
         python: CRAWLER_PYTHON,
         memory_bytes: CRAWLER_MEMORY,
@@ -110,6 +124,8 @@ pub const SOURCES: &[Source] = &[
             argv: &[BULK, "medlineplus", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--python", "{python}", "--topics", "{work}/src/topics.xml", "--genetics", "{work}/src/genetics.xml"],
             full_list: true,
             volatile: false,
+            volatile_lines: &[],
+            volatile_columns: &["modified"],
         }],
         cwd: "",
         python: "",
@@ -119,7 +135,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "uscode",
         fetch: &[&[BULK, "uscode-fetch", "--out", "{work}/src"]],
-        builds: &[Build { name: "uscode", argv: &[BULK, "uscode", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/xml_uscAll@*.zip"], full_list: true, volatile: false }],
+        builds: &[Build { name: "uscode", argv: &[BULK, "uscode", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/xml_uscAll@*.zip"], full_list: true, volatile: false, volatile_lines: &["Source: United States Code"], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -128,7 +144,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "ecfr",
         fetch: &[&[BULK, "ecfr-fetch", "--out", "{work}/src"]],
-        builds: &[Build { name: "ecfr", argv: &[BULK, "ecfr", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--titles", "{work}/src/titles.json", "{work}/src"], full_list: true, volatile: false }],
+        builds: &[Build { name: "ecfr", argv: &[BULK, "ecfr", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--titles", "{work}/src/titles.json", "{work}/src"], full_list: true, volatile: false, volatile_lines: &["Source: Electronic Code of Federal Regulations"], volatile_columns: &["modified"] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -137,7 +153,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "fedreg",
         fetch: &[&[BULK, "fedreg-fetch", "--out", "{work}/src", "--from", "{since}", "--to", "{until}"]],
-        builds: &[Build { name: "fedreg", argv: &[BULK, "fedreg", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--index", "{work}/src/index", "{work}/src/FR-*.xml"], full_list: false, volatile: false }],
+        builds: &[Build { name: "fedreg", argv: &[BULK, "fedreg", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--index", "{work}/src/index", "{work}/src/FR-*.xml"], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -146,7 +162,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "eurlex",
         fetch: &[&[BULK, "eurlex-fetch", "--out", EURLEX_CACHE, "--relist", "--per-second", "3"]],
-        builds: &[Build { name: "eurlex", argv: &[BULK, "eurlex", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--python", "{python}", EURLEX_CACHE], full_list: true, volatile: false }],
+        builds: &[Build { name: "eurlex", argv: &[BULK, "eurlex", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--python", "{python}", EURLEX_CACHE], full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -155,7 +171,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "dailymed",
         fetch: &[&[BULK, "dailymed-fetch", "--out", "{work}/src", "--since", "{since}"]],
-        builds: &[Build { name: "dailymed", argv: &[BULK, "dailymed", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/*.zip"], full_list: false, volatile: false }],
+        builds: &[Build { name: "dailymed", argv: &[BULK, "dailymed", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src/*.zip"], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -165,14 +181,16 @@ pub const SOURCES: &[Source] = &[
         name: "ctgov",
         fetch: &[&[BULK, "download", "--to", "{work}/src/ctg-studies.json.zip", "https://clinicaltrials.gov/api/v2/studies/download?format=json.zip"]],
         builds: &[
-            Build { name: "ctgov-a", argv: &[BULK, "ctgov", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--nct-to", "NCT02600000", "{work}/src/ctg-studies.json.zip"], full_list: false, volatile: true },
+            Build { name: "ctgov-a", argv: &[BULK, "ctgov", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--nct-to", "NCT02600000", "{work}/src/ctg-studies.json.zip"], full_list: false, volatile: false, volatile_lines: &["Source: ClinicalTrials.gov"], volatile_columns: &[] },
             Build {
                 name: "ctgov-b",
                 argv: &[BULK, "ctgov", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--nct-from", "NCT02600000", "--nct-to", "NCT05300000", "{work}/src/ctg-studies.json.zip"],
                 full_list: false,
-                volatile: true,
+                volatile: false,
+                volatile_lines: &["Source: ClinicalTrials.gov"],
+                volatile_columns: &[],
             },
-            Build { name: "ctgov-c", argv: &[BULK, "ctgov", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--nct-from", "NCT05300000", "{work}/src/ctg-studies.json.zip"], full_list: false, volatile: true },
+            Build { name: "ctgov-c", argv: &[BULK, "ctgov", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--nct-from", "NCT05300000", "{work}/src/ctg-studies.json.zip"], full_list: false, volatile: false, volatile_lines: &["Source: ClinicalTrials.gov"], volatile_columns: &[] },
         ],
         cwd: "",
         python: "",
@@ -186,14 +204,16 @@ pub const SOURCES: &[Source] = &[
             &[BULK, "download", "--to", "{work}/src/reldate.txt", "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/reldate.txt"],
         ],
         builds: &[
-            Build { name: "uniprot-a", argv: &[BULK, "uniprot", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--to", "200000", "{work}/src/uniprot_sprot.xml.gz"], full_list: false, volatile: false },
+            Build { name: "uniprot-a", argv: &[BULK, "uniprot", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--to", "200000", "{work}/src/uniprot_sprot.xml.gz"], full_list: false, volatile: false, volatile_lines: &["Source: UniProtKB/Swiss-Prot"], volatile_columns: &[] },
             Build {
                 name: "uniprot-b",
                 argv: &[BULK, "uniprot", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--from", "200000", "--to", "400000", "{work}/src/uniprot_sprot.xml.gz"],
                 full_list: false,
                 volatile: false,
+                volatile_lines: &["Source: UniProtKB/Swiss-Prot"],
+                volatile_columns: &[],
             },
-            Build { name: "uniprot-c", argv: &[BULK, "uniprot", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--from", "400000", "{work}/src/uniprot_sprot.xml.gz"], full_list: false, volatile: false },
+            Build { name: "uniprot-c", argv: &[BULK, "uniprot", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--from", "400000", "{work}/src/uniprot_sprot.xml.gz"], full_list: false, volatile: false, volatile_lines: &["Source: UniProtKB/Swiss-Prot"], volatile_columns: &[] },
         ],
         cwd: "",
         python: "",
@@ -203,7 +223,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         name: "pubchem",
         fetch: &[&[BULK, "pubchem-fetch", "--out", "{work}/src", "--delay", "5"]],
-        builds: &[Build { name: "pubchem", argv: &[BULK, "pubchem", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src"], full_list: true, volatile: false }],
+        builds: &[Build { name: "pubchem", argv: &[BULK, "pubchem", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src"], full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
@@ -223,6 +243,8 @@ pub const SOURCES: &[Source] = &[
             argv: &[BULK, "gutenberg", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "--catalog", "{work}/src/pg_catalog.csv", "--rdf", "{work}/src/rdf", "{work}/src/txt-files.tar.zip"],
             full_list: true,
             volatile: false,
+            volatile_lines: &[],
+            volatile_columns: &[],
         }],
         cwd: "",
         python: "",

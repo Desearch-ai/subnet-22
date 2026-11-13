@@ -100,13 +100,19 @@ impl std::fmt::Write for Hasher {
     }
 }
 
-/// One hash a row over every column but the fetch's own, so the same page fetched again hashes the same.
-pub fn row_hashes(batch: &RecordBatch) -> Result<Vec<String>> {
+/// The text with the build's volatile lines left out.
+pub fn stable_text(text: &str, volatile_lines: &[&str]) -> String {
+    text.split('\n').filter(|line| !volatile_lines.iter().any(|prefix| line.starts_with(prefix))).collect::<Vec<_>>().join("\n")
+}
+
+/// One hash a row over every column but the fetch's own and the build's volatile ones, so the same page fetched again hashes the same.
+pub fn row_hashes(batch: &RecordBatch, build: &Build) -> Result<Vec<String>> {
     let options = FormatOptions::default().with_null("\u{0}null");
     let schema = batch.schema();
     let mut columns = Vec::new();
     for (i, field) in schema.fields().iter().enumerate() {
-        if !UNHASHED.contains(&field.name().as_str()) {
+        let name = field.name().as_str();
+        if !UNHASHED.contains(&name) && !build.volatile_columns.contains(&name) {
             columns.push((field.name().clone(), ArrayFormatter::try_new(batch.column(i).as_ref(), &options)?));
         }
     }
@@ -116,7 +122,11 @@ pub fn row_hashes(batch: &RecordBatch) -> Result<Vec<String>> {
         for (name, column) in &columns {
             hasher.0.update(name.as_bytes());
             hasher.0.update([0]);
-            column.value(row).write(&mut hasher)?;
+            if name == "text" && !build.volatile_lines.is_empty() {
+                hasher.0.update(stable_text(&column.value(row).to_string(), build.volatile_lines).as_bytes());
+            } else {
+                column.value(row).write(&mut hasher)?;
+            }
             hasher.0.update([0x1e]);
         }
         let mut hex = String::with_capacity(64);
@@ -226,7 +236,7 @@ pub fn diff(con: &Connection, build: &Build, folder: &Path, out: &Path, run: &st
     let mut writer = RunWriter::new(out, &source)?;
     each_batch(folder, &manifest, |batch| {
         let urls = urls(&batch)?;
-        let hashes = row_hashes(&batch)?;
+        let hashes = row_hashes(&batch, build)?;
         let mut keep = Vec::with_capacity(urls.len());
         for (url, hash) in urls.into_iter().zip(hashes) {
             if counts.hashes.contains_key(&url) {
@@ -320,7 +330,7 @@ pub fn seed(con: &mut Connection, build: &Build, folders: &[std::path::PathBuf])
         let as_of = manifest["as_of"].as_str().context("the manifest names no as_of")?.to_string();
         let mut counts = Counts::default();
         each_batch(folder, &manifest, |batch| {
-            for (url, hash) in urls(&batch)?.into_iter().zip(row_hashes(&batch)?) {
+            for (url, hash) in urls(&batch)?.into_iter().zip(row_hashes(&batch, build)?) {
                 counts.hashes.insert(url, hash);
             }
             Ok(())
