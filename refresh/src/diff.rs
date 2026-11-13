@@ -112,7 +112,8 @@ pub fn row_hashes(batch: &RecordBatch, build: &Build) -> Result<Vec<String>> {
     let mut columns = Vec::new();
     for (i, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
-        if !UNHASHED.contains(&name) && !build.volatile_columns.contains(&name) {
+        let derived_text = name == "text_sha256" && !build.volatile_lines.is_empty();
+        if !UNHASHED.contains(&name) && !build.volatile_columns.contains(&name) && !derived_text {
             columns.push((field.name().clone(), ArrayFormatter::try_new(batch.column(i).as_ref(), &options)?));
         }
     }
@@ -224,11 +225,18 @@ fn removed_of(folder: &Path) -> Result<Vec<String>> {
 
 /// Writes the build's new and changed pages to `out` as run `run`, and counts what changed.
 pub fn diff(con: &Connection, build: &Build, folder: &Path, out: &Path, run: &str, as_of: &str) -> Result<Counts> {
+    // A page is compared with its last hash under any build of the source, so a page that moves between split builds is no change; hiding still goes by this build's pages.
     let mut known: HashMap<String, String> = HashMap::new();
     let mut query = con.prepare("SELECT url, hash FROM pages WHERE build = ?1 AND removed IS NULL")?;
     for row in query.query_map(params![build.name], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (url, hash) = row?;
         known.insert(url, hash);
+    }
+    let mut elsewhere: HashMap<String, String> = HashMap::new();
+    let mut query = con.prepare("SELECT url, hash FROM pages WHERE build != ?1 AND removed IS NULL")?;
+    for row in query.query_map(params![build.name], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (url, hash) = row?;
+        elsewhere.insert(url, hash);
     }
     let manifest = manifest(folder)?;
     let source = manifest["source"].as_str().context("the build's manifest names no source")?.to_string();
@@ -243,7 +251,7 @@ pub fn diff(con: &Connection, build: &Build, folder: &Path, out: &Path, run: &st
                 keep.push(false);
                 continue;
             }
-            let changed = match known.get(&url) {
+            let changed = match known.get(&url).or_else(|| elsewhere.get(&url)) {
                 Some(before) if *before == hash => {
                     counts.unchanged += 1;
                     false

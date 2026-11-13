@@ -164,6 +164,26 @@ pub fn last_ok(root: &Path, source: &str) -> String {
     last
 }
 
+/// A `YYYY-MM-DD` day `days` days earlier; the day as given when it is not one.
+pub fn overlapped(day: &str, days: u32) -> String {
+    let parts: Vec<i64> = day.split('-').filter_map(|p| p.parse().ok()).collect();
+    let [y, m, d] = parts[..] else { return day.to_string() };
+    if days == 0 || day.len() != 10 {
+        return day.to_string();
+    }
+    let unix_day = days_from_civil(y, m, d) - i64::from(days);
+    iso(u64::try_from(unix_day * 86_400).unwrap_or(0))[..10].to_string()
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 pub struct Hooks<'a> {
     pub publish: &'a (dyn Fn(&Path, &Path) -> Result<String> + Sync),
     pub hide: &'a (dyn Fn(&str, &[String]) -> Result<()> + Sync),
@@ -172,7 +192,7 @@ pub struct Hooks<'a> {
 pub fn refresh(source: &Source, root: &Path, dry_run: bool, now: u64, since: &str, reuse: Option<&Path>, hooks: &Hooks) -> Result<Value> {
     let as_of = iso(now);
     let run = format!("{}{}{}-{}{}", &as_of[0..4], &as_of[5..7], &as_of[8..10], &as_of[11..13], &as_of[14..16]);
-    let since = if since.is_empty() { last_ok(root, source.name).chars().take(10).collect() } else { since.to_string() };
+    let since = if since.is_empty() { overlapped(&last_ok(root, source.name).chars().take(10).collect::<String>(), source.since_overlap_days) } else { since.to_string() };
     let needs_since = source.fetch.iter().copied().chain(source.builds.iter().map(|b| b.argv)).flatten().any(|p| p.contains("{since}"));
     if since.is_empty() && needs_since {
         return Err(Refused(format!("{} has no run that published yet; give its first run --since", source.name)).into());

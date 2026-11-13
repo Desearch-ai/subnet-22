@@ -114,7 +114,7 @@ fn copy_source(name: &'static str, prepared: &Path, fetch: &'static [&'static [&
     let argv: &'static [&'static str] =
         Box::leak(vec!["cp", "-R", Box::leak(prepared.display().to_string().into_boxed_str()) as &str, "{out}"].into_boxed_slice());
     let builds: &'static [Build] = Box::leak(vec![Build { name: "subnets", argv, full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] }].into_boxed_slice());
-    Source { name, fetch, builds, cwd: "/", python: "/usr/bin/true", memory_bytes: 0, timeout_s: 60 }
+    Source { name, fetch, builds, cwd: "/", python: "/usr/bin/true", memory_bytes: 0, timeout_s: 60 , since_overlap_days: 0}
 }
 
 #[test]
@@ -285,18 +285,54 @@ fn a_home_path_is_expanded() {
     assert_eq!(run::expand("~/refresh/bin/bulk", &Default::default()), [format!("{home}/refresh/bin/bulk")]);
 }
 
+fn page_folder(path: &Path, url: &str, text: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    std::fs::create_dir_all(path).unwrap();
+    let sha: String = Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let columns: Vec<(&str, ArrayRef)> = vec![
+        ("url", Arc::new(StringArray::from(vec![url.to_string()]))),
+        ("text", Arc::new(LargeStringArray::from(vec![text.to_string()]))),
+        ("text_sha256", Arc::new(StringArray::from(vec![sha]))),
+        ("fetched_at", Arc::new(TimestampMicrosecondArray::from(vec![1]).with_timezone("UTC"))),
+    ];
+    let batch = RecordBatch::try_from_iter(columns).unwrap();
+    let mut writer = ArrowWriter::try_new(std::fs::File::create(path.join("subnets-000001.parquet")).unwrap(), batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let manifest = json!({"source": "subnets", "run": "r", "as_of": DAY1, "files": ["subnets-000001.parquet"], "rows": 1});
+    std::fs::write(path.join(diff::MANIFEST), manifest.to_string()).unwrap();
+    path.to_path_buf()
+}
+
 #[test]
 fn a_volatile_line_alone_is_no_change() {
     const DATED: Build = Build { name: "subnets", argv: &[], full_list: false, volatile: false, volatile_lines: &["Source: dated"], volatile_columns: &[] };
     let dir = tempfile::tempdir().unwrap();
-    let page = |day: &str, body: &str| vec![("https://clinicaltrials.gov/study/NCT1".to_string(), format!("Title\nSource: dated, processed on {day}.\n{body}"))];
-    let first = run_folder(&dir.path().join("a"), &page("2026-11-12", "Phase 2"), 1, &[]);
+    let url = "https://clinicaltrials.gov/study/NCT1";
+    let text = |day: &str, body: &str| format!("Title\nSource: dated, processed on {day}.\n{body}");
     let mut con = diff::open_state(&dir.path().join("state.sqlite")).unwrap();
-    diff::seed(&mut con, &DATED, &[first]).unwrap();
-    let same = run_folder(&dir.path().join("b"), &page("2026-11-19", "Phase 2"), 2, &[]);
-    let counts = diff::diff(&con, &DATED, &same, &dir.path().join("out-b"), "b", DAY2).unwrap();
+    diff::seed(&mut con, &DATED, &[page_folder(&dir.path().join("a"), url, &text("2026-11-12", "Phase 2"))]).unwrap();
+    let counts = diff::diff(&con, &DATED, &page_folder(&dir.path().join("b"), url, &text("2026-11-19", "Phase 2")), &dir.path().join("out-b"), "b", DAY2).unwrap();
     assert_eq!((counts.unchanged, counts.changed), (1, 0));
-    let changed = run_folder(&dir.path().join("c"), &page("2026-11-19", "Phase 3"), 2, &[]);
-    let counts = diff::diff(&con, &DATED, &changed, &dir.path().join("out-c"), "c", DAY2).unwrap();
+    let counts = diff::diff(&con, &DATED, &page_folder(&dir.path().join("c"), url, &text("2026-11-19", "Phase 3")), &dir.path().join("out-c"), "c", DAY2).unwrap();
     assert_eq!((counts.unchanged, counts.changed), (0, 1));
+}
+
+#[test]
+fn a_page_seeded_under_another_build_of_the_source_is_no_change() {
+    const A: Build = Build { name: "part-a", argv: &[], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] };
+    const B: Build = Build { name: "part-b", argv: &[], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] };
+    let dir = tempfile::tempdir().unwrap();
+    let mut con = diff::open_state(&dir.path().join("state.sqlite")).unwrap();
+    diff::seed(&mut con, &A, &[run_folder(&dir.path().join("a"), &urls(3), 1, &[])]).unwrap();
+    let counts = diff::diff(&con, &B, &run_folder(&dir.path().join("b"), &urls(3), 2, &[]), &dir.path().join("o"), "b", DAY2).unwrap();
+    assert_eq!((counts.unchanged, counts.new), (3, 0));
+}
+
+#[test]
+fn since_starts_its_overlap_days_earlier() {
+    assert_eq!(run::overlapped("2026-11-13", 3), "2026-11-10");
+    assert_eq!(run::overlapped("2026-03-01", 3), "2026-02-26");
+    assert_eq!(run::overlapped("2026-11-13", 0), "2026-11-13");
+    assert_eq!(run::overlapped("", 3), "");
 }

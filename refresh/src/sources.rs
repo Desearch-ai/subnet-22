@@ -25,6 +25,8 @@ pub struct Source {
     /// Address-space cap for each command in bytes; none when 0.
     pub memory_bytes: u64,
     pub timeout_s: u64,
+    /// Days before the last published run's day that `{since}` starts, so files posted late are still taken.
+    pub since_overlap_days: u32,
 }
 
 pub const REPO: &str = "~/refresh/subnet-22";
@@ -74,6 +76,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "arxiv",
@@ -90,6 +93,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "edgar",
@@ -106,6 +110,7 @@ pub const SOURCES: &[Source] = &[
         python: CRAWLER_PYTHON,
         memory_bytes: CRAWLER_MEMORY,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "fred",
@@ -115,6 +120,7 @@ pub const SOURCES: &[Source] = &[
         python: CRAWLER_PYTHON,
         memory_bytes: CRAWLER_MEMORY,
         timeout_s: 80 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "medlineplus",
@@ -131,6 +137,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 2 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "uscode",
@@ -140,6 +147,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 2 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "ecfr",
@@ -149,6 +157,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 4 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "fedreg",
@@ -158,6 +167,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 4 * HOUR,
+        since_overlap_days: 3,
     },
     Source {
         name: "eurlex",
@@ -167,6 +177,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 24 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "dailymed",
@@ -176,6 +187,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 4 * HOUR,
+        since_overlap_days: 3,
     },
     Source {
         name: "ctgov",
@@ -196,6 +208,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "uniprot",
@@ -219,15 +232,17 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "pubchem",
         fetch: &[&[BULK, "pubchem-fetch", "--out", "{work}/src", "--delay", "5"]],
-        builds: &[Build { name: "pubchem", argv: &[BULK, "pubchem", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src"], full_list: true, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
+        builds: &[Build { name: "pubchem", argv: &[BULK, "pubchem", "--out", "{out}", "--as-of", "{as_of}", "--run", "{run}", "{work}/src"], full_list: false, volatile: false, volatile_lines: &[], volatile_columns: &[] }],
         cwd: "",
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
     Source {
         name: "gutenberg",
@@ -250,6 +265,7 @@ pub const SOURCES: &[Source] = &[
         python: "",
         memory_bytes: 0,
         timeout_s: 6 * HOUR,
+        since_overlap_days: 0,
     },
 ];
 
