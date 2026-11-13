@@ -420,6 +420,7 @@ dependencies = [
  "bulk-pmc",
  "bulk-pubchem",
  "bulk-pubmed",
+ "bulk-uniprot",
  "bulk-uscode",
  "bulk-wikipedia",
  "clap",
@@ -528,7 +529,9 @@ dependencies = [
  "anyhow",
  "bulk-core",
  "clap",
+ "regex",
  "roxmltree",
+ "serde_json",
  "tempfile",
  "zip",
 ]
@@ -611,6 +614,7 @@ dependencies = [
  "anyhow",
  "bulk-core",
  "clap",
+ "regex",
  "roxmltree",
  "serde_json",
  "tempfile",
@@ -672,13 +676,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-uniprot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "flate2",
+ "roxmltree",
+ "tempfile",
+]
+
+[[package]]
 name = "bulk-uscode"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bulk-core",
  "clap",
+ "regex",
  "roxmltree",
+ "serde_json",
  "tempfile",
  "zip",
 ]

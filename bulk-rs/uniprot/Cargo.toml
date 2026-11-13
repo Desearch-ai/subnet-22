@@ -1,0 +1,17 @@
+[package]
+name = "bulk-uniprot"
+description = "UniProtKB/Swiss-Prot reviewed protein entries as pages at uniprot.org"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+flate2.workspace = true
+roxmltree.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -32,6 +32,30 @@ pub struct Args {
     pub genetics: Option<PathBuf>,
 }
 
+#[derive(clap::Args, Clone, Debug)]
+pub struct FetchArgs {
+    /// The folder for topics.xml and genetics.xml.
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+/// The newest topics XML that medlineplus.gov/xml.html lists, and the Genetics summaries.
+pub fn fetch_main(args: FetchArgs) -> Result<()> {
+    std::fs::create_dir_all(&args.out)?;
+    let client = bulk_core::fetch::client()?;
+    let page = bulk_core::fetch::text(&client, "https://medlineplus.gov/xml.html")?;
+    let pattern = regex::Regex::new(r"https://medlineplus\.gov/xml/mplus_topics_(\d{4}-\d{2}-\d{2})\.xml").expect("a valid pattern");
+    let newest = pattern.captures_iter(&page).map(|c| c[1].to_string()).max().context("no topics XML listed")?;
+    let topics = format!("https://medlineplus.gov/xml/mplus_topics_{newest}.xml");
+    for (url, name) in [(topics.as_str(), "topics.xml"), ("https://medlineplus.gov/download/ghr-summaries.xml", "genetics.xml")] {
+        if !bulk_core::fetch::save(&client, url, &args.out.join(name))? {
+            anyhow::bail!("{url} is not there");
+        }
+    }
+    println!("{}", serde_json::json!({"topics": newest}));
+    Ok(())
+}
+
 /// One page to build: its fields, the lines around its summary, and the summary's HTML.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {

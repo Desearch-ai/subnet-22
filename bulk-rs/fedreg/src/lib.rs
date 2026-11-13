@@ -52,13 +52,47 @@ pub struct IndexArgs {
 }
 
 #[derive(clap::Args, Clone, Debug)]
+pub struct FetchArgs {
+    /// The folder for the index (index/) and the daily issues (FR-<date>.xml).
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long)]
+    pub from: NaiveDate,
+    #[arg(long)]
+    pub to: NaiveDate,
+    /// API requests a second.
+    #[arg(long, default_value_t = 1.0)]
+    pub per_second: f64,
+}
+
+/// The days' index through the API, then each day's issue from govinfo.
+pub fn fetch_main(args: FetchArgs) -> Result<()> {
+    index_main(IndexArgs { out: args.out.join("index"), from: args.from, to: args.to, per_second: args.per_second })?;
+    let client = bulk_core::fetch::client()?;
+    let mut day = args.from;
+    let mut issues = 0;
+    while day <= args.to {
+        if !matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+            let url = format!("https://www.govinfo.gov/bulkdata/FR/{}/{:02}/FR-{day}.xml", day.year(), day.month());
+            if bulk_core::fetch::save(&client, &url, &args.out.join(format!("FR-{day}.xml")))? {
+                issues += 1;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        day = day.succ_opt().context("a day after the last")?;
+    }
+    println!("{}", serde_json::json!({"issues": issues}));
+    Ok(())
+}
+
+#[derive(clap::Args, Clone, Debug)]
 pub struct Args {
     #[command(flatten)]
     pub run: RunArgs,
     /// The folder `fedreg-index` filled.
     #[arg(long)]
     pub index: PathBuf,
-    /// govinfo's yearly zips, FR-<year>.zip.
+    /// govinfo's yearly zips, FR-<year>.zip, or daily issues, FR-<date>.xml.
     #[arg(required = true)]
     pub zips: Vec<PathBuf>,
 }
@@ -271,12 +305,21 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> 
     let mut counts = Counts::default();
     let mut seen = HashSet::new();
     for path in &args.zips {
-        let mut archive = zip::ZipArchive::new(File::open(path).with_context(|| format!("opening {}", path.display()))?)?;
-        let mut names: Vec<String> = archive.file_names().filter(|n| n.ends_with(".xml")).map(String::from).collect();
-        names.sort();
-        for name in names {
-            let mut xml = String::new();
-            archive.by_name(&name)?.read_to_string(&mut xml)?;
+        let issues: Vec<String> = if path.extension().is_some_and(|e| e == "xml") {
+            vec![std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?]
+        } else {
+            let mut archive = zip::ZipArchive::new(File::open(path).with_context(|| format!("opening {}", path.display()))?)?;
+            let mut names: Vec<String> = archive.file_names().filter(|n| n.ends_with(".xml")).map(String::from).collect();
+            names.sort();
+            let mut found = Vec::new();
+            for name in names {
+                let mut xml = String::new();
+                archive.by_name(&name)?.read_to_string(&mut xml)?;
+                found.push(xml);
+            }
+            found
+        };
+        for xml in issues {
             counts.add("issues", 1);
             for (url, page) in issue_pages(&xml, &index, &mut counts)? {
                 if url.is_empty() || !seen.insert(url.clone()) {

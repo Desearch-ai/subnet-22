@@ -10,6 +10,8 @@ publish.workspace = true
 anyhow.workspace = true
 bulk-core.workspace = true
 clap.workspace = true
+regex.workspace = true
+serde_json.workspace = true
 roxmltree.workspace = true
 zip.workspace = true
 

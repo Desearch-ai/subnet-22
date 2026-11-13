@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "gutenberg", "fedreg", "dailymed", "pubchem", "cli"]
+members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "gutenberg", "fedreg", "dailymed", "pubchem", "uniprot", "cli"]
 resolver = "3"
 
 [workspace.package]
@@ -44,6 +44,7 @@ bulk-gutenberg = { path = "gutenberg" }
 bulk-fedreg = { path = "fedreg" }
 bulk-dailymed = { path = "dailymed" }
 bulk-pubchem = { path = "pubchem" }
+bulk-uniprot = { path = "uniprot" }
 
 [profile.release]
 debug = false

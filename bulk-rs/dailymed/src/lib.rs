@@ -185,6 +185,41 @@ pub fn is_set_id(id: &str) -> bool {
     id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
+#[derive(clap::Args, Clone, Debug)]
+pub struct FetchArgs {
+    /// The folder for the update zips.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// First day whose daily update to take, YYYY-MM-DD.
+    #[arg(long)]
+    pub since: String,
+}
+
+/// Every daily update zip DailyMed lists from `since` on.
+pub fn fetch_main(args: FetchArgs) -> Result<()> {
+    std::fs::create_dir_all(&args.out)?;
+    let client = bulk_core::fetch::client()?;
+    let page = bulk_core::fetch::text(&client, "https://dailymed.nlm.nih.gov/dailymed/spl-resources-all-drug-labels.cfm")?;
+    let pattern = regex::Regex::new(r#"href="([^"]*dm_spl_daily_update_(\d{2})(\d{2})(\d{4})\.zip)""#).expect("a valid pattern");
+    let mut saved = Vec::new();
+    for c in pattern.captures_iter(&page) {
+        let day = format!("{}-{}-{}", &c[4], &c[2], &c[3]);
+        if day.as_str() < args.since.as_str() {
+            continue;
+        }
+        let name = c[1].rsplit('/').next().unwrap_or(&c[1]).to_string();
+        if saved.contains(&name) {
+            continue;
+        }
+        let url = if c[1].starts_with("http") { c[1].to_string() } else { format!("https://dailymed.nlm.nih.gov{}", &c[1]) };
+        if bulk_core::fetch::save(&client, &url, &args.out.join(&name))? {
+            saved.push(name);
+        }
+    }
+    println!("{}", serde_json::json!({"updates": saved}));
+    Ok(())
+}
+
 pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> {
     let mut counts = Counts::default();
     let mut seen = std::collections::HashSet::new();

@@ -28,6 +28,12 @@ pub struct Args {
     /// Position to stop before; every study after `from` when 0.
     #[arg(long, default_value_t = 0)]
     pub to: usize,
+    /// Lowest NCT number taken, as in NCT03000000; numbers never move, so refresh builds split on them.
+    #[arg(long = "nct-from", default_value = "")]
+    pub nct_from: String,
+    /// NCT number to stop before; no upper bound when empty.
+    #[arg(long = "nct-to", default_value = "")]
+    pub nct_to: String,
     /// The all-studies zip from /api/v2/studies/download?format=json.zip.
     pub zip: PathBuf,
 }
@@ -245,7 +251,11 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> 
     names.sort();
     let to = if args.to == 0 { names.len() } else { args.to.min(names.len()) };
     let mut counts = Counts::default();
-    for name in names.get(args.from..to).unwrap_or(&[]) {
+    let in_range = |name: &str| {
+        let nct = name.rsplit('/').next().unwrap_or(name).trim_end_matches(".json");
+        (args.nct_from.is_empty() || nct >= args.nct_from.as_str()) && (args.nct_to.is_empty() || nct < args.nct_to.as_str())
+    };
+    for name in names.get(args.from..to).unwrap_or(&[]).iter().filter(|n| in_range(n)) {
         let mut body = String::new();
         archive.by_name(name)?.read_to_string(&mut body)?;
         let study: Value = serde_json::from_str(&body).with_context(|| format!("reading {name}"))?;

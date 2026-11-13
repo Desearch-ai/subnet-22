@@ -65,6 +65,20 @@ enum Command {
     Pubchem(bulk_pubchem::Args),
     /// Save every page of a PubChem heading's compound annotations from PUG-View.
     PubchemFetch(bulk_pubchem::FetchArgs),
+    /// UniProtKB/Swiss-Prot reviewed entries, from the release's XML.
+    Uniprot(bulk_uniprot::Args),
+    /// Save the newest MedlinePlus topics XML and the Genetics summaries.
+    MedlineplusFetch(bulk_medlineplus::FetchArgs),
+    /// Save the US Code's current release point.
+    UscodeFetch(bulk_uscode::FetchArgs),
+    /// Save the eCFR's titles from govinfo and their structures from eCFR.
+    EcfrFetch(bulk_ecfr::FetchArgs),
+    /// Save DailyMed's daily update zips since a day.
+    DailymedFetch(bulk_dailymed::FetchArgs),
+    /// Index the Federal Register's days through the API and save their issues from govinfo.
+    FedregFetch(bulk_fedreg::FetchArgs),
+    /// Save one file by its address, for a source's fetch.
+    Download(bulk_core::fetch::DownloadArgs),
     /// Whether two run folders hold the same manifest and rows.
     Diff(bulk_core::runs::DiffArgs),
 }
@@ -98,6 +112,13 @@ fn main() -> anyhow::Result<()> {
         Command::Medlineplus(args) => bulk_medlineplus::main(args),
         Command::Pubchem(args) => bulk_pubchem::main(args),
         Command::PubchemFetch(args) => bulk_pubchem::fetch_main(args),
+        Command::Uniprot(args) => bulk_uniprot::main(args),
+        Command::MedlineplusFetch(args) => bulk_medlineplus::fetch_main(args),
+        Command::UscodeFetch(args) => bulk_uscode::fetch_main(args),
+        Command::EcfrFetch(args) => bulk_ecfr::fetch_main(args),
+        Command::DailymedFetch(args) => bulk_dailymed::fetch_main(args),
+        Command::FedregFetch(args) => bulk_fedreg::fetch_main(args),
+        Command::Download(args) => bulk_core::fetch::download_main(args),
         Command::Diff(args) => bulk_core::runs::main(args),
     }
 }

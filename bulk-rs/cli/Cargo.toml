@@ -27,6 +27,7 @@ bulk-medlineplus.workspace = true
 bulk-pmc.workspace = true
 bulk-pubchem.workspace = true
 bulk-pubmed.workspace = true
+bulk-uniprot.workspace = true
 bulk-uscode.workspace = true
 bulk-wikipedia.workspace = true
 clap.workspace = true

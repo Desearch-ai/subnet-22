@@ -21,8 +21,8 @@ const ABOVE: [&str; 6] = ["title", "subtitle", "chapter", "subchapter", "part", 
 pub struct Args {
     #[command(flatten)]
     pub run: RunArgs,
-    /// The release point's public law, as in 119-138, for the credit line.
-    #[arg(long = "release-point")]
+    /// The release point's public law, as in 119-138, for the credit line; read from the zip's name when not given.
+    #[arg(long = "release-point", default_value = "")]
     pub release_point: String,
     /// The release point's all-titles zip, xml_uscAll@<release point>.zip.
     pub zip: PathBuf,
@@ -213,7 +213,38 @@ pub fn sections(xml: &str, release_point: &str) -> Result<Vec<(String, Page)>> {
     Ok(doc.descendants().filter(|n| n.has_tag_name("section") && n.attribute("identifier").is_some()).filter_map(|s| page_of(s, release_point)).collect())
 }
 
+/// The release point in a zip's name, `xml_uscAll@119-138.zip` as `119-138`.
+pub fn release_point_of(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    Some(name.split_once('@')?.1.strip_suffix(".zip")?.to_string())
+}
+
+#[derive(clap::Args, Clone, Debug)]
+pub struct FetchArgs {
+    /// The folder for the current release point's all-titles zip.
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+/// The all-titles zip of the release point uscode.house.gov's download page names.
+pub fn fetch_main(args: FetchArgs) -> Result<()> {
+    std::fs::create_dir_all(&args.out)?;
+    let client = bulk_core::fetch::client()?;
+    let page = bulk_core::fetch::text(&client, &format!("{HOST}/download.html"))?;
+    let pattern = regex::Regex::new(r#"href="([^"]*xml_uscAll@(\d+-\d+)\.zip)""#).expect("a valid pattern");
+    let found = pattern.captures(&page).context("no all-titles zip on the download page")?;
+    let href = &found[1];
+    let url = if href.starts_with("http") { href.to_string() } else { format!("{HOST}/{}", href.trim_start_matches("./").trim_start_matches('/')) };
+    let to = args.out.join(format!("xml_uscAll@{}.zip", &found[2]));
+    if !bulk_core::fetch::save(&client, &url, &to)? {
+        anyhow::bail!("{url} is not there");
+    }
+    println!("{}", serde_json::json!({"release_point": &found[2]}));
+    Ok(())
+}
+
 pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> {
+    let release_point = if args.release_point.is_empty() { release_point_of(&args.zip).unwrap_or_default() } else { args.release_point.clone() };
     let file = std::fs::File::open(&args.zip).with_context(|| format!("opening {}", args.zip.display()))?;
     let mut archive = zip::ZipArchive::new(file)?;
     let mut names: Vec<String> = archive.file_names().filter(|n| n.ends_with(".xml")).map(String::from).collect();
@@ -224,7 +255,7 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> 
         let mut xml = String::new();
         archive.by_name(&name)?.read_to_string(&mut xml)?;
         counts.add("titles", 1);
-        for (url, page) in sections(&xml, &args.release_point)? {
+        for (url, page) in sections(&xml, &release_point)? {
             if !seen.insert(url.clone()) {
                 counts.add("duplicate", 1);
                 continue;
@@ -295,6 +326,11 @@ mod tests {
     fn single_sections_only() {
         assert!(is_section("/us/usc/t17/s107") && is_section("/us/usc/t42/s1395w-4") && is_section("/us/usc/t5a/s1"));
         assert!(!is_section("/us/usc/t2/s3 /us/usc/t2/s4") && !is_section("/us/usc/t5a/pl/95/452/s1") && !is_section("/us/usc/t17") && !is_section("/us/usc/t17/s"));
+    }
+
+    #[test]
+    fn release_points_of_zip_names() {
+        assert_eq!(release_point_of(std::path::Path::new("/x/xml_uscAll@119-138.zip")).as_deref(), Some("119-138"));
     }
 
     #[test]

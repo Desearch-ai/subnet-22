@@ -2,6 +2,7 @@
 
 mod casefold;
 pub mod counts;
+pub mod fetch;
 pub mod http;
 mod isotime;
 pub mod py;

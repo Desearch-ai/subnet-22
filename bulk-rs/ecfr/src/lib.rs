@@ -178,6 +178,40 @@ pub fn title_pages(xml: &str, structure: &Value, cfr_title: &str, title_name: &s
     Ok(pages)
 }
 
+#[derive(clap::Args, Clone, Debug)]
+pub struct FetchArgs {
+    /// The folder for titles.json and each title's XML and structure.
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+/// eCFR's title list, then each title's XML from govinfo and its structure from eCFR at the title's date, a second apart.
+pub fn fetch_main(args: FetchArgs) -> Result<()> {
+    std::fs::create_dir_all(&args.out)?;
+    let client = bulk_core::fetch::client()?;
+    let titles_text = bulk_core::fetch::text(&client, "https://www.ecfr.gov/api/versioner/v1/titles.json")?;
+    std::fs::write(args.out.join("titles.json"), &titles_text)?;
+    let titles: Value = serde_json::from_str(&titles_text)?;
+    let mut saved = 0;
+    for t in titles.get("titles").and_then(Value::as_array).into_iter().flatten() {
+        if t.get("reserved").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let number = t.get("number").map(|n| n.to_string()).unwrap_or_default();
+        let date = t.get("up_to_date_as_of").and_then(Value::as_str).unwrap_or("");
+        let xml = format!("https://www.govinfo.gov/bulkdata/ECFR/title-{number}/ECFR-title{number}.xml");
+        let structure = format!("https://www.ecfr.gov/api/versioner/v1/structure/{date}/title-{number}.json");
+        for (url, name) in [(xml, format!("ECFR-title{number}.xml")), (structure, format!("structure-{number}.json"))] {
+            if bulk_core::fetch::save(&client, &url, &args.out.join(name))? {
+                saved += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+    println!("{}", serde_json::json!({"files": saved}));
+    Ok(())
+}
+
 fn read(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
