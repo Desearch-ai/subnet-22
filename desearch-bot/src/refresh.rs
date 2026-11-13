@@ -10,7 +10,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::pagebuild;
 use crate::pystr;
-use crate::sitecrawl::edgar::{self, Pace, FORMS};
+use crate::sitecrawl::edgar::{self, Pace};
 use crate::sitecrawl::fetch::{Connect, Http};
 use crate::sitecrawl::hosts::MIN_DELAY;
 use crate::sitecrawl::lists::crawl_urls;
@@ -106,7 +106,7 @@ pub fn daily_index_url(d: NaiveDate) -> String {
 }
 
 /// CIKs with a chosen form in SEC's daily indexes for each day in the range.
-pub async fn filed_ciks(connect: &Connect, user_agent: &str, rules: &Rules, since: NaiveDate, until: NaiveDate, per_second: f64) -> Result<(BTreeSet<i64>, Counts)> {
+pub async fn filed_ciks(connect: &Connect, user_agent: &str, rules: &Rules, since: NaiveDate, until: NaiveDate, forms: &[&str], per_second: f64) -> Result<(BTreeSet<i64>, Counts)> {
     let (mut counts, mut ciks, pace) = (Counts::default(), BTreeSet::new(), Pace::new(per_second)?);
     if let Some(why) = &rules.refused {
         counts.add(why, 1);
@@ -122,7 +122,7 @@ pub async fn filed_ciks(connect: &Connect, user_agent: &str, rules: &Rules, sinc
         pace.turn().await;
         let r = http.get(&url, INDEX_BYTES, false).await;
         if r.status == 200 {
-            ciks.extend(edgar::index_ciks(&r.text(), &FORMS));
+            ciks.extend(edgar::index_ciks(&r.text(), forms));
             counts.add("index_days", 1);
         } else if NO_INDEX.contains(&r.status) {
             counts.add(if d.weekday().num_days_from_monday() < 5 { "no_index_weekday" } else { "no_index_weekend" }, 1);
@@ -201,15 +201,16 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread().enable_all().build()?)
 }
 
-/// Filings filed from `since` through `until` into a finished run folder; the stdout line.
-pub fn refresh_edgar(since: NaiveDate, until: NaiveDate, t: &Target, user_agent: &str, per_second: f64) -> Result<String> {
+/// Filings of `forms` filed from `since` through `until` into a finished run folder; the stdout line.
+pub fn refresh_edgar(since: NaiveDate, until: NaiveDate, forms: &[String], t: &Target, user_agent: &str, per_second: f64) -> Result<String> {
     let work = fresh(&t.out)?;
     let rt = runtime()?;
     let rules = rt.block_on(edgar::sec_rules(&t.connect, user_agent))?;
-    let (ciks, mut counts) = rt.block_on(filed_ciks(&t.connect, user_agent, &rules, since, until, per_second))?;
+    let chosen: Vec<&str> = forms.iter().map(String::as_str).collect();
+    let (ciks, mut counts) = rt.block_on(filed_ciks(&t.connect, user_agent, &rules, since, until, &chosen, per_second))?;
     let writer = Arc::new(Mutex::new(Writer::new(&work)?));
     let ciks: Vec<i64> = ciks.into_iter().collect();
-    let fetched = rt.block_on(edgar::fetch_filings(&t.connect, user_agent, rules, &ciks, since, Some(until), writer.clone(), per_second))?;
+    let fetched = rt.block_on(edgar::fetch_filings(&t.connect, user_agent, rules, &ciks, since, Some(until), forms, writer.clone(), per_second))?;
     counts.update(&fetched);
     writer.lock().unwrap().close()?;
     counts.0.insert("filers".into(), ciks.len() as i64);

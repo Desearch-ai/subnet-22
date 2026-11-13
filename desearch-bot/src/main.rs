@@ -88,6 +88,9 @@ struct RefreshEdgarArgs {
     /// SEC requests a second, all SEC jobs on this IP together under 10.
     #[arg(long, default_value = "8", value_parser = desearch_bot::refresh::per_second)]
     per_second: f64,
+    /// Forms to fetch, comma-separated; the daily refresh's six by default.
+    #[arg(long, value_delimiter = ',')]
+    forms: Vec<String>,
     #[command(flatten)]
     target: RefreshTargetArgs,
 }
@@ -161,7 +164,10 @@ fn refresh(args: RefreshArgs) -> Result<()> {
         connect,
     };
     let done = match &args.source {
-        RefreshSource::Edgar(a) => refresh::refresh_edgar(a.since, a.until, &target, refresh::SEC_AGENT, a.per_second),
+        RefreshSource::Edgar(a) => {
+            let forms = if a.forms.is_empty() { desearch_bot::sitecrawl::edgar::FORMS.map(String::from).to_vec() } else { a.forms.clone() };
+            refresh::refresh_edgar(a.since, a.until, &forms, &target, refresh::SEC_AGENT, a.per_second)
+        }
         RefreshSource::Fred(a) => {
             let urls = a.urls.clone().unwrap_or_else(|| home().join("crawl/fred/refresh-urls.txt"));
             refresh::read_lines(&urls).and_then(|urls| refresh::refresh_fred(&urls, &target))

@@ -218,6 +218,7 @@ struct Lane {
     rules: Arc<Rules>,
     since: NaiveDate,
     until: Option<NaiveDate>,
+    forms: Vec<String>,
     writer: Arc<Mutex<Writer>>,
     counts: Mutex<Counts>,
 }
@@ -240,7 +241,8 @@ impl Lane {
             return Ok(());
         }
         let body = r.body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&r.body);
-        let chosen = match serde_json::from_slice::<Value>(body).map(|v| filings(&v, self.since, &FORMS, self.until)) {
+        let forms: Vec<&str> = self.forms.iter().map(String::as_str).collect();
+        let chosen = match serde_json::from_slice::<Value>(body).map(|v| filings(&v, self.since, &forms, self.until)) {
             Ok(Ok(chosen)) => chosen,
             Err(_) | Ok(Err(Crash("ValueError"))) => {
                 self.count("submissions_unreadable");
@@ -292,6 +294,7 @@ pub async fn fetch_filings(
     ciks: &[i64],
     since: NaiveDate,
     until: Option<NaiveDate>,
+    forms: &[String],
     writer: Arc<Mutex<Writer>>,
     per_second: f64,
 ) -> Result<Counts> {
@@ -308,6 +311,7 @@ pub async fn fetch_filings(
         rules,
         since,
         until,
+        forms: forms.to_vec(),
         writer,
         counts: Mutex::new(Counts::default()),
     });
