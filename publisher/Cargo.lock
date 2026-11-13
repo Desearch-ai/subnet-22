@@ -1598,7 +1598,6 @@ dependencies = [
  "flate2",
  "futures",
  "half",
- "hmac",
  "libc",
  "parquet",
  "redis",
@@ -1611,10 +1610,7 @@ dependencies = [
  "sha2",
  "tikv-jemallocator",
  "tokio",
- "unicode-normalization",
- "unicode-properties",
  "uuid",
- "zstd",
 ]
 
 [[package]]
