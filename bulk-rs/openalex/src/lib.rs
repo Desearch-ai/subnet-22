@@ -204,10 +204,10 @@ impl Chunks<'_> {
         Ok(())
     }
 
-    /// Adds the works' pages and counts; false once `--limit` pages are in.
-    fn take(&mut self, works: &[Work], held: &Held, limit: u64) -> Result<bool> {
-        for work in works {
-            match outcome(work, held, self.as_of_us) {
+    /// Adds the outcomes' pages and counts; false once `--limit` pages are in.
+    fn take(&mut self, outcomes: Vec<Outcome>, limit: u64) -> Result<bool> {
+        for outcome in outcomes {
+            match outcome {
                 Outcome::Out(why) => self.counts.add(why, 1),
                 Outcome::Page { doi, .. } if !self.dois.insert(doi) => self.counts.add("duplicate_doi", 1),
                 Outcome::Page { row, .. } => {
@@ -275,7 +275,7 @@ pub fn main(args: Args) -> Result<()> {
         if let Some(mut out) = flags_out {
             out.flush()?;
         }
-        chunks.take(&works, &held, limit)?;
+        chunks.take(works.iter().map(|w| outcome(w, &held, as_of_us)).collect(), limit)?;
         return chunks.close();
     }
     let client = Client::new(USER_AGENT)?;
@@ -287,11 +287,13 @@ pub fn main(args: Args) -> Result<()> {
     let count = urls.len();
     let ranged = Arc::new(RangeClient::new(USER_AGENT)?);
     let min_cited = args.min_cited;
-    let files = bounded_map(urls.into_iter(), args.workers, args.workers.max(1) * 2, move |url: String| {
-        snapshot::file_works(&ranged, &url, min_cited).with_context(|| format!("reading {url}"))
+    let held = Arc::new(held);
+    let workers = args.workers.max(1);
+    let files = bounded_map(urls.into_iter(), workers, workers + 1, move |url: String| {
+        snapshot::file_works(&ranged, &url, min_cited, |work| outcome(&work, &held, as_of_us)).with_context(|| format!("reading {url}"))
     });
-    for (n, works) in files.enumerate() {
-        let going = chunks.take(&works?, &held, limit)?;
+    for (n, outcomes) in files.enumerate() {
+        let going = chunks.take(outcomes?, limit)?;
         if (n + 1) % 50 == 0 || n + 1 == count {
             eprintln!("{} of {count} files, {} pages", n + 1, chunks.total);
         }

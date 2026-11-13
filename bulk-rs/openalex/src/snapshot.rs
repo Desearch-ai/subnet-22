@@ -193,8 +193,9 @@ pub fn batch_works(batch: &RecordBatch, min_cited: i64) -> Result<Vec<Work>> {
     Ok(works)
 }
 
-/// The cut's works in one snapshot file, a row group at a time.
-pub fn file_works(client: &RangeClient, url: &str, min_cited: i64) -> Result<Vec<Work>> {
+/// What `each` makes of each of the cut's works in one snapshot file, read a row group at a time, so no more than a
+/// batch of works is held at once.
+pub fn file_works<T>(client: &RangeClient, url: &str, min_cited: i64, mut each: impl FnMut(Work) -> T) -> Result<Vec<T>> {
     let (meta, len) = metadata(client, url)?;
     let meta = ArrowReaderMetadata::try_new(Arc::new(meta), ArrowReaderOptions::new())?;
     let schema = meta.metadata().file_metadata().schema_descr();
@@ -206,7 +207,7 @@ pub fn file_works(client: &RangeClient, url: &str, min_cited: i64) -> Result<Vec
         let reader =
             ParquetRecordBatchReaderBuilder::new_with_metadata(chunks, meta.clone()).with_projection(mask.clone()).with_row_groups(vec![group]).build()?;
         for batch in reader {
-            works.extend(batch_works(&batch?, min_cited)?);
+            works.extend(batch_works(&batch?, min_cited)?.into_iter().map(&mut each));
         }
     }
     Ok(works)

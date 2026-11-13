@@ -37,7 +37,7 @@ fn snapshot_works() -> (Vec<Work>, usize) {
     let served = file.clone();
     let server = serve(move |request| if request.path == "/part_0000.parquet" { Reply::ranged(&served, request.range.as_deref()) } else { Reply::status(404) });
     let client = RangeClient::new("test").unwrap();
-    let works = file_works(&client, &format!("{}/part_0000.parquet", server.base), 20).unwrap();
+    let works = file_works(&client, &format!("{}/part_0000.parquet", server.base), 20, |w| w).unwrap();
     (works, server.requests().len())
 }
 
