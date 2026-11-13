@@ -17,8 +17,8 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 
 | Path | |
 | --- | --- |
-| `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
-| `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
+| `src/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
+| `tests/api/` | the API's tests, against a fake chain, Redis and an in-memory store |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
 The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
@@ -224,11 +224,11 @@ The planner keeps its place in the log and the version of every page it planned 
 
 ## Run
 
-The API is built from `Dockerfile.rust` at the repository root. It keeps its SQLite file in `/data`
+The API is built from `task-api/Dockerfile`, with the repository root as the build context. It keeps its SQLite file in `/data`
 and needs a Redis (`TASK_API_REDIS`); the [publisher](../publisher/) runs on its own machine:
 
 ```bash
-docker build -f task-api/Dockerfile.rust -t task-api .
+docker build -f task-api/Dockerfile -t task-api .
 docker run -d --env-file task-api/deploy/.env.example -e TASK_API_REGISTRY=chain -e TASK_API_SEEDS=chain -v task-api-data:/data -p 127.0.0.1:8080:8080 task-api
 curl -s localhost:8080/v1/ping
 ```
@@ -296,7 +296,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
-| `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
+| `TASK_API_CHECK_SHARE` | `SHARE` in [`src/sampling.rs`](src/sampling.rs) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
 | `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
 | `TASK_API_RELEASE_SPREAD_S` | 60 | seconds a revealed round's tasks are released over, one by one in the round's order; 0 releases them all at once |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
@@ -394,18 +394,18 @@ desearch-pages bucket
 
 A page's key comes from its URL alone; it is how the change files and `current/` name a page:
 
-```python
-from app.canonical import canonicalize, domain_of, url_sha1
+```rust
+use desearch::canonical::{canonicalize, domain_of, url_sha1};
 
-url = canonicalize(assigned_url)
-key = f"pages/{domain_of(url)}/{url_sha1(url)}"
+let url = canonicalize(assigned_url)?;
+let key = format!("pages/{}/{}", domain_of(&url)?, url_sha1(&url)?);
 ```
 
 ## Tests
 
 ```bash
-cd task-api && python3 -m pytest -q
+cd task-api && cargo test
 ```
 
-The tests use Redis db 14 and an in-memory R2; run one suite at a time. `TASK_API_TEST_R2=1` also runs
-the storage tests against real buckets, under `_test/`.
+The tests use Redis db 13 on localhost; run one suite at a time.
+

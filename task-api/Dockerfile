@@ -1,25 +1,34 @@
-# Build from the repository root: docker build -f task-api/Dockerfile .
-FROM python:3.12-slim
+# Build from the repository root: docker build -f task-api/Dockerfile -t desearch-task-api .
+FROM rust:1-bookworm AS build
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /src
+COPY crates/desearch crates/desearch
+COPY task-api/Cargo.toml task-api/Cargo.lock task-api/
+COPY task-api/src task-api/src
+WORKDIR /src/task-api
+ARG CARGO_BUILD_JOBS=4
+ENV CARGO_TARGET_DIR=/src/target
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked --bin task-api \
+    && strip -o /task-api /src/target/release/task-api
 
-WORKDIR /app
+FROM debian:bookworm-slim
 
-COPY task-api/requirements.txt .
-RUN pip install -r requirements.txt
-
-RUN useradd --create-home --uid 10001 crawler \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 crawler \
     && mkdir -p /data \
     && chown crawler /data
 
-COPY desearch/ desearch/
-COPY task-api/ .
+COPY --from=build /task-api /usr/local/bin/task-api
 
 USER crawler
-
+ENV TASK_API_DATA=/data
 EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 CMD curl -fsS http://127.0.0.1:8080/v1/ping || exit 1
+
+# tini passes SIGTERM on, so requests in flight finish before the API exits.
+ENTRYPOINT ["/usr/bin/tini", "--", "task-api"]

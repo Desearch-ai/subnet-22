@@ -35,7 +35,7 @@ source files ─► bulk <source> ─► run folder ─► publisher bulk ─►
 
 ## Run
 
-`bulk` is the Rust binary in `bulk-rs/` (`cargo build --release -p bulk`). Each run gets its own new folder. `--as-of`
+`bulk` is the Rust binary in `bulk/` (`cargo build --release -p bulk`). Each run gets its own new folder. `--as-of`
 is when the source's data was taken.
 
 ```bash

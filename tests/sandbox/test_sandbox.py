@@ -43,7 +43,7 @@ def test_the_image_is_named_for_its_sources_and_ignores_build_output(tmp_path):
         "task-api/Cargo.toml": "[package]",
         "task-api/Cargo.lock": "",
         "task-api/src/main.rs": "fn main() {}",
-        "task-api/app/main.py": "",
+        "task-api/README.md": "",
     }.items():
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(body)
@@ -51,7 +51,7 @@ def test_the_image_is_named_for_its_sources_and_ignores_build_output(tmp_path):
     assert tag.startswith("desearch-sandbox-task-api:") and len(tag.split(":")[1]) == 12
 
     (tmp_path / "crates/desearch/target/release/junk").write_text("y")
-    (tmp_path / "task-api/app/main.py").write_text("changed")
+    (tmp_path / "task-api/README.md").write_text("changed")
     assert local.image_tag(tmp_path) == tag, (
         "build output and other folders do not count"
     )

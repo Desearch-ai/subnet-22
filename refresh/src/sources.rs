@@ -31,7 +31,7 @@ pub struct Source {
 
 pub const REPO: &str = "~/refresh/subnet-22";
 pub const PYTHON: &str = "~/refresh/venv/bin/python";
-/// The Rust bulk builders (subnet-22 `bulk-rs`), for the sources they cover.
+/// The Rust bulk builders (subnet-22 `bulk/`), for the sources they cover.
 const BULK: &str = "~/refresh/bin/bulk";
 /// desearch-bot, whose `refresh edgar|fred` are the crawler's refresh commands in Rust.
 const BOT: &str = "~/refresh/bin/desearch-bot";

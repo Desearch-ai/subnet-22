@@ -60,7 +60,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--stock-per-sec` | `--join-per-sec` | sent records the refresh stock keeper's threads read per second together |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
-| `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
+| `--backfill-sent` | none | pages sent before the bot dispatched them itself, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
 `desearch-bot run --help` lists the memory and disk limits.
@@ -92,10 +92,8 @@ Every path checks it before it sends anything:
   unrelated name on a blocked address is never connected to, and the failure is named `Blocked`.
 - **`crawl-sites`, `refresh` and `sitemap-check`:** every request and redirect hop is checked.
 - **Dispatch:** a matching domain, or a page on a matching host, is never sent to the task API.
-- **The Python feeder** (`task-api/feeder`) reads the same file and drops matching hosts and pages.
 
-To add an entry, edit the file, rebuild, and restart the bot. The feeder reads the file when it
-starts.
+To add an entry, edit the file, rebuild, and restart the bot.
 
 Every crawl path reads a host's robots.txt before its other pages and keeps to its rules and
 `Crawl-delay`. Visits space one host's requests at least a second apart. `crawl-sites`
@@ -290,8 +288,8 @@ v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under thei
 --resend-before DATE --resend-hosts FILE` gives the hosts of the waves applied so far their
 `resend_before`. `tools/build-v1.sh` runs the three on the bot box.
 
-Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
-feeder already sent are marked first, from its state:
+Pages found before the queue existed join it once through `--backfill-ready`. Pages already sent
+before the bot dispatched them itself are marked first:
 
 ```bash
 sqlite3 -separator $'\t' sent.db "SELECT host, path, lastmod, CAST(at AS INTEGER) FROM sent" > sent.tsv
