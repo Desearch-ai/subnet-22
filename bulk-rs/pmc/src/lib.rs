@@ -1,4 +1,4 @@
-//! PMC: open-access articles under commercial-use licences, as `bulk/pmc.py` builds them; bodies render in the Python worker.
+//! PMC: open-access articles under commercial-use licences; bodies render in the Python worker.
 
 use std::collections::HashSet;
 use std::fs;
@@ -21,7 +21,7 @@ pub mod render;
 
 pub use ahead::bounded_map;
 pub use bucket::{
-    fetch, from_bucket, from_folder, inventory_keys, latest_from_inventory, latest_inventory, latest_versions, left_out, taken_pmids, Article,
+    fetch, from_bucket, from_folder, inventory_keys, latest_from_inventory, latest_inventory, latest_versions, left_out, taken_ids, taken_pmids, Article,
     AHEAD_PER_WORKER, BUCKET,
 };
 pub use order::{citations, order, pmc_ids};
@@ -77,6 +77,9 @@ pub struct PmidsArgs {
     pub inventory: Vec<PathBuf>,
     #[arg(long)]
     pub out: PathBuf,
+    /// Also write each taken version's PMCID, PMID and DOI, tab-separated, for `openalex --held`.
+    #[arg(long = "ids-out")]
+    pub ids_out: Option<PathBuf>,
     #[arg(long, default_value_t = 64)]
     pub workers: usize,
 }
@@ -189,14 +192,26 @@ pub fn order_main(args: OrderArgs) -> Result<()> {
 pub fn pmids_main(args: PmidsArgs) -> Result<()> {
     let names = bucket::sorted_names(&args.inventory)?;
     // A list cut short by a failed read must not pass for whole as a PubMed run's --skip-pmids.
-    let partial = PathBuf::from(format!("{}.partial", args.out.display()));
-    let mut out = BufWriter::new(fs::File::create(&partial)?);
+    let partial = |path: &PathBuf| PathBuf::from(format!("{}.partial", path.display()));
+    let mut out = BufWriter::new(fs::File::create(partial(&args.out))?);
+    let mut ids_out = args.ids_out.as_ref().map(|path| fs::File::create(partial(path)).map(BufWriter::new)).transpose()?;
     let client = Arc::new(Client::new(USER_AGENT)?);
-    for pmid in taken_pmids(names.into_iter(), client, BUCKET.to_string(), args.workers) {
-        writeln!(out, "{}", pmid?)?;
+    for ids in taken_ids(names.into_iter(), client, BUCKET.to_string(), args.workers) {
+        let Some([pmcid, pmid, doi]) = ids? else { continue };
+        if !pmid.is_empty() {
+            writeln!(out, "{pmid}")?;
+        }
+        if let Some(ids_out) = ids_out.as_mut() {
+            writeln!(ids_out, "{pmcid}\t{pmid}\t{doi}")?;
+        }
     }
     out.flush()?;
     drop(out);
-    fs::rename(&partial, &args.out)?;
+    if let (Some(mut ids_out), Some(path)) = (ids_out, args.ids_out.as_ref()) {
+        ids_out.flush()?;
+        drop(ids_out);
+        fs::rename(partial(path), path)?;
+    }
+    fs::rename(partial(&args.out), &args.out)?;
     Ok(())
 }

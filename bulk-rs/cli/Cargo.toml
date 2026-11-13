@@ -25,6 +25,7 @@ bulk-fedreg.workspace = true
 bulk-gutenberg.workspace = true
 bulk-medlineplus.workspace = true
 bulk-pmc.workspace = true
+bulk-openalex.workspace = true
 bulk-pubchem.workspace = true
 bulk-pubmed.workspace = true
 bulk-uniprot.workspace = true

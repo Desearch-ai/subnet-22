@@ -155,19 +155,35 @@ where
     bounded_map(names, workers, workers.max(1) * AHEAD_PER_WORKER, move |name: String| one(&client, &base, &name))
 }
 
-/// `bulk.pmc.taken_pmids`: the PMIDs of the versions taken, from their metadata alone.
+/// Each taken version's PMCID, PMID and DOI (empty when the metadata has none), from its metadata alone; None for one
+/// left out or gone from the bucket since the inventory.
+pub fn taken_ids<I>(names: I, client: Arc<Client>, base: String, workers: usize) -> impl Iterator<Item = Result<Option<[String; 3]>>>
+where
+    I: Iterator<Item = String>,
+{
+    bounded_map(names, workers, workers.max(1) * AHEAD_PER_WORKER, move |name: String| -> Result<Option<[String; 3]>> {
+        let Some(found) = fetch(&client, &base, &format!("metadata/{name}.json"))? else {
+            return Ok(None);
+        };
+        let meta = parse_meta(&found)?;
+        if left_out(&meta).is_some() {
+            return Ok(None);
+        }
+        let field = |key: &str| if truthy(meta.get(key)) { meta.get(key).map(str_of).unwrap_or_default() } else { String::new() };
+        Ok(Some([field("pmcid"), field("pmid"), field("doi")]))
+    })
+}
+
+/// The PMIDs of the versions taken, from their metadata alone.
 pub fn taken_pmids<I>(names: I, client: Arc<Client>, base: String, workers: usize) -> impl Iterator<Item = Result<String>>
 where
     I: Iterator<Item = String>,
 {
-    let pmids = bounded_map(names, workers, workers.max(1) * AHEAD_PER_WORKER, move |name: String| -> Result<String> {
-        let meta = parse_meta(&fetch_found(&client, &base, &format!("metadata/{name}.json"))?)?;
-        if left_out(&meta).is_some() || !truthy(meta.get("pmid")) {
-            return Ok(String::new());
-        }
-        Ok(meta.get("pmid").map(str_of).unwrap_or_default())
-    });
-    pmids.filter(|pmid| !matches!(pmid, Ok(p) if p.is_empty()))
+    taken_ids(names, client, base, workers).filter_map(|ids| match ids {
+        Ok(Some([_, pmid, _])) if !pmid.is_empty() => Some(Ok(pmid)),
+        Ok(_) => None,
+        Err(e) => Some(Err(e)),
+    })
 }
 
 /// `bulk.pmc.from_folder`: the `PMC*.json` files in name order, each with its `.xml` when taken.

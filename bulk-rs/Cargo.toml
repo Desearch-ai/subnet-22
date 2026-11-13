@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "gutenberg", "fedreg", "dailymed", "pubchem", "uniprot", "cli"]
+members = ["core", "arxiv", "arxiv-text", "pubmed", "pmc", "openalex", "wikipedia", "bittensor", "medlineplus", "factbook", "uscode", "ecfr", "ctgov", "eurlex", "gutenberg", "fedreg", "dailymed", "pubchem", "uniprot", "cli"]
 resolver = "3"
 
 [workspace.package]
@@ -32,6 +32,7 @@ bulk-arxiv = { path = "arxiv" }
 bulk-arxiv-text = { path = "arxiv-text" }
 bulk-pubmed = { path = "pubmed" }
 bulk-pmc = { path = "pmc" }
+bulk-openalex = { path = "openalex" }
 bulk-wikipedia = { path = "wikipedia" }
 bulk-bittensor = { path = "bittensor" }
 bulk-medlineplus = { path = "medlineplus" }

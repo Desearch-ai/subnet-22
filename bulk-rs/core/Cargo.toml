@@ -10,6 +10,7 @@ publish.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
+bytes = "1"
 clap.workspace = true
 desearch.workspace = true
 indexmap.workspace = true

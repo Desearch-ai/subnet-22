@@ -417,6 +417,7 @@ dependencies = [
  "bulk-fedreg",
  "bulk-gutenberg",
  "bulk-medlineplus",
+ "bulk-openalex",
  "bulk-pmc",
  "bulk-pubchem",
  "bulk-pubmed",
@@ -495,6 +496,7 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
+ "bytes",
  "clap",
  "desearch",
  "indexmap",
@@ -616,6 +618,22 @@ dependencies = [
  "clap",
  "regex",
  "roxmltree",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bulk-openalex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "bulk-core",
+ "bulk-pmc",
+ "clap",
+ "desearch",
+ "parquet",
+ "regex",
  "serde_json",
  "tempfile",
 ]

@@ -174,7 +174,7 @@ fn pmc_pmids_are_those_of_taken_versions_in_name_order() {
     let pmids: Vec<String> = taken_pmids(names, client(), server.base.clone(), 3).map(Result::unwrap).collect();
     assert_eq!(pmids, ["123", "456"]);
     let gone = taken_pmids(["PMC9.1".to_string()].into_iter(), client(), server.base.clone(), 1).collect::<Vec<_>>();
-    assert!(gone[0].is_err(), "a version gone since the inventory stops pmc-pmids, as in Python");
+    assert!(gone.is_empty(), "a version gone since the inventory is not taken");
 }
 
 #[test]
