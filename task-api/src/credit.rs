@@ -2,7 +2,6 @@
 
 use crate::py::round;
 
-pub const COVERAGE_GATE: f64 = 0.85;
 pub const EVIDENCE: [&str; 4] = ["matched", "mismatched", "errors_confirmed", "errors_unconfirmed"];
 pub const RECENT_CHECKS: i64 = 10;
 pub const FAILS_FOR_PENALTY: i64 = 2;

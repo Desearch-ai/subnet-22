@@ -33,8 +33,8 @@ const PUBLISH_PER_MIN: f64 = 1_200.0;
 const TASK_URLS: usize = 1000;
 const WANTED: f64 = URLS_PER_HOUR / 60.0 / TASK_URLS as f64;
 
-static PCLAIM: std::sync::LazyLock<Script> = std::sync::LazyLock::new(|| Script::new(include_str!("../../src/lua/pclaim.lua")));
-static PACK: std::sync::LazyLock<Script> = std::sync::LazyLock::new(|| Script::new(include_str!("../../src/lua/pack.lua")));
+static PCLAIM: std::sync::LazyLock<Script> = std::sync::LazyLock::new(|| Script::new(include_str!("../../../publisher/src/lua/pclaim.lua")));
+static PACK: std::sync::LazyLock<Script> = std::sync::LazyLock::new(|| Script::new(include_str!("../../../publisher/src/lua/pack.lua")));
 
 /// Every request's endpoint, seconds, status and when it started.
 #[derive(Default)]

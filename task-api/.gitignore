@@ -1,10 +1,4 @@
 *.db
-local/dump-*.json
-local/receipts.json
 .env
-local/news_urls.json
-local/news_small.json
-local/eval/
-local/eval_urls.json
 *.sqlite*
 target/
