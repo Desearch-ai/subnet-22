@@ -1,0 +1,19 @@
+[package]
+name = "bulk-eurlex"
+description = "EU acts in force and CJEU judgments in English from the Publications Office's Cellar, as pages at eur-lex.europa.eu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
