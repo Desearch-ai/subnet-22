@@ -20,7 +20,7 @@ use bulk_pmc::order::openalex_files;
 pub mod snapshot;
 pub mod work;
 
-pub use work::{class, clean_abstract, flags, page, rebuild, Work, MIN_ABSTRACT_CHARS};
+pub use work::{class, clean_abstract, flags, mostly_latin, page, page_chrome, rebuild, Work, MIN_ABSTRACT_CHARS};
 
 pub const CONTENT_TYPE: &str = "application/json";
 pub const SOURCE: &str = "openalex";
@@ -132,6 +132,12 @@ pub fn outcome(work: &Work, held: &Held, as_of_us: i64) -> Outcome {
         "real" | "no_end_punct" => {}
         other => return Outcome::Out(other),
     }
+    if !mostly_latin(&text) {
+        return Outcome::Out("not_latin");
+    }
+    if page_chrome(&text) {
+        return Outcome::Out("page_chrome");
+    }
     let cleaned = clean_abstract(&text);
     if cleaned.chars().count() < MIN_ABSTRACT_CHARS {
         return Outcome::Out("short");
@@ -140,6 +146,9 @@ pub fn outcome(work: &Work, held: &Held, as_of_us: i64) -> Outcome {
         return Outcome::Out("no_title");
     }
     let (url, page) = page(work, &cleaned, &utc_format(as_of_us, "%Y-%m-%d"));
+    if !page.text.ends_with(&cleaned) {
+        return Outcome::Out("abstract_dropped");
+    }
     Outcome::Page { doi: key(&work.bare_doi().to_lowercase()), row: Box::new(upload_row(&url, page, as_of_us, CONTENT_TYPE)) }
 }
 

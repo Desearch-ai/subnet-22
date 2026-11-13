@@ -45,7 +45,7 @@ fn snapshot_works() -> (Vec<Work>, usize) {
 fn the_snapshot_reads_the_works_the_api_gives() {
     let (works, requests) = snapshot_works();
     assert_eq!(works, in_cut(json_works()), "every field the checks and pages read");
-    assert_eq!(works.len(), 18, "the French work and the one with 19 citations are outside the cut");
+    assert_eq!(works.len(), 21, "the French work and the one with 19 citations are outside the cut");
     assert!(requests > 1 && requests <= 1 + 3 * 31, "the footer, then the page's column chunks of each row group");
 }
 
@@ -78,6 +78,9 @@ fn works_stay_out_for_their_reasons() {
         ("12", "garbled"),
         ("17", "empty"),
         ("18", "no_title"),
+        ("21", "not_latin"),
+        ("22", "page_chrome"),
+        ("23", "abstract_dropped"),
     ];
     assert_eq!(out, expected.into_iter().map(|(n, w)| (n.to_string(), w)).collect::<HashMap<_, _>>());
 }

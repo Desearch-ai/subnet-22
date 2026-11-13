@@ -30,6 +30,15 @@ static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</?(jats:|p>|
 static LABEL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:Abstract|ABSTRACT|Summary|SUMMARY)(?:\s+and\s+(?:Summary|Abstract))?(?:\s*[:.\-–—]\s*|\s+)?").expect("LABEL"));
 static COPYRIGHT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)©|\(c\)\s*(?:19|20)\d\d|\bcopyright\b").expect("COPYRIGHT"));
+static CHROME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)share\s*facebook|linked\s*in\s*twitter|facebook\s*twitter|twitter\s*email|figures\s*references|references\s*related",
+        r"|related\s*details|figures\s*&\s*data|pdf\s*download|download\s*pdf|download citation|view pdf|permissions\s*reprints",
+        r"|reprints\s*share|request permissions|rights\s*&\s*permissions|article metrics|first page preview|previous\s*article",
+        r"|next\s*article|close modal|you do not (?:currently )?have access|\b(?:print|online) issn\b|first online\s*:|article history"
+    ))
+    .expect("CHROME")
+});
 
 /// The fields of a work that its checks and page read.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -202,6 +211,22 @@ pub fn class(text: &str, gaps: i64, dups: i64, title: Option<&str>) -> &'static 
         return "no_end_punct";
     }
     "real"
+}
+
+/// Whether the abstract holds the publisher page's own controls (share buttons, PDF and citation links, access
+/// notices, ISSN lines): a scrape of the landing page rather than an abstract.
+pub fn page_chrome(text: &str) -> bool {
+    CHROME.is_match(text)
+}
+
+/// Whether at least half the abstract's letters are Latin, so a work tagged English is not in another script.
+pub fn mostly_latin(text: &str) -> bool {
+    let (mut letters, mut latin) = (0usize, 0usize);
+    for c in text.chars().filter(|c| c.is_alphabetic()) {
+        letters += 1;
+        latin += usize::from(c.is_ascii_alphabetic() || ('\u{00C0}'..='\u{024F}').contains(&c) || ('\u{1E00}'..='\u{1EFF}').contains(&c));
+    }
+    latin * 2 >= letters
 }
 
 pub fn has_markup(text: &str) -> bool {
