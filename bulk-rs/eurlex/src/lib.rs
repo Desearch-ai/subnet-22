@@ -28,6 +28,7 @@ const EXTRACT: &[u8] = b"e";
 const ACT: &str = "act";
 const JUDGMENT: &str = "judgment";
 const ACCEPT: &str = "application/xhtml+xml, text/html;q=0.9";
+const FAILING_IN_ROW: usize = 10;
 static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"__\[unreferenced:[^\]]*\]__").expect("a valid pattern"));
 
 const PREFIX: &str = "PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n";
@@ -176,7 +177,7 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
         .collect();
     let mut missing_file = OpenOptions::new().create(true).append(true).open(args.out.join(MISSING))?;
     let gap = Duration::from_secs_f64(1.0 / args.per_second.max(0.01));
-    let (mut fetched, mut absent, mut last) = (0usize, 0usize, Instant::now() - gap);
+    let (mut fetched, mut absent, mut failed, mut failing_in_row, mut last) = (0usize, 0usize, 0usize, 0usize, Instant::now() - gap);
     for w in &works {
         let path = doc_path(&args.out, &w.celex);
         if path.exists() || missing.contains(&w.celex) {
@@ -185,41 +186,68 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
         let wait = gap.saturating_sub(last.elapsed());
         std::thread::sleep(wait);
         last = Instant::now();
-        match get_text(&client, &w.celex)? {
-            Some(body) => {
+        let text = get_text(&client, &w.celex);
+        failing_in_row = if matches!(text, Text::Failing(_)) { failing_in_row + 1 } else { 0 };
+        match text {
+            Text::Found(body) => {
                 std::fs::write(path.with_extension("part"), &body)?;
                 std::fs::rename(path.with_extension("part"), &path)?;
                 fetched += 1;
             }
-            None => {
+            Text::Failing(why) if failing_in_row >= FAILING_IN_ROW => bail!("{FAILING_IN_ROW} works in a row failed, the last: {why}"),
+            text => {
+                if let Text::Failing(why) = text {
+                    eprintln!("{why}; tried again after a week");
+                    failed += 1;
+                } else {
+                    absent += 1;
+                }
                 writeln!(missing_file, "{}\t{}", w.celex, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?;
-                absent += 1;
             }
         }
-        if (fetched + absent) % 1000 == 0 {
-            println!("{}", serde_json::json!({"fetched": fetched, "missing": absent}));
+        if (fetched + absent + failed) % 1000 == 0 {
+            println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "failed": failed}));
         }
         if args.limit > 0 && fetched >= args.limit {
             break;
         }
     }
-    println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "works": works.len()}));
+    println!("{}", serde_json::json!({"fetched": fetched, "missing": absent, "failed": failed, "works": works.len()}));
     Ok(())
 }
 
-/// A work's English XHTML or HTML, None when Cellar has neither; server errors are tried again.
-fn get_text(client: &reqwest::blocking::Client, celex: &str) -> Result<Option<Vec<u8>>> {
+enum Text {
+    Found(Vec<u8>),
+    Absent,
+    Failing(String),
+}
+
+/// A work's English XHTML or HTML; a work whose XHTML keeps failing is asked for its HTML alone.
+fn get_text(client: &reqwest::blocking::Client, celex: &str) -> Text {
+    match get_as(client, celex, ACCEPT) {
+        Text::Failing(_) => get_as(client, celex, "text/html"),
+        text => text,
+    }
+}
+
+fn get_as(client: &reqwest::blocking::Client, celex: &str, accept: &str) -> Text {
     let url = format!("{CELLAR}/{celex}");
-    for attempt in 0..5u32 {
-        match client.get(&url).header("Accept", ACCEPT).header("Accept-Language", "eng").send() {
-            Ok(r) if r.status().is_success() => return Ok(Some(r.bytes()?.to_vec())),
-            Ok(r) if matches!(r.status().as_u16(), 300 | 404 | 406 | 410) => return Ok(None),
-            Ok(r) if attempt == 4 => bail!("Cellar answered {} for {celex}", r.status()),
-            Err(e) if attempt == 4 => return Err(anyhow!(e).context(format!("GET {url}"))),
-            _ => std::thread::sleep(Duration::from_secs(5 * (attempt as u64 + 1))),
+    let mut why = String::new();
+    for attempt in 0..5u64 {
+        match client.get(&url).header("Accept", accept).header("Accept-Language", "eng").send() {
+            Ok(r) if r.status().is_success() => match r.bytes() {
+                Ok(body) => return Text::Found(body.to_vec()),
+                Err(e) => why = format!("GET {url}: {e}"),
+            },
+            Ok(r) if matches!(r.status().as_u16(), 300 | 404 | 406 | 410) => return Text::Absent,
+            Ok(r) => why = format!("Cellar answered {} for {celex} as {accept}", r.status()),
+            Err(e) => why = format!("GET {url}: {e}"),
+        }
+        if attempt < 4 {
+            std::thread::sleep(Duration::from_secs(5 * (attempt + 1)));
         }
     }
-    unreachable!("the last attempt returns")
+    Text::Failing(why)
 }
 
 /// The page address: an act's ELI page, else its CELEX page; a judgment's CELEX page.
