@@ -381,24 +381,22 @@ impl Rules {
     }
 }
 
-/// False reads robots.txt as the Python crawler does, every 3xx and 4xx no rules; true keeps refusals and 429s off the host.
-pub const STRICT_4XX: bool = true;
-/// The robots.txt answers that refuse us the host for the run under the strict rule.
+/// The robots.txt answers that refuse us the host for the run.
 pub const REFUSING: [u16; 4] = [401, 402, 403, 451];
 
-/// An answer that is asked again after a pause and, still so, keeps us off: no answer, a server error, and a 429 under the strict rule.
+/// An answer that is asked again after a pause and, still so, keeps us off: no answer, a server error, and a 429.
 pub fn ask_again(status: u16) -> bool {
-    status == 0 || status >= 500 || (STRICT_4XX && status == 429)
+    status == 0 || status >= 500 || status == 429
 }
 
-/// A 2xx is the rules, a 404 or 410 (and under the Python rule any 3xx or 4xx) is none, anything else keeps us off.
+/// A 2xx is the rules; a 3xx or 4xx other than a refusal or a 429 is none; anything else keeps us off.
 pub fn parse(host: &str, status: u16, body: &str) -> Rules {
     if (200..300).contains(&status) {
         let p = Protego::parse(body);
         let delay = p.crawl_delay(TOKEN).filter(|d| *d != 0.0);
         return Rules { host: host.to_string(), refused: None, delay, sitemaps: p.sitemaps.clone(), parsed: Some(p) };
     }
-    let refused = STRICT_4XX && (REFUSING.contains(&status) || status == 429);
+    let refused = REFUSING.contains(&status) || status == 429;
     if (300..500).contains(&status) && !refused {
         return Rules { host: host.to_string(), ..Rules::default() };
     }

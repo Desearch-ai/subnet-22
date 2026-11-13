@@ -19,8 +19,6 @@ use crate::pystr;
 
 pub const ARCHIVES: &str = "https://www.sec.gov/Archives/edgar/data";
 pub const FORMS: [&str; 6] = ["10-K", "10-Q", "8-K", "S-1", "20-F", "DEF 14A"];
-/// SEC asks for at most 10 requests a second; we stay under it.
-pub const MAX_PER_SECOND: f64 = 8.0;
 pub const MAX_DOCUMENT_BYTES: usize = 40 << 20;
 pub const IN_FLIGHT: usize = 4;
 pub const COMPANIES_AT_ONCE: usize = 8;
