@@ -222,10 +222,13 @@ enum Text {
     Failing(String),
 }
 
-/// A work's English XHTML or HTML; a work whose XHTML keeps failing is asked for its HTML alone.
+/// A work's English XHTML or HTML; a work whose XHTML keeps failing is asked for its HTML alone, and stays failing without it.
 fn get_text(client: &reqwest::blocking::Client, celex: &str) -> Text {
     match get_as(client, celex, ACCEPT) {
-        Text::Failing(_) => get_as(client, celex, "text/html"),
+        Text::Failing(why) => match get_as(client, celex, "text/html") {
+            Text::Found(body) => Text::Found(body),
+            _ => Text::Failing(why),
+        },
         text => text,
     }
 }
