@@ -1,12 +1,11 @@
 //! Fills the task API's queue from the ready lists: as much as it has room for, round robin across domains by rank, within an hourly cap per domain.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,7 +15,7 @@ use crate::allowed::{Allowed, Terms};
 use crate::blocklist;
 use crate::buckets::{bucket_of, Buckets, Json};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader, ResentPages};
-use crate::ready::{Entry, Joined, Order, Pick, Reason, SentPage, Stock, Yield, CHANGED, FRESH, LANES, REQUEUED};
+use crate::ready::{Entry, Joined, Order, Pick, Reason, Stock, Yield, CHANGED, FRESH, LANES, REQUEUED};
 use crate::recrawl::Recrawl;
 use crate::records;
 use crate::taskapi::{ApiError, QueuedUrl, TaskApi, MAX_URL_CHARS};
@@ -1515,43 +1514,6 @@ fn report_skipped(progress: &Progress, skipped: &[(u64, &str)]) {
     why.dedup();
     eprintln!("[rs] skipped {} outcome files {first}..={last}: {}", skipped.len(), why.join(", "));
     progress.skipped.fetch_add(skipped.len() as u64, Ordering::Relaxed);
-}
-
-/// Mark what an earlier sender already sent, from tab-separated host, path, lastmod and Unix time lines.
-pub fn import_sent(buckets: &Buckets, path: &Path) -> Result<usize> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut by_bucket: HashMap<usize, Vec<SentPage>> = HashMap::new();
-    let mut known = 0;
-    let mut flush = |by_bucket: &mut HashMap<usize, Vec<SentPage>>| -> Result<()> {
-        for (_, rows) in by_bucket.drain() {
-            known += buckets.store(&rows[0].domain).import_sent(&rows)?;
-        }
-        Ok(())
-    };
-    let mut held = 0;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        let mut fields = line.split('\t');
-        let (Some(host), Some(rest), Some(lastmod), Some(at)) = (fields.next(), fields.next(), fields.next(), fields.next()) else {
-            continue;
-        };
-        if !buckets.owns(host) {
-            continue;
-        }
-        let (Ok(lastmod), Ok(at)) = (lastmod.trim().parse::<f64>(), at.trim().parse::<f64>()) else {
-            continue;
-        };
-        let page = SentPage { domain: host.to_string(), rest: rest.as_bytes().to_vec(), lastmod: lastmod as u32, at: at as u32 };
-        by_bucket.entry(bucket_of(host)).or_default().push(page);
-        held += 1;
-        if held >= 50_000 {
-            flush(&mut by_bucket)?;
-            held = 0;
-        }
-    }
-    flush(&mut by_bucket)?;
-    Ok(known)
 }
 
 /// Walk every store once at a bounded pace and put each page never sent, or changed since sent, on its ready list.

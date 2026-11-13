@@ -559,9 +559,6 @@ struct RunArgs {
     /// Pages listed per second to go once more for listed domains whose `resend_before` changed; 0 turns resend walks off.
     #[arg(long, default_value_t = 20_000)]
     resend_per_sec: u64,
-    /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
-    #[arg(long)]
-    backfill_sent: Option<PathBuf>,
     /// Only these domains' pages are queued for the task API: a JSON list of names or of {host, rank}, read again when it changes.
     #[arg(long)]
     domains: Option<PathBuf>,
@@ -736,19 +733,10 @@ async fn run(args: RunArgs) -> Result<()> {
         })
     });
     let backfill = args.backfill_ready.then(|| {
-        let (buckets, progress, halt, sent) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_sent.clone());
-        let per_second = args.backfill_per_sec;
-        std::thread::spawn(move || {
-            if let Some(path) = sent {
-                match dispatch::import_sent(&buckets, &path) {
-                    Ok(known) => println!("[rs] marked {known} pages the earlier feeder sent"),
-                    Err(error) => eprintln!("[rs] importing sent pages failed: {error:#}"),
-                }
-            }
-            match dispatch::backfill(&buckets, per_second, &progress, &halt) {
-                Ok(()) => println!("[rs] ready-list backfill stopped or done"),
-                Err(error) => eprintln!("[rs] ready-list backfill failed: {error:#}"),
-            }
+        let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_per_sec);
+        std::thread::spawn(move || match dispatch::backfill(&buckets, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] ready-list backfill stopped or done"),
+            Err(error) => eprintln!("[rs] ready-list backfill failed: {error:#}"),
         })
     });
     let inbox = args.inbox.clone().map(|dir| {

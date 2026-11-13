@@ -58,13 +58,12 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--recrawl-overrides` | none | a file of `domain days` lines, such as `bbc.co.uk 1`, giving listed domains and their subdomains their own interval |
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
-| `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
+| `--backfill-ready` | off | walk every store once, resuming where it stopped, to queue each page never sent or changed since sent |
 | `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth, hubs}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
 | `--stock-per-sec` | `--join-per-sec` | sent records the refresh stock keeper's threads read per second together |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
-| `--backfill-sent` | none | pages sent before the bot dispatched them itself, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
 `desearch-bot run --help` lists the memory and disk limits.
@@ -308,14 +307,6 @@ v1 site with its rule; `crawl_list.py --v1-set` lists its sites first under thei
 `tools/resend_waves.py` splits the sites with pages to send again into waves, and `crawl_list.py
 --resend-before DATE --resend-hosts FILE` gives the hosts of the waves applied so far their
 `resend_before`. `tools/build-v1.sh` runs the three on the bot box.
-
-Pages found before the queue existed join it once through `--backfill-ready`. Pages already sent
-before the bot dispatched them itself are marked first:
-
-```bash
-sqlite3 -separator $'\t' sent.db "SELECT host, path, lastmod, CAST(at AS INTEGER) FROM sent" > sent.tsv
-desearch-bot run --backfill-ready --backfill-sent sent.tsv ...
-```
 
 Run one bot with `--task-api` at a time.
 

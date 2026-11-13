@@ -13,7 +13,7 @@ use desearch_bot::dispatch::{
 };
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, HourlySpread, Next, OutcomeFeed, OutcomeReader, OutcomeRow, ResentPages};
-use desearch_bot::ready::{Order, Outcome, Pick, Reason, Requeued, Scheduled, SentPage, Why, Yield, CHANGED, FRESH, LANES, REQUEUED, YIELD_HALF_LIFE_S};
+use desearch_bot::ready::{Entry, Order, Outcome, Pick, Reason, Requeued, Scheduled, Why, Yield, CHANGED, FRESH, LANES, REQUEUED, YIELD_HALF_LIFE_S};
 use desearch_bot::recrawl::{Recrawl, DAY};
 use desearch_bot::records;
 use desearch_bot::states::State;
@@ -556,27 +556,25 @@ fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
     let dir = Dir::new("ready-backfill");
     {
         let db = rocksdb::DB::open_default(&dir.0).unwrap();
-        let put = |key: String, lastmod: u32| {
-            let record = Record { sitemap_id: 1, lastmod, first_seen: 50, last_seen: 50, flags: HTTPS, ..Record::default() };
+        let put = |key: String, lastmod: u32, sent_with: Option<u32>| {
+            let pushed_at = if sent_with.is_some() { 60 } else { 0 };
+            let record = Record { sitemap_id: 1, lastmod, first_seen: 50, last_seen: 50, pushed_at, flags: HTTPS, ..Record::default() };
             db.put([b"U", key.as_bytes()].concat(), record.pack()).unwrap();
+            if let Some(sent) = sent_with {
+                db.put([b"P", key.as_bytes()].concat(), [&sent.to_le_bytes()[..], &[0, 0]].concat()).unwrap();
+            }
         };
         for i in 0..5 {
-            put(format!("example.com\0example.com/old-{i}"), 10 + i);
+            put(format!("example.com\0example.com/old-{i}"), 10 + i, None);
         }
-        put("example.com\0example.com/tag/old".into(), 10);
-        put("example.com\0example.com/sent-same".into(), 30);
-        put("example.com\0example.com/sent-moved".into(), 40);
+        put("example.com\0example.com/tag/old".into(), 10, None);
+        put("example.com\0example.com/sent-same".into(), 30, Some(30));
+        put("example.com\0example.com/sent-moved".into(), 40, Some(35));
         for i in 0..100 {
-            put(format!("big.org\0big.org/p{i:03}"), 100 + i);
+            put(format!("big.org\0big.org/p{i:03}"), 100 + i, (i < 60).then_some(0));
         }
     }
     let store = open(&dir);
-    let sent_page = |domain: &str, rest: Vec<u8>, lastmod: u32| SentPage { domain: domain.into(), rest, lastmod, at: 60 };
-    let mut sent = vec![sent_page("example.com", rest("sent-same"), 30), sent_page("example.com", rest("sent-moved"), 35)];
-    sent.extend((0..60).map(|i| sent_page("big.org", format!("big.org/p{i:03}").into_bytes(), 0)));
-    sent.push(sent_page("example.com", rest("never-listed"), 1));
-    assert_eq!(store.import_sent(&sent).unwrap(), 62);
-    assert_eq!(record(&store, "sent-same").pushed_at, 60);
 
     let mut state = store.backfill_state(1000).unwrap();
     store.backfill_step(&mut state, 3).unwrap();
@@ -1131,7 +1129,8 @@ fn a_domain_joining_the_list_queues_its_stored_pages_never_sent_newest_first_up_
     for (i, name) in ["a", "b", "c", "d", "e", "tag/x"].iter().enumerate() {
         store.record_listing("example.com", 7, vec![page(name, 10)], 100 + 10 * i as u32).unwrap();
     }
-    store.import_sent(&[SentPage { domain: "example.com".into(), rest: rest("a"), lastmod: 10, at: 150 }]).unwrap();
+    let sent = Pick { entry: Entry { domain: "example.com".into(), rest: rest("a"), order: Order::Fresh { first_seen: 100, lastmod: 10 } }, url: "https://example.com/a".into(), lastmod: 10, reason: Reason::Fresh, failures: 0 };
+    store.mark_sent(&[sent], 150, &rules()).unwrap();
     assert!(ready(&store).is_empty(), "pages of a domain not on the list wait in the store");
 
     relist(&path, &list, r#"[{"host": "example.com", "weight": 4, "send_cap": 3}]"#);

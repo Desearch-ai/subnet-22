@@ -573,15 +573,6 @@ pub struct PageSchedule {
     pub next: Scheduled,
 }
 
-/// A page an earlier sender sent, with the lastmod it had then.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SentPage {
-    pub domain: String,
-    pub rest: Vec<u8>,
-    pub lastmod: u32,
-    pub at: u32,
-}
-
 /// A domain's published and failed outcomes, each decayed by its age.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Yield {
@@ -1756,30 +1747,6 @@ impl BucketStore {
 
     pub fn domain_yield_recent(&self, domain: &str) -> Result<Option<Yield>> {
         Ok(self.db.get(count_key_of(YIELD_RECENT, domain))?.as_deref().and_then(Yield::unpack))
-    }
-
-    /// Stamp pages another sender already sent; returns how many the store knows.
-    pub fn import_sent(&self, rows: &[SentPage]) -> Result<usize> {
-        let _guard = self.lock_ready();
-        let records = self.records(rows.iter().map(|row| prefixed(URL, row.domain.as_bytes(), &row.rest)))?;
-        let sents = self.sents(rows.iter().map(|row| prefixed(SENT, row.domain.as_bytes(), &row.rest)))?;
-        let mut batch = WriteBatch::default();
-        let mut known = 0;
-        for ((SentPage { domain, rest, lastmod, at }, record), sent) in rows.iter().zip(records).zip(sents) {
-            let Some(mut record) = record else {
-                continue;
-            };
-            known += 1;
-            if record.pushed_at == 0 {
-                record.pushed_at = *at;
-                batch.put(prefixed(URL, domain.as_bytes(), rest), record.pack());
-            }
-            if sent.is_none() {
-                batch.put(prefixed(SENT, domain.as_bytes(), rest), Sent { lastmod: *lastmod, ..Sent::default() }.pack());
-            }
-        }
-        self.db.write(batch)?;
-        Ok(known)
     }
 
     /// Where this store's walk for the ready lists stands, starting one now if none ever did.
