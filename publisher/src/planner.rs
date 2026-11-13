@@ -658,6 +658,10 @@ fn site_of(host: &str) -> String {
     host.strip_prefix("www.").map(str::to_string).unwrap_or(host)
 }
 
+fn from_bulk(record: &Record) -> bool {
+    record.task_id.starts_with(crate::bulk::TASK_PREFIX)
+}
+
 /// The domain a page key names, `pages/<domain>/<sha1>`.
 fn domain_of_key(key: &str) -> &str {
     key.split('/').nth(1).unwrap_or("")
@@ -2731,7 +2735,7 @@ impl Planner {
                     // A page naming no language is read whole, and its text tells.
                     && (lang_wanted(&langs, &record.lang) || record.lang.trim().is_empty())
                     && set.as_ref().is_none_or(|set| {
-                        set.class(domain_of_key(&row.key)) <= class && set.admit(&record.url, &record.published, record.page_type.as_deref()).is_ok()
+                        set.class(domain_of_key(&row.key)) <= class && set.admit_from(&record.url, &record.published, record.page_type.as_deref(), from_bulk(record)).is_ok()
                     })
                     // A version planned before is read whole only when its template lines may have changed.
                     && match state.planned_version(RECIPE_V2, &row.key) {
@@ -2921,7 +2925,7 @@ impl Planner {
         self.counts.pages += 1;
         let record = &page.record;
         let excluded = self.excluded(&record.domain.to_lowercase());
-        let admission = self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()));
+        let admission = self.set.as_ref().map(|set| set.admit_from(&record.url, &record.published, record.page_type.as_deref(), from_bulk(record)));
         let (recipe, readable) = (recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)), !excluded && self.admitted(record));
         let junk = readable && clean::junk(&record.url, &record.title, &record.text).is_some();
         let readable = readable && !junk;
@@ -2934,7 +2938,7 @@ impl Planner {
             self.still_waiting(&page);
             match admission {
                 _ if excluded => self.counts.refused += 1,
-                Some(Err(Refusal::Unlisted | Refusal::OffPaths)) => self.counts.outside_set += 1,
+                Some(Err(Refusal::Unlisted | Refusal::OffPaths | Refusal::Crawled)) => self.counts.outside_set += 1,
                 _ if recipe.is_none() => self.counts.other_recipe += 1,
                 _ if junk => {
                     self.counts.junk += 1;
