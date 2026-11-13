@@ -1,4 +1,4 @@
-"""The crawler build's extraction worker: one JSON request a line on stdin, one JSON answer a line on stdout."""
+"""The extraction worker of `desearch-bot build` and `refresh`: one JSON request a line on stdin, one JSON answer a line on stdout."""
 
 from __future__ import annotations
 

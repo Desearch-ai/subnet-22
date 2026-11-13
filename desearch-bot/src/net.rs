@@ -168,7 +168,7 @@ impl fmt::Display for NotResolved {
 
 impl Error for NotResolved {}
 
-/// The system's resolver, which aiohttp asks by default, with answers that point into a private network dropped.
+/// The system's resolver, with answers that point into a private network dropped.
 #[derive(Clone, Copy, Default)]
 pub struct SystemResolver;
 

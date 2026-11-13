@@ -1,4 +1,4 @@
-//! A run of site crawls as the Python crawler's `run_sites` drives one: hosts from a hosts file, a few at once, one record folder.
+//! A run of site crawls: hosts from a hosts file, a few at once, one record folder.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -187,7 +187,7 @@ pub async fn run_sites(o: &Options, progress: Arc<dyn Fn(&str) + Send + Sync>) -
     Ok(total)
 }
 
-/// The line `python -m crawler site` prints at the end.
+/// The line `crawl-sites` prints at the end.
 pub fn total_line(total: &Counts) -> String {
     format!("{{\"total\": {}}}", counts_json(&total.0))
 }

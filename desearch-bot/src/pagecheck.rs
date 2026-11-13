@@ -1,4 +1,4 @@
-//! What the crawler build does around extraction: the FRED table rewrite, wall and mirror checks, EDGAR items.
+//! What `desearch-bot build` does around extraction: the FRED table rewrite, wall and mirror checks, EDGAR items.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

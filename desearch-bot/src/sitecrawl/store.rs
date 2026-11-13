@@ -1,4 +1,4 @@
-//! Fetched pages on disk as the Python crawler's `store.Writer` writes them: zstd JSON-lines files of records, one folder per run.
+//! Fetched pages on disk: zstd JSON-lines files of records, one folder per run.
 
 use std::fs::File;
 use std::io::Write;

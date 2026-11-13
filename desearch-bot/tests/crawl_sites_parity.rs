@@ -1,4 +1,4 @@
-//! `desearch-bot crawl-sites` against the replay server, compared with the Python crawler's frozen run (tools/crawl_sites_golden.py).
+//! `desearch-bot crawl-sites` against the replay server, compared with the frozen golden runs in `tests/data/crawl_sites/golden.json`.
 
 #[allow(dead_code)]
 #[path = "support/site_replay.rs"]
@@ -96,13 +96,13 @@ fn gaps(hits: &[site_replay::Hit]) -> BTreeMap<String, f64> {
     times.into_iter().filter(|(_, t)| t.len() > 1).map(|(host, t)| (host, t.windows(2).map(|w| w[1] - w[0]).fold(f64::MAX, f64::min))).collect()
 }
 
-/// The Python run with the hosts the strict robots.txt rule keeps off put as `strict_robots.json` says.
-fn expected(python: &Value, strict: &Value) -> Value {
-    let mut want = python.clone();
+/// The golden run with the hosts the robots.txt rule keeps off put as `strict_robots.json` says.
+fn expected(golden: &Value, strict: &Value) -> Value {
+    let mut want = golden.clone();
     let Some(hosts) = strict.as_object() else { return want };
-    for (host, rust) in hosts {
+    for (host, run) in hosts {
         let total = want["total"].as_object_mut().unwrap();
-        for (key, n) in python["hosts"][host].as_object().unwrap() {
+        for (key, n) in golden["hosts"][host].as_object().unwrap() {
             let left = total[key].as_i64().unwrap() - n.as_i64().unwrap();
             if left == 0 && n.as_i64().unwrap() > 0 {
                 total.remove(key);
@@ -110,12 +110,12 @@ fn expected(python: &Value, strict: &Value) -> Value {
                 total.insert(key.clone(), json!(left));
             }
         }
-        for (key, n) in rust["counts"].as_object().unwrap() {
+        for (key, n) in run["counts"].as_object().unwrap() {
             let now = total.get(key).and_then(Value::as_i64).unwrap_or(0);
             total.insert(key.clone(), json!(now + n.as_i64().unwrap()));
         }
-        want["hosts"][host] = rust["counts"].clone();
-        want["requests"][host] = rust["requests"].clone();
+        want["hosts"][host] = run["counts"].clone();
+        want["requests"][host] = run["requests"].clone();
         want["gaps"].as_object_mut().unwrap().remove(host);
         want["records"].as_array_mut().unwrap().retain(|r| r["url"].as_str().unwrap().split('/').nth(2) != Some(host.as_str()));
     }
@@ -123,7 +123,7 @@ fn expected(python: &Value, strict: &Value) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn crawl_sites_runs_as_the_python_crawler() {
+async fn crawl_sites_runs_as_the_golden_runs_did() {
     let (fixture, golden, strict) = (load("fixture.json"), load("golden.json"), load("strict_robots.json"));
     let runs: Vec<(String, Value)> = fixture["runs"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut started = Vec::new();
@@ -137,7 +137,7 @@ async fn crawl_sites_runs_as_the_python_crawler() {
         let want = &expected(&golden["runs"][&name], &strict["runs"][&name]);
         for key in ["total", "hosts", "files", "found", "agents"] {
             if got[key] != want[key] {
-                wrong.push(format!("run {name} {key}:\n  python {}\n  rust   {}", want[key], got[key]));
+                wrong.push(format!("run {name} {key}:\n  want {}\n  got  {}", want[key], got[key]));
             }
         }
         let hosts: std::collections::BTreeSet<&String> =
@@ -150,7 +150,7 @@ async fn crawl_sites_runs_as_the_python_crawler() {
                 }
             }
             if w != g {
-                wrong.push(format!("run {name} requests to {host}:\n  python {w}\n  rust   {g}"));
+                wrong.push(format!("run {name} requests to {host}:\n  want {w}\n  got  {g}"));
             }
         }
         let (mut w, mut g) = (by_host(&want["records"]), by_host(&got["records"]));
@@ -162,12 +162,12 @@ async fn crawl_sites_runs_as_the_python_crawler() {
             }
         }
         if w != g {
-            wrong.push(format!("run {name} records:\n  python {}\n  rust   {}", json!(w), json!(g)));
+            wrong.push(format!("run {name} records:\n  want {}\n  got  {}", json!(w), json!(g)));
         }
         for (host, gap) in gaps(&hits) {
-            let python = want["gaps"][&host].as_f64().unwrap_or(0.0);
-            if python >= 0.9 && gap < python.min(if python >= 1.9 { 2.0 } else { 1.0 }) - JITTER {
-                wrong.push(format!("run {name}: requests to {host} {gap:.3} s apart, python kept {python:.3} s"));
+            let kept = want["gaps"][&host].as_f64().unwrap_or(0.0);
+            if kept >= 0.9 && gap < kept.min(if kept >= 1.9 { 2.0 } else { 1.0 }) - JITTER {
+                wrong.push(format!("run {name}: requests to {host} {gap:.3} s apart, the golden run kept {kept:.3} s"));
             }
         }
         if name == "a" {

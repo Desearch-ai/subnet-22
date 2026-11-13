@@ -50,11 +50,11 @@ enum Command {
     Replay(ReplayArgs),
     /// Fetch records into a bulk run folder for `publisher bulk`, extraction in Python worker processes.
     Build(BuildArgs),
-    /// Crawl hosts from their home pages by links and sitemaps into a record folder, as `python -m crawler site` does.
+    /// Crawl hosts from their home pages by links and sitemaps into a record folder.
     CrawlSites(CrawlSitesArgs),
     /// Read each host's robots.txt and sitemaps and say whether the bot can make miner tasks from them, as JSON lines.
     SitemapCheck(SitemapCheckArgs),
-    /// Fetch a source again into a finished run folder for the bulk refresh runner, as `python -m crawler refresh` does.
+    /// Fetch a source again into a finished run folder for the bulk refresh runner.
     #[command(infer_long_args = true)]
     Refresh(RefreshArgs),
 }

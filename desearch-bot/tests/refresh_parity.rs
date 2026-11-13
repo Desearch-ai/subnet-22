@@ -1,4 +1,4 @@
-//! `desearch-bot refresh` against the replay server, compared with the Python crawler's frozen runs in `tests/data/refresh/golden.json`.
+//! `desearch-bot refresh` against the replay server, compared with the frozen golden runs in `tests/data/refresh/golden.json`.
 
 #[allow(dead_code)]
 #[path = "support/site_replay.rs"]
@@ -155,7 +155,7 @@ fn python_has_lxml() -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refresh_runs_as_the_python_crawler() {
+async fn refresh_runs_as_the_golden_runs_did() {
     if !python_has_lxml() {
         eprintln!("no python3 with lxml for the extraction workers; skipped");
         return;
@@ -184,7 +184,7 @@ async fn refresh_runs_as_the_python_crawler() {
                 }
             }
             if w != g {
-                wrong.push(format!("run {name} {key}:\n  python {w}\n  rust   {g}\n  stderr {}", got["stderr"]));
+                wrong.push(format!("run {name} {key}:\n  want   {w}\n  got    {g}\n  stderr {}", got["stderr"]));
             }
         }
     }

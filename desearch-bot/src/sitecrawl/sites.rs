@@ -1,4 +1,4 @@
-//! One site's crawl as the Python crawler's `sites.crawl` runs it: robots.txt and the host's pace, sitemaps, then links breadth first.
+//! One site's crawl: robots.txt and the host's pace, sitemaps, then links breadth first.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -112,7 +112,7 @@ pub struct Ctx {
     pub writer: Arc<Mutex<Writer>>,
     pub skip: Arc<HashSet<String>>,
     pub set: Option<Arc<SetRule>>,
-    /// The pace floor between a host's requests; Python's `min_delay`, a second unless a test asks for less.
+    /// The pace floor between a host's requests, a second unless a test asks for less.
     pub min_delay: f64,
 }
 
@@ -196,7 +196,7 @@ pub async fn cookie_round_trip(ctx: &Ctx, url: &str, location: &str) -> Result<O
     Ok((host_of(&hop) == origin && ctx.cookies(url) != before).then_some(hop))
 }
 
-/// The host the site serves its home page from: www when the bare name is unreachable. An error here ends the whole run, as in Python.
+/// The host the site serves its home page from: www when the bare name is unreachable. An error here ends the whole run.
 pub async fn home_host(ctx: &Ctx, name: &str) -> Result<String, Crash> {
     let mut name = name.to_string();
     let mut rules = ctx.robots.rules(&name).await?;
@@ -400,7 +400,7 @@ impl Crawl<'_> {
     }
 }
 
-/// Every future to its end, or the first error, which drops the rest as Python's `gather` leaves them.
+/// Every future to its end, or the first error, which drops the rest.
 pub(crate) async fn try_join_all<F: Future<Output = Result<(), Crash>>>(futures: Vec<F>) -> Result<(), Crash> {
     let mut futures: Vec<Option<Pin<Box<F>>>> = futures.into_iter().map(|f| Some(Box::pin(f))).collect();
     std::future::poll_fn(|cx| {

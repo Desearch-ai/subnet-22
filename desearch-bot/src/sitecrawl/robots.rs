@@ -1,4 +1,4 @@
-//! robots.txt per host as the Python crawler reads it: Protego's parse for our token, and why a host is out.
+//! robots.txt per host: Protego's parse for our token, and why a host is out.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};

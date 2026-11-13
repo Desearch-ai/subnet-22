@@ -1,4 +1,4 @@
-//! The crawl-sites readers against the Python crawler's frozen answers in `tests/data/crawl_sites/units.json` (tools/crawl_sites_units.py).
+//! The crawl-sites readers against the frozen golden answers in `tests/data/crawl_sites/units.json`.
 
 use std::collections::HashMap;
 
@@ -21,12 +21,12 @@ fn b64(s: &Value) -> Vec<u8> {
 
 fn check(kind: &str, case: &Value, got: Value, want: &Value, wrong: &mut Vec<String>) {
     if &got != want {
-        wrong.push(format!("{kind} {case}\n  python {want}\n  rust   {got}"));
+        wrong.push(format!("{kind} {case}\n  want {want}\n  got  {got}"));
     }
 }
 
 #[test]
-fn readers_answer_as_the_python_crawler() {
+fn readers_give_the_golden_answers() {
     let u = units();
     let mut wrong = Vec::new();
     for case in u["html"].as_array().unwrap() {

@@ -1,4 +1,4 @@
-//! The refresh commands' readers and checks against the Python crawler's answers in `tests/data/refresh/units.json`.
+//! The refresh commands' readers and checks against the frozen golden answers in `tests/data/refresh/units.json`.
 
 use std::collections::HashSet;
 
@@ -38,12 +38,12 @@ fn date(v: &Value) -> Option<NaiveDate> {
 
 fn check(kind: &str, case: impl std::fmt::Display, got: Value, want: &Value, wrong: &mut Vec<String>) {
     if &got != want {
-        wrong.push(format!("{kind} {case}\n  python {want}\n  rust   {got}"));
+        wrong.push(format!("{kind} {case}\n  want {want}\n  got  {got}"));
     }
 }
 
 #[test]
-fn indexes_and_submissions_read_as_the_python_crawler() {
+fn indexes_and_submissions_read_as_the_golden_answers_say() {
     let u = units();
     let mut wrong = Vec::new();
     for case in u["index_ciks"].as_array().unwrap() {
@@ -63,7 +63,7 @@ fn indexes_and_submissions_read_as_the_python_crawler() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_pace_starts_requests_when_python_does() {
+async fn the_pace_starts_requests_when_the_golden_answers_say() {
     for case in units()["pace"].as_array().unwrap() {
         let pace = Pace::new(case[0].as_f64().unwrap()).unwrap();
         let start = tokio::time::Instant::now();
@@ -76,12 +76,12 @@ async fn the_pace_starts_requests_when_python_does() {
         let want: Vec<f64> = case[2].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         // Timers fire on whole milliseconds, so each wait may start up to 1 ms later, never sooner.
         let close = starts.iter().zip(&want).enumerate().all(|(i, (a, b))| *a >= b - 1e-6 && *a <= b + 1e-3 * (i + 1) as f64 + 1e-6);
-        assert!(starts.len() == want.len() && close, "{case}: rust {starts:?}");
+        assert!(starts.len() == want.len() && close, "{case}: got {starts:?}");
     }
 }
 
 #[test]
-fn checks_fail_the_runs_python_fails_with_its_message() {
+fn checks_fail_the_golden_cases_with_their_message() {
     let u = units();
     let mut wrong = Vec::new();
     for case in u["check_edgar"].as_array().unwrap() {
@@ -96,7 +96,7 @@ fn checks_fail_the_runs_python_fails_with_its_message() {
 }
 
 #[test]
-fn url_lists_group_by_host_as_python_does() {
+fn url_lists_group_by_host_as_the_golden_answers_say() {
     let mut wrong = Vec::new();
     for case in units()["groups"].as_array().unwrap() {
         let (urls, skip) = (strings(&case[0]), strings(&case[1]).into_iter().collect::<HashSet<_>>());

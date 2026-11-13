@@ -1,4 +1,4 @@
-//! Language and locale checks of the Python crawler's `scope` module; the set's pre-fetch admit is `SetRule::may_admit`.
+//! Language and locale checks of site crawls; the set's pre-fetch admit is `SetRule::may_admit`.
 
 use std::sync::LazyLock;
 

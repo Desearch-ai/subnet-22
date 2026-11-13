@@ -1,4 +1,4 @@
-//! Unattended refresh runs as `python -m crawler refresh` makes them: fetch a source again and build a finished run folder, failing loudly on refusals.
+//! Unattended refresh runs: fetch a source again and build a finished run folder, failing loudly on refusals.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};

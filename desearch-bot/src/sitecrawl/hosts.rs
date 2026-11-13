@@ -1,4 +1,4 @@
-//! Politeness per host, as the Python crawler's `hosts.Host`: requests in flight and their pace, back off when overloaded, stop when refused.
+//! Politeness per host: requests in flight and their pace, back off when overloaded, stop when refused.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

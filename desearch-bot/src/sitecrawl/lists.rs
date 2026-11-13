@@ -1,4 +1,4 @@
-//! A URL list as the Python crawler's `sites.crawl_urls` fetches one: hosts a few at once, one request at a time each, same-host redirects followed.
+//! A URL list fetched: hosts a few at once, one request at a time each, same-host redirects followed.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};

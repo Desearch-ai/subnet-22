@@ -1,4 +1,4 @@
-//! The crawler build's checks against answers the Python build gave on the same inputs (`data/crawler_build_golden.json`).
+//! The build's checks against the frozen golden answers in `data/crawler_build_golden.json`.
 
 use std::sync::LazyLock;
 
@@ -26,7 +26,7 @@ fn check<T: PartialEq + std::fmt::Debug>(name: &str, got: Vec<(String, T, T)>) {
 }
 
 #[test]
-fn the_set_rule_admits_what_python_admits() {
+fn the_set_rule_admits_the_golden_cases() {
     let rule = SetRule::parse(GOLDEN["set"].to_string().as_bytes()).unwrap();
     let mut admits = Vec::new();
     let mut dates = Vec::new();
@@ -43,7 +43,7 @@ fn the_set_rule_admits_what_python_admits() {
 }
 
 #[test]
-fn hosts_normalise_as_in_python() {
+fn hosts_normalise_as_the_golden_cases_say() {
     check("normal_host", cases("hosts").iter().map(|c| (s(&c[0]).to_string(), normal_host(s(&c[0])), s(&c[1]).to_string())).collect());
 }
 

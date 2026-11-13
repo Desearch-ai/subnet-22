@@ -49,7 +49,7 @@ const RESEND_COUNT: u8 = b'G';
 const RESEND_CHUNK: usize = 2_000;
 /// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
 const STOCK: u8 = b'F';
-/// Each page's failed sends counted as their outcomes come; the sent record's count keeps the meaning earlier versions read, so going back to one costs no page the long wait.
+/// Each page's failed sends counted as their outcomes come; the sent record keeps a count of its own, raised as each retry of a failed page comes due.
 const FAILS: u8 = b'K';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
@@ -368,12 +368,11 @@ pub struct Sent {
 }
 
 impl Sent {
-    /// Failures share the last byte with the requeued flag; the byte before held a count that also took in outcomes that never came, and is left at zero.
+    /// Failures share the last byte with the requeued flag; the byte before holds only the published bit.
     fn pack(self) -> [u8; 6] {
         let mut out = [0u8; 6];
         out[..4].copy_from_slice(&self.lastmod.to_le_bytes());
         out[5] = u8::from(self.requeued) | self.failures.min(127) << 1;
-        // Earlier versions never read this byte, and write it as zero.
         out[4] = if self.published { PUBLISHED_BIT } else { 0 };
         out
     }
@@ -417,7 +416,7 @@ impl Fails {
     }
 }
 
-/// The bit of a sent record's fifth byte that says its latest send came back published; the counts earlier versions kept there stayed far below it.
+/// The bit of a sent record's fifth byte that says its latest send came back published; the byte's other bits are not read.
 const PUBLISHED_BIT: u8 = 0x80;
 
 /// The failure count key of a page's sent record key.
@@ -1591,13 +1590,13 @@ impl BucketStore {
                 continue;
             };
             let mut sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
-            // Entries without a schedule were written by earlier versions and go back as they are.
+            // An entry without a schedule goes back as it is.
             match next {
                 Some(next) if next.outdated(record.pushed_at) => continue,
                 Some(Scheduled { why: Why::Recrawl, .. }) => sent.failures = 0,
                 Some(Scheduled { why: Why::Failed, at, .. }) => {
                     sent.failures = sent.failures.saturating_add(1);
-                    // Pages failed before outcomes were counted as they came keep the sent record's count.
+                    // A page without a count of its own is judged by the sent record's.
                     if fails.map_or(sent.failures, |fails| fails.count) >= GONE_AFTER {
                         put_schedule(&mut batch, domain, rest, Scheduled { why: Why::Gone, due: at.saturating_add(recrawl.gone), at: record.pushed_at });
                         batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -2123,7 +2122,7 @@ mod tests {
     }
 
     #[test]
-    fn junk_matches_the_python_feeder() {
+    fn tag_category_paging_file_and_query_pages_are_junk() {
         for path in ["example.com/tag/x", "example.com/category/news/", "example.com/page/2", "example.com/a.PDF", "example.com/s?page=3", "example.com/x?q=a"] {
             assert!(junk(path.as_bytes()), "{path}");
         }
@@ -2304,14 +2303,14 @@ mod tests {
     }
 
     #[test]
-    fn failures_share_the_requeued_byte_and_the_count_of_earlier_versions_is_not_read() {
+    fn failures_share_the_requeued_byte_and_the_byte_before_holds_only_the_published_bit() {
         let sent = Sent { lastmod: 7, failures: 2, requeued: false, published: false };
         assert_eq!(Sent::unpack(&sent.pack()), Some(sent));
-        assert_eq!(sent.pack()[4..], [0, 4], "earlier versions read it as requeued, which only matters for a page on its list");
-        let earlier = [7, 0, 0, 0, 3, 1];
-        assert_eq!(Sent::unpack(&earlier), Some(Sent { lastmod: 7, failures: 0, requeued: true, published: false }), "three retries counted before, outcomes that never came among them");
+        assert_eq!(sent.pack()[4..], [0, 4]);
+        let counted = [7, 0, 0, 0, 3, 1];
+        assert_eq!(Sent::unpack(&counted), Some(Sent { lastmod: 7, failures: 0, requeued: true, published: false }), "the fifth byte's low bits are not read");
         let published = Sent { published: true, ..sent };
-        assert_eq!((Sent::unpack(&published.pack()), published.pack()[5]), (Some(published), sent.pack()[5]), "the published bit leaves the byte earlier versions read alone");
+        assert_eq!((Sent::unpack(&published.pack()), published.pack()[5]), (Some(published), sent.pack()[5]), "the published bit leaves the failures byte alone");
     }
 
     #[test]

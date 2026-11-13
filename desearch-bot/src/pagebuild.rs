@@ -1,4 +1,4 @@
-//! `crawler build` in Rust: fetch records into a bulk run folder, with the shared Python extraction in worker processes.
+//! `desearch-bot build`: fetch records into a bulk run folder, with the shared Python extraction in worker processes.
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};

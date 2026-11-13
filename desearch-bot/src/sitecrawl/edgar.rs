@@ -1,4 +1,4 @@
-//! SEC EDGAR filings as the Python crawler's `edgar` module takes them: filers from an index, their primary documents from their submissions, at SEC's fair-access pace.
+//! SEC EDGAR filings: filers from an index, their primary documents from their submissions, at SEC's fair-access pace.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock, Mutex};

@@ -1,4 +1,4 @@
-//! The v1 set file's rule and the planner's page checks, as `indexer/setrule.py` and `indexer/lang.py` decide them.
+//! The v1 set file's rule and the planner's page checks: which pages each set site admits, and in which language.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;

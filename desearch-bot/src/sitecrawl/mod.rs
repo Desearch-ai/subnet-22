@@ -1,4 +1,4 @@
-//! The Python crawler's fetches in Rust: site crawls by links, URL lists and EDGAR filings, under robots.txt and each host's pace, into its record files.
+//! Bulk fetches: site crawls by links, URL lists and EDGAR filings, under robots.txt and each host's pace, into record files.
 
 pub mod cookies;
 pub mod edgar;
@@ -14,7 +14,7 @@ pub mod store;
 
 use indexmap::IndexMap;
 
-/// A Python exception that ends one host's crawl, by its type name.
+/// What ends one host's crawl, by the exception type name the run's counts give it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crash(pub &'static str);
 

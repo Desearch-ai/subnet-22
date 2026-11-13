@@ -229,9 +229,8 @@ by the lower of the two, so a domain that starts refusing slows within hours. A 
 after its domain's interval, and after two failures in a row waits `--gone-days`; each failed send
 counts once when its outcome comes, against the send in flight when it failed: the latest, or the one
 before it while the latest has not come back published, however often the failure is reported. It is
-kept in a count of its own beside the
-sent record's, which keeps the meaning earlier versions read; a send that comes back
-published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
+kept in a count of its own beside the sent record's, which counts a failure when its retry comes due;
+a send that comes back published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
 within the hourly budget. A number still missing after two minutes, or whose file expired, is
 skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.

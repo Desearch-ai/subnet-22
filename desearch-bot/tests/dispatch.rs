@@ -301,7 +301,7 @@ fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
 }
 
 #[test]
-fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
+fn the_sent_record_counts_a_failure_when_its_retry_comes_due() {
     let dir = Dir::new("ready-fails-rollback");
     let buckets = known(&dir, &["example.com"]);
     let store = buckets.store("example.com");
@@ -309,10 +309,10 @@ fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
     store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
     OutcomeReader::new(rules(), 1000).apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
     let failures = || store.sent("example.com", &rest("a")).unwrap().unwrap().failures;
-    assert_eq!(failures(), 0, "an earlier version counts the failure when the retry comes due, so it must not be counted here too");
+    assert_eq!(failures(), 0, "the sent record counts the failure when the retry comes due, not when the outcome comes");
     assert_eq!(store.failed_sends("example.com", &rest("a")).unwrap(), 1);
     assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
-    assert_eq!(failures(), 1, "the retry counts it, as an earlier version would");
+    assert_eq!(failures(), 1, "the retry counts it");
 }
 
 #[test]

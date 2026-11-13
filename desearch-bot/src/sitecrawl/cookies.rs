@@ -1,4 +1,4 @@
-//! A cookie jar shared by every request of a run, read and written as aiohttp's `CookieJar` does.
+//! A cookie jar shared by every request of a run: `Set-Cookie` headers taken in, and the cookies a request's host and path match sent back.
 
 use std::net::IpAddr;
 use std::sync::Mutex;

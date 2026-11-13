@@ -1,4 +1,4 @@
-//! One GET without following redirects, as the Python crawler's `net.get` makes it: our user agent, size and time limits, the run's cookies.
+//! One GET without following redirects: our user agent, size and time limits, the run's cookies.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

@@ -1,4 +1,4 @@
-//! URLs as the Python crawler's `links` module reads them: normalizing, crawl scope, a page's links and robots meta, sitemap entries.
+//! URLs as site crawls read them: normalizing, crawl scope, a page's links and robots meta, sitemap entries.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
