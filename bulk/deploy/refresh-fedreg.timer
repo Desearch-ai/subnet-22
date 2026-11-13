@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of the Federal Register from the day's API index and govinfo issue
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 UTC
+Unit=refresh@fedreg.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

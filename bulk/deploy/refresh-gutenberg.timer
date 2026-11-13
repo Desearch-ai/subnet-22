@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of Project Gutenberg's English public-domain books
+
+[Timer]
+OnCalendar=Sun *-*-* 10:00:00 UTC
+Unit=refresh@gutenberg.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

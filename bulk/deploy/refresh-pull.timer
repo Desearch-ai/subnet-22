@@ -1,0 +1,9 @@
+[Unit]
+Description=Checks the crawler box's refresh outbox every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+
+[Install]
+WantedBy=timers.target

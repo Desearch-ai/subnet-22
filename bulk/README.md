@@ -76,6 +76,17 @@ in the run folder lists the batch files already published. Bulk files hold at mo
 | `arxiv-text` | Common Pile's `arxiv_papers` files, with the OAI-PMH pages for each paper's licence | full text without references, at the paper's HTML view (`arxiv.org/html/<id>` from 2312 on, `ar5iv.labs.arxiv.org/html/<id>` before) | papers whose arXiv record is CC BY, CC BY-SA or CC0 |
 | `pmc` | the `pmc-oa-opendata` bucket, newest version of each article | full text without references, with its DOI | open access under CC0, CC BY, CC BY-SA or CC BY-ND, not retracted |
 | `wikipedia` | Wikimedia Enterprise snapshots | the article as the live page shows it | namespace 0, no disambiguation pages |
+| `factbook` | factbook.json, the World Factbook's final edition | one per entity, at its worldfactbookarchive.org page | entities with a page of their own on the archive |
+| `medlineplus` | the daily health topics XML and the Genetics summaries | one per topic, condition, gene and chromosome | English; the summaries only |
+| `uscode` | an OLRC release point's all-titles zip | one per section | single sections with statutory text |
+| `ecfr` | govinfo's eCFR title XML, with eCFR's structure for each title's addresses | one per section | sections the current structure lists |
+| `fedreg` | govinfo's daily issues, with an index from federalregister.gov's API | one per document | documents the index gives an address |
+| `eurlex` | Cellar's English texts, listed through its SPARQL endpoint | one per act or judgment | acts in force and CJEU judgments |
+| `dailymed` | DailyMed's full release or daily update zips | one per label | human prescription and OTC labels, newest version, without images |
+| `ctgov` | ClinicalTrials.gov's all-studies zip | one per study | without contact details or posted results tables |
+| `uniprot` | UniProtKB/Swiss-Prot's release XML | one per reviewed entry | reviewed entries only |
+| `pubchem` | PUG-View's Record Description annotations | one per compound | descriptions from sources whose terms allow reuse, each credited |
+| `gutenberg` | the plain-text archive and catalog | one per book, its opening | English, public domain in the USA, without the licence or the project's name in the text |
 
 `pmc-order` lists the newest version of every PMC article, most cited per year since publication first, by
 OpenAlex's citation counts (joined by PMID through NCBI's PMCID table), so a run fed slices of that list embeds the
@@ -86,3 +97,28 @@ matches a crawl of the live page. Hidden categories come from the category-names
 
 Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), PMC asks users to credit NLM
 as the source, and an arXiv full text keeps its paper's CC licence (credit the authors, link the paper).
+
+## Refresh
+
+The Rust binary `refresh` (crate `refresh/`) keeps a source current. `refresh run <source>` runs the source's fetch and
+build commands, keeps only the pages that are new or changed since the last run, publishes them and hides the pages
+the source dropped. The sources and their commands are in `refresh/src/sources.rs`.
+
+- **State:** `~/refresh/state/<source>.sqlite` holds each page's URL, a hash of its row (every column but the fetch's
+  own and the build's volatile ones, such as a credit line naming the run's date), the run that last published it and
+  whether it is gone. A page is compared with its last hash under any build of its source. `refresh seed <source> <build> <run folders>` records
+  runs published before the source's first refresh; `refresh diff` checks a build folder against the state.
+- **Guards:** a full-list build with under 95% of the pages it had publishes and hides nothing. More than 30% of a
+  build changed is flagged in the report.
+- **Incremental sources** such as arXiv fetch from `{since}`, the day of their last run that published, to `{until}`,
+  today. A first run takes `--since`.
+- **Publish:** the runner leaves each diff in `~/refresh/outbox`. `refresh-pull` on the planner box takes it every 10
+  minutes, publishes it with `publish-one.sh` and sends the output back as a receipt in `~/refresh/receipts`.
+- **Hide:** pages a source dropped go to index-1 as exact-path rules in the source's own section of
+  `hidden-urls.txt` (`refresh hide-section`, the forced command of the crawler box's key), rewritten whole each run,
+  so a page that comes back is shown again.
+- **Report:** one JSON line a run in `~/refresh/status.jsonl`, and one line to the ops channel when
+  `REFRESH_DISCORD_WEBHOOK` is set.
+
+`deploy/` holds the crawler box's `refresh@.service` and timers, the planner box's `refresh-pull` and the crawler
+box's forced command for it, `refresh-send.sh`.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of arXiv abstract pages from the OAI-PMH feed
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Unit=refresh@arxiv.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

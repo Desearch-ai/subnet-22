@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of ClinicalTrials.gov studies from the all-studies zip
+
+[Timer]
+OnCalendar=Sun *-*-* 08:00:00 UTC
+Unit=refresh@ctgov.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly refresh of PubChem compound descriptions from PUG-View
+
+[Timer]
+OnCalendar=*-*-01 03:00:00 UTC
+Unit=refresh@pubchem.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
