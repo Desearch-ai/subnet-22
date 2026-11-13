@@ -27,8 +27,6 @@ pub(crate) const SENT: u8 = b'P';
 const WAITING: u8 = b'W';
 /// Each page's latest schedule; a waiting entry another schedule replaced is skipped when it comes due.
 const NEXT: u8 = b'N';
-/// Deadlines left by earlier versions, which resent every page with no outcome a day after it went.
-const EXPECTING: u8 = b'X';
 /// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
 const YIELD: u8 = b'Y';
 /// The same outcomes fading within hours, so a domain that starts refusing is slowed the same hour.
@@ -1560,19 +1558,6 @@ impl BucketStore {
         Ok(added)
     }
 
-    /// Deletes the deadlines earlier versions kept for every sent page; whether there were any.
-    pub fn forget_expecting(&self) -> Result<bool> {
-        let (from, to) = ([EXPECTING], [EXPECTING + 1]);
-        if self.db.iterator_opt(IteratorMode::From(&from, Direction::Forward), bounded(&from)).next().transpose()?.is_none() {
-            return Ok(false);
-        }
-        let mut changes = Changes::default();
-        changes.delete_range(&from, &to);
-        self.write(changes)?;
-        self.db.delete_file_in_range(from, to)?;
-        Ok(true)
-    }
-
     /// Put pages whose schedule came due back on their ready lists: a page that failed again waits the long interval instead.
     pub fn requeue_due(&self, now: u32, limit: usize, recrawl: &Recrawl) -> Result<Requeued> {
         let mut options = ReadOptions::default();
@@ -2303,23 +2288,17 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_of_earlier_versions_are_deleted_once_and_their_waiting_entries_still_come_back() {
-        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-old-keys-{}", std::process::id()));
+    fn a_waiting_entry_without_a_schedule_goes_back_as_it_is() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-unscheduled-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = BucketStore::open(&dir, &crate::buckets::Resources::new(8 << 20, 8 << 20, 1)).unwrap();
         let page = |path: &str| (crate::urls::parse(&format!("https://example.com/{path}"), "example.com").unwrap(), 10, false);
         store.record_listing("example.com", 7, vec![page("a"), page("b")], 100).unwrap();
         let picks = store.take_ready("example.com", [0, 0, 10]).unwrap();
         store.mark_sent(&picks, 1000, &Recrawl::default()).unwrap();
-        for (due, path) in [(1000 + 86_400, "a"), (1000 + 86_400, "b")] {
-            store.db.put(timed_key(EXPECTING, due, b"example.com", format!("example.com/{path}").as_bytes()), []).unwrap();
-        }
         store.db.put(timed_key(WAITING, 1500, b"example.com", b"example.com/b"), []).unwrap();
 
-        assert!(store.forget_expecting().unwrap());
-        assert!(store.db.iterator_opt(IteratorMode::From(&[EXPECTING], Direction::Forward), bounded(&[EXPECTING])).next().is_none());
-        assert!(!store.forget_expecting().unwrap(), "nothing is left to delete on the next start");
-        assert_eq!(store.requeue_due(1000 + 86_400, 100, &Recrawl::default()).unwrap(), Requeued { moved: 1, gone: 0 }, "a waiting entry with no schedule goes back as before");
+        assert_eq!(store.requeue_due(1000 + 86_400, 100, &Recrawl::default()).unwrap(), Requeued { moved: 1, gone: 0 });
         let again = store.take_ready("example.com", [0, 10, 0]).unwrap();
         assert_eq!(again.iter().map(|p| (p.url.as_str(), p.reason)).collect::<Vec<_>>(), [("https://example.com/b", Reason::Requeued)]);
         drop(store);

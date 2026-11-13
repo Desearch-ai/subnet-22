@@ -1038,7 +1038,6 @@ fn a_sent_page_with_no_outcome_is_not_sent_again_a_day_later() {
     assert!(store.waiting().unwrap().is_empty());
     assert_eq!(requeue(&store, 1000 + 2 * DAY), Requeued::default());
     assert!(take(&store, 10).is_empty(), "a page with a lastmod goes again when it moves, not when an outcome is late");
-    assert!(!store.forget_expecting().unwrap(), "no deadline is kept for a send");
 }
 
 #[tokio::test]

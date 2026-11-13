@@ -665,10 +665,6 @@ impl Dispatcher {
         let (reading, list_version) = (buckets.clone(), buckets.list_version());
         let (domains, paced, pending, spaced) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut domains, mut paced) = (HashMap::new(), HashMap::new());
-            let forgotten = on_readers(reading.stores().collect(), |store| store.forget_expecting())?;
-            if forgotten.iter().any(|&found| found) {
-                println!("[rs] deleted the overdue-send deadlines of earlier versions from {} stores", forgotten.iter().filter(|&&f| f).count());
-            }
             for store in reading.stores() {
                 // The counts already hold what grew before now.
                 store.take_noticed();
