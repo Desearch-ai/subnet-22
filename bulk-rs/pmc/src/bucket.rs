@@ -156,13 +156,16 @@ where
 }
 
 /// Each taken version's PMCID, PMID and DOI (empty when the metadata has none), from its metadata alone; None for one
-/// left out.
+/// left out or gone from the bucket since the inventory.
 pub fn taken_ids<I>(names: I, client: Arc<Client>, base: String, workers: usize) -> impl Iterator<Item = Result<Option<[String; 3]>>>
 where
     I: Iterator<Item = String>,
 {
     bounded_map(names, workers, workers.max(1) * AHEAD_PER_WORKER, move |name: String| -> Result<Option<[String; 3]>> {
-        let meta = parse_meta(&fetch_found(&client, &base, &format!("metadata/{name}.json"))?)?;
+        let Some(found) = fetch(&client, &base, &format!("metadata/{name}.json"))? else {
+            return Ok(None);
+        };
+        let meta = parse_meta(&found)?;
         if left_out(&meta).is_some() {
             return Ok(None);
         }
