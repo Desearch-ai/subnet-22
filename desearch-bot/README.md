@@ -12,10 +12,6 @@ every core.
 - **Rules**: robots.txt and Crawl-delay, one request a second per host, sitemap schedules, exclusions,
   and Web Bot Auth request signatures.
 
-The domain list is published as the Hugging Face dataset
-[`desearch/subnet-22`](https://huggingface.co/datasets/desearch/subnet-22); its card is
-[`dataset_card.md`](./dataset_card.md).
-
 ## Build
 
 ```bash
