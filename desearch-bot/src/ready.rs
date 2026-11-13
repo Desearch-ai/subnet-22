@@ -2205,7 +2205,7 @@ mod tests {
 
     #[test]
     fn a_landing_depth_keeps_the_pages_the_sets_landing_rule_takes() {
-        let golden: serde_json::Value = serde_json::from_str(include_str!("../../tests/bot/v1_set_golden.json")).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(include_str!("../../publisher/tests/v1-set-golden.json")).unwrap();
         let mut checked = 0;
         for case in golden["cases"].as_array().unwrap() {
             let address = case["url"].as_str().unwrap();

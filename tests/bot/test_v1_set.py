@@ -13,8 +13,8 @@ v1_set = importlib.util.module_from_spec(SPEC)
 sys.modules["v1_set"] = v1_set
 SPEC.loader.exec_module(v1_set)
 
-GOLDEN = Path(__file__).resolve().parent / "v1_set_golden.json"
-GOLDEN_UNDATED = Path(__file__).resolve().parent / "v1_set_golden_undated.json"
+GOLDEN = Path(__file__).resolve().parents[2] / "publisher" / "tests" / "v1-set-golden.json"
+GOLDEN_UNDATED = Path(__file__).resolve().parents[2] / "publisher" / "tests" / "v1-set-golden-undated.json"
 
 
 TODAY = date(2026, 10, 28)
