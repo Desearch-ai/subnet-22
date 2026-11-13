@@ -32,7 +32,11 @@ pub const ALLOWED: &[(&str, &str)] = &[
     ("FDA Global Substance Registration System (GSRS)", "US government work"),
     ("EPA DSSTox", "US government work"),
     ("ChemIDplus", "US government work"),
+    ("EPA Hazardous Air Pollutants", "US government work"),
+    ("GlyCosmos Glycoscience Portal", "CC BY 4.0"),
 ];
+/// A compound page shorter than this is a one-line stub, such as a lone natural-product occurrence sentence.
+const MIN_TEXT_CHARS: usize = 300;
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct FetchArgs {
@@ -181,6 +185,10 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> 
             continue;
         }
         let (url, page) = page_of(*cid, found);
+        if page.text.chars().count() < MIN_TEXT_CHARS {
+            counts.add("thin", 1);
+            continue;
+        }
         batches.add(upload_row(&url, page, as_of_us, CONTENT_TYPE))?;
         counts.add("pages", 1);
         if args.run.limit > 0 && counts.get("pages") >= args.run.limit {
