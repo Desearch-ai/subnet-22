@@ -62,15 +62,24 @@ pub fn order(names: &IndexMap<String, String>, ids: &HashMap<String, (String, i6
     ranked.into_iter().map(|(_, name)| name.clone()).collect()
 }
 
-/// `bulk.pmc.openalex_files`, as HTTPS URLs of the bucket's objects.
+/// The works files the snapshot's manifest lists, as HTTPS URLs of the bucket's objects.
 pub fn openalex_files(client: &Client) -> Result<Vec<String>> {
-    let manifest = client.get_retrying(OPENALEX_WORKS)?.ok_or_else(|| anyhow!("HTTP Error 404: {OPENALEX_WORKS}"))?;
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest)?;
-    let files = manifest["files"].as_array().ok_or_else(|| anyhow!("a works manifest without files"))?;
+    files_listed(client, OPENALEX_WORKS)
+}
+
+/// The files a works manifest at `manifest` lists: `s3://` ones as HTTPS URLs of the bucket's objects, `http(s)://`
+/// ones as they are.
+pub fn files_listed(client: &Client, manifest: &str) -> Result<Vec<String>> {
+    let listed = client.get_retrying(manifest)?.ok_or_else(|| anyhow!("HTTP Error 404: {manifest}"))?;
+    let listed: serde_json::Value = serde_json::from_slice(&listed)?;
+    let files = listed["files"].as_array().ok_or_else(|| anyhow!("a works manifest without files"))?;
     files
         .iter()
         .map(|entry| {
             let url = entry["url"].as_str().ok_or_else(|| anyhow!("a works file without a url"))?;
+            if url.starts_with("http://") || url.starts_with("https://") {
+                return Ok(url.to_string());
+            }
             let path = url.strip_prefix("s3://").unwrap_or(url);
             let (bucket, key) = path.split_once('/').ok_or_else(|| anyhow!("a works file outside a bucket: {url}"))?;
             Ok(format!("https://{bucket}.s3.amazonaws.com/{key}"))

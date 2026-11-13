@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Date32Type;
 use arrow_array::{Array, ArrayRef, BooleanArray, ListArray, RecordBatch, StructArray};
@@ -133,13 +133,16 @@ pub fn batch_works(batch: &RecordBatch, min_cited: i64) -> Result<Vec<Work>> {
     let range = |list: &ListArray, i: usize| if list.is_valid(i) { list.value_offsets()[i] as usize..list.value_offsets()[i + 1] as usize } else { 0..0 };
     let mut works = Vec::with_capacity(wanted.len());
     for i in wanted {
-        let inverted = match inverted.get(i) {
-            Some(json) if !json.is_empty() && json != "null" => match serde_json::from_str::<Value>(json)? {
-                Value::Object(index) => Some(inverted_of(&index)?),
-                Value::Null => None,
-                other => bail!("{}: an inverted index of type {}", owned(&id, i), bulk_core::py::type_name(&other)),
+        let (inverted, bad_index) = match inverted.get(i) {
+            Some(json) if !json.is_empty() && json != "null" => match serde_json::from_str::<Value>(json) {
+                Ok(Value::Object(index)) => match inverted_of(&index) {
+                    Ok(inverted) => (Some(inverted), false),
+                    Err(_) => (None, true),
+                },
+                Ok(Value::Null) => (None, false),
+                _ => (None, true),
             },
-            _ => None,
+            _ => (None, false),
         };
         let mut pmid = String::new();
         let mut pmcid = String::new();
@@ -173,6 +176,7 @@ pub fn batch_works(batch: &RecordBatch, min_cited: i64) -> Result<Vec<Work>> {
             retracted: retracted.is_valid(i) && retracted.value(i),
             paratext: paratext.is_valid(i) && paratext.value(i),
             inverted,
+            bad_index,
             pmid,
             pmcid,
             authors,

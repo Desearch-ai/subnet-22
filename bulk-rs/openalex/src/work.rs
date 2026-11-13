@@ -28,7 +28,7 @@ static BOILER: LazyLock<Regex> = LazyLock::new(|| {
 });
 static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</?(jats:|p>|sup|sub|italic|bold|sec|title)|&lt;|&gt;|&amp;").expect("MARKUP"));
 static LABEL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:Abstract|ABSTRACT|Summary|SUMMARY)(?:\s+and\s+(?:Summary|Abstract))?(?:\s*[:.\-–—]\s*|\s+)?").expect("LABEL"));
+    LazyLock::new(|| Regex::new(r"^(?:(?:Abstract|Summary)(?:\s+and\s+(?:Summary|Abstract))?|(?:ABSTRACT|SUMMARY)\b)(?:\s*[:.\-–—]\s*|\s+)?").expect("LABEL"));
 static COPYRIGHT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)©|\(c\)\s*(?:19|20)\d\d|\bcopyright\b").expect("COPYRIGHT"));
 static CHROME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
@@ -57,6 +57,8 @@ pub struct Work {
     pub paratext: bool,
     /// Each word with its positions, in the index's order; None when the work has no abstract.
     pub inverted: Option<Vec<(String, Vec<i64>)>>,
+    /// An inverted index that is not an object of words to integer positions.
+    pub bad_index: bool,
     pub pmid: String,
     pub pmcid: String,
     /// Each author's name with their institutions.
@@ -98,12 +100,17 @@ pub fn inverted_of(index: &Map<String, Value>) -> Result<Vec<(String, Vec<i64>)>
 impl Work {
     /// A work as the OpenAlex API returns it.
     pub fn from_json(w: &Value) -> Result<Work> {
-        let inverted = match w.get("abstract_inverted_index") {
-            Some(Value::Object(index)) => Some(inverted_of(index)?),
-            Some(Value::String(json)) => {
-                Some(inverted_of(serde_json::from_str::<Value>(json)?.as_object().ok_or_else(|| anyhow!("an inverted index that is not an object"))?)?)
-            }
-            _ => None,
+        let index = match w.get("abstract_inverted_index") {
+            Some(Value::String(json)) => Some(serde_json::from_str::<Value>(json).unwrap_or(Value::Bool(false))),
+            other => other.cloned(),
+        };
+        let (inverted, bad_index) = match index {
+            None | Some(Value::Null) => (None, false),
+            Some(Value::Object(index)) => match inverted_of(&index) {
+                Ok(inverted) => (Some(inverted), false),
+                Err(_) => (None, true),
+            },
+            Some(_) => (None, true),
         };
         let list = |key: &str| w.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
         let authors = list("authorships")
@@ -127,6 +134,7 @@ impl Work {
             retracted: w.get("is_retracted").and_then(Value::as_bool).unwrap_or(false),
             paratext: w.get("is_paratext").and_then(Value::as_bool).unwrap_or(false),
             inverted,
+            bad_index,
             pmid: text(at(w, &["ids", "pmid"])),
             pmcid: text(at(w, &["ids", "pmcid"])),
             authors,
@@ -139,6 +147,21 @@ impl Work {
             first_page: text(at(w, &["biblio", "first_page"])),
             last_page: text(at(w, &["biblio", "last_page"])),
         })
+    }
+
+    /// The page's URL: the DOI at doi.org, with the characters a URL path cannot hold percent-encoded.
+    pub fn url(&self) -> String {
+        let mut url = String::from(DOI_URL);
+        for c in self.bare_doi().chars() {
+            if c.is_ascii_graphic() && !"%#?\"<>\\^`{|}".contains(c) {
+                url.push(c);
+            } else {
+                for byte in c.to_string().bytes() {
+                    url.push_str(&format!("%{byte:02X}"));
+                }
+            }
+        }
+        url
     }
 
     /// The DOI without its `https://doi.org/` prefix.
@@ -313,7 +336,7 @@ pub fn source_line(work: &Work) -> String {
 /// The work's page: title, authors with their institutions, where it was published, its citation count and the
 /// cleaned abstract.
 pub fn page(work: &Work, abstract_: &str, as_of_date: &str) -> (String, Page) {
-    let url = format!("{DOI_URL}{}", work.bare_doi());
+    let url = work.url();
     let names: Vec<String> = work.authors.iter().map(|(name, _)| name.clone()).collect();
     let credited: Vec<String> = work
         .authors

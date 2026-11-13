@@ -15,7 +15,7 @@ use bulk_core::ranged::RangeClient;
 use bulk_core::rows::utc_format;
 use bulk_core::{upload_row, Batches, Counts, Row, RunArgs};
 use bulk_pmc::bounded_map;
-use bulk_pmc::order::openalex_files;
+use bulk_pmc::order::{files_listed, OPENALEX_WORKS};
 
 pub mod snapshot;
 pub mod work;
@@ -32,6 +32,9 @@ pub struct Args {
     /// Works as the OpenAlex API returns them, one JSON object per line, instead of the snapshot.
     #[arg(long)]
     pub works: Option<PathBuf>,
+    /// The works snapshot's manifest.
+    #[arg(long, default_value = OPENALEX_WORKS)]
+    pub manifest: String,
     /// Start at this file of the snapshot's manifest, counting from 0.
     #[arg(long = "first-file", default_value_t = 0)]
     pub first_file: usize,
@@ -121,6 +124,9 @@ pub fn outcome(work: &Work, held: &Held, as_of_us: i64) -> Outcome {
     if work.bare_doi().is_empty() {
         return Outcome::Out("no_doi");
     }
+    if work.bad_index {
+        return Outcome::Out("bad_index");
+    }
     if work.arxiv() {
         return Outcome::Out("arxiv");
     }
@@ -160,6 +166,8 @@ struct Chunks<'a> {
     batches: Option<Batches>,
     counts: Counts,
     pages: u64,
+    /// The open folder is full: it closes before the next page, so the counts of works read after it go in it.
+    full: bool,
     total: u64,
     dois: HashSet<u64>,
     as_of_us: i64,
@@ -203,6 +211,10 @@ impl Chunks<'_> {
                 Outcome::Out(why) => self.counts.add(why, 1),
                 Outcome::Page { doi, .. } if !self.dois.insert(doi) => self.counts.add("duplicate_doi", 1),
                 Outcome::Page { row, .. } => {
+                    if self.full {
+                        self.close()?;
+                        self.full = false;
+                    }
                     self.batches()?.add(*row)?;
                     self.counts.add("pages", 1);
                     self.pages += 1;
@@ -216,12 +228,9 @@ impl Chunks<'_> {
         Ok(true)
     }
 
-    /// Ends the file just added: closes the folder when it is full.
-    fn file_done(&mut self) -> Result<()> {
-        if self.every > 0 && self.pages >= self.every {
-            self.close()?;
-        }
-        Ok(())
+    /// Ends the file just added: the folder is full once it holds `--chunk-pages` pages.
+    fn file_done(&mut self) {
+        self.full = self.every > 0 && self.pages >= self.every;
     }
 }
 
@@ -239,6 +248,7 @@ pub fn main(args: Args) -> Result<()> {
         batches: None,
         counts: Counts::default(),
         pages: 0,
+        full: false,
         total: 0,
         dois: HashSet::new(),
         as_of_us,
@@ -269,7 +279,8 @@ pub fn main(args: Args) -> Result<()> {
         return chunks.close();
     }
     let client = Client::new(USER_AGENT)?;
-    let mut urls = openalex_files(&client)?.split_off(args.first_file);
+    let mut urls = files_listed(&client, &args.manifest)?;
+    urls.drain(..args.first_file.min(urls.len()));
     if args.files > 0 {
         urls.truncate(args.files);
     }
@@ -287,7 +298,7 @@ pub fn main(args: Args) -> Result<()> {
         if !going {
             break;
         }
-        chunks.file_done()?;
+        chunks.file_done();
     }
     if chunks.batches.is_some() || chunks.number == 1 {
         chunks.close()?;

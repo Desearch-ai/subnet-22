@@ -111,6 +111,7 @@ fn a_run_keeps_the_first_work_of_each_doi() {
     let args = Args {
         run: RunArgs { out: out.clone(), as_of: "2025-10-14T00:00:00Z".into(), run: "fixture".into(), limit: 0 },
         works: Some(fixtures().join("works.jsonl")),
+        manifest: String::new(),
         first_file: 0,
         files: 0,
         held: Some(fixtures().join("held.tsv")),
@@ -134,8 +135,70 @@ fn abstracts_lose_their_label_and_copyright_line() {
     assert_eq!(clean_abstract(&format!("{body} Copyright © 2004 Society of Chemical Industry")), body);
     let late = format!("{body} {}", "y".repeat(250));
     assert_eq!(clean_abstract(&format!("{late} ©1999")), late, "a copyright mark under the cap still goes");
+    assert_eq!(clean_abstract("ABSTRACTS of the 12th Meeting of the Society."), "ABSTRACTS of the 12th Meeting of the Society.");
+    assert_eq!(clean_abstract("ABSTRACT: The meeting was held."), "The meeting was held.");
     let early = format!("© the authors. {body}");
     assert_eq!(clean_abstract(&early), early, "a mark near the start stays");
+}
+
+#[test]
+fn a_full_chunk_takes_the_counts_of_the_files_after_it_until_the_next_page() {
+    let file = Arc::new(std::fs::read(fixtures().join("part_0000.parquet")).unwrap());
+    let served = file.clone();
+    let base = Arc::new(std::sync::Mutex::new(String::new()));
+    let listed = base.clone();
+    let server = serve(move |request| match request.path.as_str() {
+        "/manifest.json" => {
+            let base = listed.lock().unwrap().clone();
+            Reply::ok(format!(r#"{{"files": [{{"url": "{base}/a.parquet"}}, {{"url": "{base}/b.parquet"}}, {{"url": "{base}/c.parquet"}}]}}"#))
+        }
+        "/a.parquet" | "/b.parquet" | "/c.parquet" => Reply::ranged(&served, request.range.as_deref()),
+        _ => Reply::status(404),
+    });
+    *base.lock().unwrap() = server.base.clone();
+    let manifest = format!("{}/manifest.json", server.base);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("run");
+    let run = |first_file: usize| Args {
+        run: RunArgs { out: out.clone(), as_of: "2025-10-14T00:00:00Z".into(), run: "fixture".into(), limit: 0 },
+        works: None,
+        manifest: manifest.clone(),
+        first_file,
+        files: 0,
+        held: Some(fixtures().join("held.tsv")),
+        min_cited: 20,
+        chunk_pages: 6,
+        workers: 2,
+        flags_out: None,
+    };
+    bulk_openalex::main(run(0)).unwrap();
+    let counts = |name: &str| -> Value {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(dir.path().join(name).join("manifest.json")).unwrap()).unwrap()["counts"].clone()
+    };
+    let first = counts("run-01");
+    assert_eq!((first["pages"].as_u64(), first["duplicate_doi"].as_u64(), first["no_doi"].as_u64()), (Some(6), Some(15), Some(3)));
+    assert!(!dir.path().join("run-02").exists(), "the later files hold no new page, so no second folder");
+    std::fs::remove_dir_all(dir.path().join("run-01")).unwrap();
+    bulk_openalex::main(run(7)).unwrap();
+    assert_eq!(counts("run-01")["pages"].as_u64(), None, "a first file past the manifest's end reads nothing");
+}
+
+#[test]
+fn a_doi_is_percent_encoded_where_a_url_path_cannot_hold_it() {
+    let work = Work { doi: "https://doi.org/10.1002/(sici)1097-4636(199601)30:1<1::aid-jbm1>3.0.co;2-#".into(), ..Work::default() };
+    assert_eq!(work.url(), "https://doi.org/10.1002/(sici)1097-4636(199601)30:1%3C1::aid-jbm1%3E3.0.co;2-%23");
+    let odd = Work { doi: "https://doi.org/10.1/a b?c%d é".into(), ..Work::default() };
+    assert_eq!(odd.url(), "https://doi.org/10.1/a%20b%3Fc%25d%20%C3%A9");
+}
+
+#[test]
+fn a_broken_inverted_index_leaves_its_work_out_instead_of_stopping_the_run() {
+    let held = Held::default();
+    for index in [serde_json::json!("{not json"), serde_json::json!([1, 2]), serde_json::json!({"word": ["x"]})] {
+        let work = Work::from_json(&serde_json::json!({"doi": "https://doi.org/10.1/x", "title": "T", "abstract_inverted_index": index})).unwrap();
+        assert!(work.bad_index);
+        assert!(matches!(outcome(&work, &held, AS_OF), Outcome::Out("bad_index")));
+    }
 }
 
 #[test]
