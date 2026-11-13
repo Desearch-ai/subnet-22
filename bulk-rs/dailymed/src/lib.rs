@@ -127,11 +127,16 @@ fn products(doc: &roxmltree::Document) -> Vec<String> {
 }
 
 fn yyyymmdd(value: &str) -> String {
-    if value.len() >= 8 && value[..8].chars().all(|c| c.is_ascii_digit()) {
-        format!("{}-{}-{}", &value[..4], &value[4..6], &value[6..8])
-    } else {
-        String::new()
+    match value.get(..8) {
+        Some(day) if day.chars().all(|c| c.is_ascii_digit()) => format!("{}-{}-{}", &day[..4], &day[4..6], &day[6..8]),
+        _ => String::new(),
     }
+}
+
+/// The day a daily update zip is for, `dm_spl_daily_update_11122026.zip` as `20261112`.
+pub fn update_day(path: &std::path::Path) -> Option<String> {
+    let stem = path.file_name()?.to_str()?.strip_prefix("dm_spl_daily_update_")?.strip_suffix(".zip")?;
+    (stem.len() == 8 && stem.chars().all(|c| c.is_ascii_digit())).then(|| format!("{}{}{}", &stem[4..], &stem[..2], &stem[2..4]))
 }
 
 /// A label's page, or None when it is not a human prescription or OTC label.
@@ -223,7 +228,10 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
 pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> {
     let mut counts = Counts::default();
     let mut seen = std::collections::HashSet::new();
-    for path in &args.zips {
+    // Newest update first, so each set's latest label is the one kept; release parts keep their given order after them.
+    let mut zips = args.zips.clone();
+    zips.sort_by_key(|z| std::cmp::Reverse(update_day(z)));
+    for path in &zips {
         let mut outer = zip::ZipArchive::new(std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?)?;
         let mut names: Vec<String> = outer.file_names().filter(|n| n.ends_with(".zip")).map(String::from).collect();
         // Entry names start with the version's date, so newest first keeps each set's latest label.
@@ -312,5 +320,8 @@ mod tests {
         assert!(page_of(&xml, None).unwrap().is_none());
         assert_eq!(listed_set_id("prescription/20060131_ABD6ECF0-DC8E-41DE-89F2-1E36ED9D6535.zip"), Some("ABD6ECF0-DC8E-41DE-89F2-1E36ED9D6535"));
         assert_eq!(listed_set_id("prescription/20060131_short.zip"), None);
+        assert_eq!(update_day(std::path::Path::new("/w/dm_spl_daily_update_11122026.zip")).as_deref(), Some("20261112"));
+        assert_eq!(update_day(std::path::Path::new("/w/dm_spl_release_human_rx_part1.zip")), None);
+        assert_eq!(yyyymmdd("2006é"), "");
     }
 }

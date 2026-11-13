@@ -68,6 +68,7 @@ pub struct FetchArgs {
 /// The days' index through the API, then each day's issue from govinfo.
 pub fn fetch_main(args: FetchArgs) -> Result<()> {
     index_main(IndexArgs { out: args.out.join("index"), from: args.from, to: args.to, per_second: args.per_second })?;
+    let listed: HashSet<String> = read_index(&args.out.join("index"))?.into_values().map(|e| e.publication_date).collect();
     let client = bulk_core::fetch::client()?;
     let mut day = args.from;
     let mut issues = 0;
@@ -76,6 +77,8 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
             let url = format!("https://www.govinfo.gov/bulkdata/FR/{}/{:02}/FR-{day}.xml", day.year(), day.month());
             if bulk_core::fetch::save(&client, &url, &args.out.join(format!("FR-{day}.xml")))? {
                 issues += 1;
+            } else if listed.contains(&day.to_string()) {
+                bail!("the index lists documents of {day}, but govinfo has no issue for it yet");
             }
             std::thread::sleep(Duration::from_secs(1));
         }

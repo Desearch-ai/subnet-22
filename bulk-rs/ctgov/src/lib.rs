@@ -16,7 +16,12 @@ const CONTENT_TYPE: &str = "application/json";
 /// Locations named on a page at most; the rest are counted.
 const MOST_LOCATIONS: usize = 40;
 static EMAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+").expect("a valid pattern"));
-static PHONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\+\d{1,3}[ .-]?)?\(?\b\d{3}\)?[ .-]\d{3}[ .-]\d{4}\b").expect("a valid pattern"));
+static PHONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\+\d{1,3}[ .-]?)?\(?\b\d{3}\)?[ .-]?\d{3}[ .-]\d{4}\b").expect("a valid pattern"));
+/// A number after `+` or `00`, with at least eight digits: an international phone number.
+static INTERNATIONAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:\+|\b00)\d[\d ().-]{6,}\d").expect("a valid pattern"));
+/// A number of at least seven digits right after a word that names a phone.
+static NAMED_PHONE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(tel(?:ephone)?|phone|call|fax|mobile|cell|ph)\b\.?\s*(?:no\.?|number)?\s*[:#]?\s*\(?\+?\d[\d ().-]{5,}\d").expect("a valid pattern"));
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct Args {
@@ -41,6 +46,8 @@ pub struct Args {
 /// Free text with any email address or phone number taken out, as the registry's terms ask.
 pub fn without_contacts(text: &str) -> String {
     let text = EMAIL.replace_all(text, "[email removed]");
+    let text = NAMED_PHONE.replace_all(&text, |c: &regex::Captures| format!("{} [phone removed]", &c[1]));
+    let text = INTERNATIONAL.replace_all(&text, |c: &regex::Captures| if c[0].chars().filter(char::is_ascii_digit).count() >= 8 { "[phone removed]".to_string() } else { c[0].to_string() });
     PHONE.replace_all(&text, "[phone removed]").into_owned()
 }
 
@@ -333,5 +340,8 @@ mod tests {
     #[test]
     fn contacts_out_dates_and_ids_kept() {
         assert_eq!(without_contacts("call (555) 123-4567 on 2013-05-01, NCT02068066"), "call [phone removed] on 2013-05-01, NCT02068066");
+        assert_eq!(without_contacts("Contact +44 20 7946 0958 or +33 (0)1 42 16 00 00."), "Contact [phone removed] or [phone removed].");
+        assert_eq!(without_contacts("Tel: 0041 61 265 25 25, phone 5551234567, (555)123-4567"), "Tel [phone removed], phone [phone removed], [phone removed]");
+        assert_eq!(without_contacts("Doses of 100 200 300 mg in 2015 2016; 25 participants"), "Doses of 100 200 300 mg in 2015 2016; 25 participants");
     }
 }

@@ -104,16 +104,30 @@ fn sparql(client: &reqwest::blocking::Client, query: &str) -> Result<Vec<Value>>
     unreachable!("the last attempt returns")
 }
 
+/// How many works a listing's query matches, so a cut-off listing can be told from a short year.
+fn count(client: &reqwest::blocking::Client, select: &str, filter: &str) -> Result<usize> {
+    let wheres = select.split_once("WHERE").map(|(_, w)| w).context("a listing query without WHERE")?;
+    let query = format!("{PREFIX}SELECT (COUNT(DISTINCT ?celex) AS ?n) WHERE{wheres}{filter}");
+    let rows = sparql(client, &query)?;
+    rows.first().map(|r| binding(r, "n")).and_then(|n| n.parse().ok()).context("a count query without a count")
+}
+
 /// Every English act in force and every English CJEU judgment, once each by CELEX, in CELEX order.
 pub fn list(client: &reqwest::blocking::Client) -> Result<Vec<Work>> {
     let mut works = Vec::new();
     let mut seen = HashSet::new();
     for (kind, sector, select) in [(ACT, '3', ACTS), (JUDGMENT, '6', JUDGMENTS)] {
         for year in FIRST_YEAR..=LAST_YEAR {
-            let query = format!("{PREFIX}{select}FILTER(STRSTARTS(STR(?celex), \"{sector}{year}\")) {ENGLISH} }} LIMIT {PAGE_SIZE}");
+            let filter = format!("FILTER(STRSTARTS(STR(?celex), \"{sector}{year}\")) {ENGLISH} }}");
+            let query = format!("{PREFIX}{select}{filter} LIMIT {PAGE_SIZE}");
             let rows = sparql(client, &query)?;
             if rows.len() >= PAGE_SIZE {
                 bail!("CELEX {sector}{year} lists {} rows, the most one query returns", rows.len());
+            }
+            let counted = count(client, select, &filter)?;
+            let listed: HashSet<String> = rows.iter().map(|r| binding(r, "celex")).filter(|c| !c.is_empty()).collect();
+            if listed.len() < counted {
+                bail!("CELEX {sector}{year}: the listing came back with {} of {counted} works", listed.len());
             }
             for row in &rows {
                 let celex = binding(row, "celex");
@@ -151,7 +165,15 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
         println!("{}", serde_json::json!({"listed": works.len()}));
     }
     let works = read_works(&args.out)?;
-    let missing: HashSet<String> = std::fs::read_to_string(args.out.join(MISSING)).unwrap_or_default().lines().map(String::from).collect();
+    let week_ago = (std::time::SystemTime::now() - Duration::from_secs(7 * 86_400)).duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let missing: HashSet<String> = std::fs::read_to_string(args.out.join(MISSING))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (celex, at) = l.split_once('\t').unwrap_or((l, "0"));
+            (at.parse::<u64>().unwrap_or(0) > week_ago).then(|| celex.to_string())
+        })
+        .collect();
     let mut missing_file = OpenOptions::new().create(true).append(true).open(args.out.join(MISSING))?;
     let gap = Duration::from_secs_f64(1.0 / args.per_second.max(0.01));
     let (mut fetched, mut absent, mut last) = (0usize, 0usize, Instant::now() - gap);
@@ -170,7 +192,7 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
                 fetched += 1;
             }
             None => {
-                writeln!(missing_file, "{}", w.celex)?;
+                writeln!(missing_file, "{}\t{}", w.celex, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?;
                 absent += 1;
             }
         }

@@ -231,7 +231,7 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
     std::fs::create_dir_all(&args.out)?;
     let client = bulk_core::fetch::client()?;
     let page = bulk_core::fetch::text(&client, &format!("{HOST}/download.html"))?;
-    let pattern = regex::Regex::new(r#"href="([^"]*xml_uscAll@(\d+-\d+)\.zip)""#).expect("a valid pattern");
+    let pattern = regex::Regex::new(r#"href="([^"]*xml_uscAll@([0-9A-Za-z-]+)\.zip)""#).expect("a valid pattern");
     let found = pattern.captures(&page).context("no all-titles zip on the download page")?;
     let href = &found[1];
     let url = if href.starts_with("http") { href.to_string() } else { format!("{HOST}/{}", href.trim_start_matches("./").trim_start_matches('/')) };

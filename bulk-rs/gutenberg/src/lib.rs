@@ -10,7 +10,6 @@ use bulk_core::{typed_page, upload_row, Batches, Counts, Line, Page, PaperMeta, 
 use regex::Regex;
 
 pub const SOURCE: &str = "gutenberg";
-pub const SITE: &str = "Project Gutenberg";
 pub const BOOK: &str = "article";
 const CONTENT_TYPE: &str = "text/plain";
 /// The opening a page keeps, about 32 passages of the planner's size, so a book never floods the passage lane.
@@ -133,7 +132,8 @@ pub fn page_of(book: &Book, paragraphs: Vec<String>, cut: bool) -> (String, Page
         lines.push(Line::new("The opening of the book; the whole text is at the source."));
     }
     lines.extend(paragraphs.into_iter().map(Line::new));
-    let meta = PaperMeta { lang: "en".into(), url: url.clone(), published: book.issued.clone(), author: book.authors.clone(), site_name: SITE.into(), ..PaperMeta::default() };
+    // The licence allows naming Project Gutenberg only as an acknowledgement with a link, so the site name stays empty.
+    let meta = PaperMeta { lang: "en".into(), url: url.clone(), published: book.issued.clone(), author: book.authors.clone(), ..PaperMeta::default() };
     (url, typed_page(BOOK, &book.title, lines, meta))
 }
 
@@ -233,6 +233,6 @@ mod tests {
         let lines: Vec<&str> = page.text.lines().collect();
         assert_eq!(lines[1], "Source: Project Gutenberg ebook #1342, https://www.gutenberg.org/ebooks/1342 (public domain in the USA).");
         assert!(lines.contains(&"The opening of the book; the whole text is at the source."));
-        assert_eq!((page.author.as_str(), page.published.as_str()), ("Austen, Jane, 1775-1817", "1998-06-01"));
+        assert_eq!((page.author.as_str(), page.published.as_str(), page.site_name.as_str()), ("Austen, Jane, 1775-1817", "1998-06-01", ""));
     }
 }

@@ -198,13 +198,16 @@ pub fn fetch_main(args: FetchArgs) -> Result<()> {
             continue;
         }
         let number = t.get("number").map(|n| n.to_string()).unwrap_or_default();
-        let date = t.get("up_to_date_as_of").and_then(Value::as_str).unwrap_or("");
+        let Some(date) = t.get("up_to_date_as_of").and_then(Value::as_str) else {
+            anyhow::bail!("title {number} has no up_to_date_as_of; a title left out would hide all its sections");
+        };
         let xml = format!("https://www.govinfo.gov/bulkdata/ECFR/title-{number}/ECFR-title{number}.xml");
         let structure = format!("https://www.ecfr.gov/api/versioner/v1/structure/{date}/title-{number}.json");
         for (url, name) in [(xml, format!("ECFR-title{number}.xml")), (structure, format!("structure-{number}.json"))] {
-            if bulk_core::fetch::save(&client, &url, &args.out.join(name))? {
-                saved += 1;
+            if !bulk_core::fetch::save(&client, &url, &args.out.join(name))? {
+                anyhow::bail!("{url} is not there; a title left out would hide all its sections");
             }
+            saved += 1;
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
@@ -223,9 +226,11 @@ pub fn run(args: &Args, batches: &mut Batches, as_of_us: i64) -> Result<Counts> 
     for t in titles.get("titles").and_then(Value::as_array).into_iter().flatten() {
         let number = t.get("number").map(|n| n.to_string()).unwrap_or_default();
         let (xml, structure) = (args.folder.join(format!("ECFR-title{number}.xml")), args.folder.join(format!("structure-{number}.json")));
-        if t.get("reserved").and_then(Value::as_bool) == Some(true) || !xml.exists() || !structure.exists() {
-            counts.add("title_missing", 1);
+        if t.get("reserved").and_then(Value::as_bool) == Some(true) {
             continue;
+        }
+        if !xml.exists() || !structure.exists() {
+            anyhow::bail!("title {number} is missing from {}; a title left out would hide all its sections", args.folder.display());
         }
         let name = t.get("name").and_then(Value::as_str).unwrap_or("");
         let as_of = t.get("up_to_date_as_of").and_then(Value::as_str).unwrap_or("");

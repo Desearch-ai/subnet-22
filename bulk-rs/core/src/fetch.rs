@@ -9,7 +9,8 @@ use anyhow::{bail, Context, Result};
 use crate::http::USER_AGENT;
 
 pub fn client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(3600)).build().context("building the HTTP client")
+    // Whole-file downloads run to several GB, so the limit is on the whole request, not a read.
+    reqwest::blocking::Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(6 * 3600)).build().context("building the HTTP client")
 }
 
 /// A page's text, tried again on server errors and broken connections.
