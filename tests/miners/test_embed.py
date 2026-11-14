@@ -48,6 +48,9 @@ class Embedder:
         self.texts += texts
         return np.array([np.eye(4)[i % 4] * (i + 1) for i in range(len(texts))])
 
+    def paused_since(self, started):
+        return 0.0
+
     async def aclose(self):
         pass
 

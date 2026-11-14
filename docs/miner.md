@@ -170,6 +170,8 @@ shorter input limit give different vectors, and those fail the check.
 The miner embeds its tasks one after another and claims another only when its measured pace still
 finishes every held one within 5 minutes.
 
+You can also opt in to the [capacity test](./capacity-test.md), which measures your capacity in shadow mode and pays nothing yet.
+
 **Run** from the repository root:
 
 ```bash

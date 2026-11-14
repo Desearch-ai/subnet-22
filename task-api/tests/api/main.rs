@@ -1,5 +1,6 @@
 //! The task API end to end over HTTP, as miners, validators and the bot use it.
 
+mod capacity;
 mod chain;
 mod checks;
 mod embed;

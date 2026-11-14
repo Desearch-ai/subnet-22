@@ -45,6 +45,11 @@ const LINK_SLACK_S: u64 = 60;
 const TASKS_PAGE: i64 = 50;
 const MAX_TASKS_PAGE: i64 = 100;
 const ENQUEUED_TTL_S: u64 = 86_400;
+/// A test's reveals are due by its block plus 35, and scorers read them just after; a later reveal counts for nobody.
+const CAPACITY_REVEAL_BLOCKS: i64 = 37;
+const CAPACITY_LINK_S: u64 = 300;
+const CAPACITY_REVEAL_TYPE: &str = "application/octet-stream";
+const CAPACITY_REVEAL_MAX_BYTES: u64 = 600_000;
 /// The sitemap protocol's limit; a longer URL is refused before it can reach a task.
 pub const MAX_URL_CHARS: usize = 2048;
 
@@ -706,6 +711,41 @@ async fn embed_room(state: &State) -> Answer {
 }
 
 /// A batch sent twice, after a timeout, is queued once.
+/// The link a miner puts its capacity test reveal through, then, once it is uploaded, opens the file to anyone. Only the file's
+/// place comes from here: the chain says what a reveal must prove, so this route can refuse a miner but never change a score.
+pub async fn capacity_reveal(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
+    let request = json_body(&body)?;
+    let Some(test_block) = request.get("test_block").and_then(Value::as_i64) else {
+        return Err(ApiError::status(422, "test_block must be a block number"));
+    };
+    let age = state.seeds.current_block().await? - test_block;
+    if !(0..=CAPACITY_REVEAL_BLOCKS).contains(&age) {
+        return Err(ApiError::status(422, format!("block {test_block} is not a test open for reveals, {age} blocks old")));
+    }
+    let key = format!("capacity/{test_block}/{}.reveal", who.hotkey);
+    if request.get("uploaded").and_then(Value::as_bool) != Some(true) {
+        let url = state.storage.presign("PUT", &key, CAPACITY_LINK_S, Some(CAPACITY_REVEAL_TYPE), Duration::from_secs_f64(now()));
+        return Ok(Json(json!({"url": url, "key": key, "content_type": CAPACITY_REVEAL_TYPE})));
+    }
+    let found = state.storage.head(&key).await.map_err(|e| storage_down(&format!("HEAD failed for {key}"), e))?;
+    let Some(found) = found.filter(|f| f.size > 0) else {
+        return Err(ApiError::status(422, "nothing was uploaded to the reveal's key"));
+    };
+    if found.size > CAPACITY_REVEAL_MAX_BYTES {
+        delete_quietly(&state.storage, &key).await;
+        return Err(ApiError::status(413, format!("the reveal is {} bytes, the limit is {CAPACITY_REVEAL_MAX_BYTES}", found.size)));
+    }
+    state.storage.make_public(&key).await.map_err(|e| storage_down(&format!("could not open {key} to readers"), e))?;
+    Ok(Json(json!({"key": key})))
+}
+
 pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
     let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
     if !who.is_admin {

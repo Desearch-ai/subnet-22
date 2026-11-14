@@ -11,6 +11,7 @@ import aiohttp
 from yarl import URL
 
 from desearch import env
+from desearch.capacity_chain import CapacityChain
 from desearch.embedding import (
     INPUT_SCHEMA,
     EmbeddingClient,
@@ -19,6 +20,7 @@ from desearch.embedding import (
     read_parquet,
 )
 from desearch.kinds import EMBED
+from neurons.miners.capacity import CapacityTester
 from neurons.miners.config import ENV_FILE, Settings
 from neurons.miners.miner import HEADROOM, TaskWorker, with_retries
 
@@ -30,6 +32,8 @@ DOWNLOAD_ATTEMPTS = 3
 UPLOAD_MARGIN_S = 20.0
 SERVER_WAIT_S = 10.0
 PACE_TASKS = 5
+# A capacity test holds real tasks up for about 48 s; a claim with less than this left keeps going instead.
+PAUSE_ROOM_S = 120.0
 
 
 class EmbedMiner(TaskWorker):
@@ -46,6 +50,7 @@ class EmbedMiner(TaskWorker):
         # One task at a time on the model server: sharing it only makes every task late.
         self.server = asyncio.Lock()
         self.ahead: dict[str, int] = {}
+        self.expiries: dict[str, float] = {}
         self.recent: deque[tuple[int, float]] = deque(maxlen=PACE_TASKS)
         self.window = 0.0
         self.task_texts = 0
@@ -55,6 +60,7 @@ class EmbedMiner(TaskWorker):
 
     def claimed(self, task: dict) -> None:
         self.ahead[task["task_id"]] = task.get("texts", 0)
+        self.expiries[task["task_id"]] = task["expires_at"]
         self.task_texts = max(self.task_texts, task.get("texts", 0))
         self.window = task["expires_at"] - time.time() - UPLOAD_MARGIN_S
 
@@ -67,6 +73,10 @@ class EmbedMiner(TaskWorker):
         if not pace:
             return False
         return (ahead + self.task_texts) / pace <= HEADROOM * self.window
+
+    def may_pause(self) -> bool:
+        """Whether every held claim has room for a capacity test to hold it up."""
+        return all(at - time.time() > PAUSE_ROOM_S for at in self.expiries.values())
 
     def pace(self) -> float | None:
         """Texts a second the model server embedded over the last few tasks."""
@@ -104,6 +114,7 @@ class EmbedMiner(TaskWorker):
             return
         finally:
             self.ahead.pop(task_id, None)
+            self.expiries.pop(task_id, None)
         log.info(
             "task %s: %d texts embedded in %.1fs",
             task_id,
@@ -120,7 +131,9 @@ class EmbedMiner(TaskWorker):
         async with self.server:
             started = time.monotonic()
             vectors = await self.embedder.embed([row["text"] for row in rows])
-            self.recent.append((len(rows), time.monotonic() - started))
+            # A capacity test holding this task up says nothing of the server's pace.
+            took = time.monotonic() - started - self.embedder.paused_since(started)
+            self.recent.append((len(rows), max(took, 1e-3)))
         self.ahead.pop(task["task_id"], None)
         return rows, encode_vectors(vectors)
 
@@ -182,7 +195,28 @@ async def serve(miner: EmbedMiner | None = None) -> None:
         miner.embedder.model.name,
         miner.settings.max_tasks,
     )
-    await miner.run()
+    if not miner.settings.capacity_test:
+        await miner.run()
+        return
+    await run_with_capacity_test(miner)
+
+
+async def run_with_capacity_test(miner: EmbedMiner) -> None:
+    """Real tasks and the capacity test side by side; the miner's work never waits on the test's chain connection."""
+    settings = miner.settings
+    chain = CapacityChain(
+        settings.capacity_chain, settings.capacity_netuid, settings.keypair()
+    )
+    tester = CapacityTester(
+        settings, miner.embedder, miner.api, chain, miner.stopping, miner.may_pause
+    )
+    following = asyncio.create_task(tester.run())
+    try:
+        await miner.run()
+    finally:
+        following.cancel()
+        await asyncio.gather(following, return_exceptions=True)
+        await tester.aclose()
 
 
 def main() -> None:
