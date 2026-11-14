@@ -51,7 +51,8 @@ leave the published set. Two failed checks among your last 10 take back your las
 you out of embed tasks for 48 hours.
 
 Every vector is checked for finite values and length 1 before it is published. One that fails is
-never published, and your next 10 uploads are all checked. An upload picked for a check that no
+never published, and your next 10 uploads are all checked. A second such upload within 24 hours halves
+your embed budget and is a strike. An upload picked for a check that no
 validator could check in time costs nothing and goes to another miner. Embedding keeps its budget and
 lockouts separate from crawling; see [Emission](./emission.md).
 

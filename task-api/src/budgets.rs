@@ -116,6 +116,13 @@ pub fn create(conn: &Connection) -> Result<()> {
             reason TEXT NOT NULL,
             PRIMARY KEY (hotkey, pool)
         );
+        CREATE TABLE IF NOT EXISTS malformed_reports (
+            hotkey  TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            at      REAL NOT NULL,
+            PRIMARY KEY (hotkey, task_id)
+        );
+        CREATE INDEX IF NOT EXISTS malformed_reports_hotkey ON malformed_reports (hotkey, at);
         CREATE TABLE IF NOT EXISTS lockout_history (
             hotkey TEXT NOT NULL,
             pool   TEXT NOT NULL,
@@ -201,6 +208,17 @@ pub fn wipe_credits(conn: &Connection, hotkey: &str, since: f64, pool: &str) -> 
 pub fn penalise(conn: &Connection, hotkey: &str, task_id: &str, cause: &str, pool: &str, now: f64) -> Result<MinerBudget> {
     let halved = get_or_create(conn, hotkey, pool)?.budget / 2;
     set_budget(conn, hotkey, pool, halved, cause, Some(task_id), now)
+}
+
+/// Notes a publisher's report of malformed vectors and says how many this hotkey had in the strike window; None when this upload was
+/// reported already, as the same report can arrive twice after a failure on either side.
+pub fn note_malformed(conn: &Connection, hotkey: &str, task_id: &str, now: f64) -> Result<Option<i64>> {
+    conn.execute("DELETE FROM malformed_reports WHERE at <= ?", [now - STRIKE_WINDOW_H * HOUR])?;
+    let added = conn.execute("INSERT OR IGNORE INTO malformed_reports (hotkey, task_id, at) VALUES (?, ?, ?)", params![hotkey, task_id, now])?;
+    if added == 0 {
+        return Ok(None);
+    }
+    Ok(Some(conn.query_row("SELECT COUNT(*) FROM malformed_reports WHERE hotkey = ?", [hotkey], |row| row.get(0))?))
 }
 
 /// The lockout's end if this strike, among `judged` recent verdicts, starts one.

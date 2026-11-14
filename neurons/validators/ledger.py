@@ -18,7 +18,6 @@ from desearch.credit import (
 )
 from desearch.kinds import CRAWL, EMBED
 
-
 # A failed crawl task takes its assigned URLs back, so failing costs more than not trying.
 NET = f"SUM(CASE WHEN kind = '{CRAWL}' AND verdict = 'fail' THEN -assigned ELSE credited END)"
 CRAWL_RETURNED = "MIN(ok + errors, assigned)"
@@ -34,8 +33,7 @@ ADDED_COLUMNS = (
 class Ledger:
     def __init__(self, path: Path | str):
         self.db = sqlite3.connect(str(path), check_same_thread=False)
-        self.db.executescript(
-            """
+        self.db.executescript("""
             CREATE TABLE IF NOT EXISTS verdicts (
                 task_id   TEXT PRIMARY KEY,
                 kind      TEXT NOT NULL,
@@ -73,8 +71,7 @@ class Ledger:
                 name  TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            """
-        )
+            """)
         for table, column, declared in ADDED_COLUMNS:
             have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
             if column not in have:
@@ -200,13 +197,19 @@ class Ledger:
                     assigned,
                 )
             )
-        uploads: dict[str, list[tuple[str, float, int]]] = defaultdict(list)
-        for miner, key, completed_at, returned in self.db.execute(
-            f"SELECT miner, key, completed_at, {returned_of} FROM uploads"
+        # A task goes to another miner only when its upload did not count, so a task's latest upload is the one paid.
+        logged = self.db.execute(
+            f"SELECT miner, key, task_id, completed_at, {returned_of} FROM uploads"
             " WHERE completed_at >= ? AND kind = ?",
             (since, kind),
-        ):
-            uploads[miner].append((key, completed_at, returned))
+        ).fetchall()
+        latest: dict[str, float] = {}
+        for _, _, task_id, completed_at, _ in logged:
+            latest[task_id] = max(latest.get(task_id, 0.0), completed_at)
+        uploads: dict[str, list[tuple[str, float, int]]] = defaultdict(list)
+        for miner, key, task_id, completed_at, returned in logged:
+            if completed_at == latest[task_id]:
+                uploads[miner].append((key, completed_at, returned))
         return {
             miner: paid(checks[miner], uploads[miner], since)
             for miner in set(checks) | set(uploads)
