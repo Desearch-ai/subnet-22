@@ -184,6 +184,18 @@ tokio::task_local! {
     static SPENT: Arc<Spent>;
 }
 
+/// `work` counted toward the current request's time, for work spawned off it.
+pub async fn within_request<T>(spent: Option<Arc<Spent>>, work: impl std::future::Future<Output = T>) -> T {
+    match spent {
+        Some(spent) => SPENT.scope(spent, work).await,
+        None => work.await,
+    }
+}
+
+pub fn current_request() -> Option<Arc<Spent>> {
+    SPENT.try_with(Arc::clone).ok()
+}
+
 fn note(fill: impl FnOnce(&Spent)) {
     let _ = SPENT.try_with(|spent| fill(spent));
 }

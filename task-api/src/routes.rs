@@ -75,9 +75,9 @@ impl Steps {
 /// Runs work a caller may stop waiting for, counted so a stopping copy can say what it cuts short.
 fn detach<T: Send + 'static>(state: &Arc<State>, work: impl Future<Output = T> + Send + 'static) -> tokio::task::JoinHandle<T> {
     state.detached.fetch_add(1, Ordering::SeqCst);
-    let counted = state.clone();
+    let (counted, spent) = (state.clone(), crate::http::current_request());
     tokio::spawn(async move {
-        let outcome = work.await;
+        let outcome = crate::http::within_request(spent, work).await;
         counted.detached.fetch_sub(1, Ordering::SeqCst);
         outcome
     })
