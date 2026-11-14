@@ -8,6 +8,9 @@ use crate::db::{json_of, real};
 use crate::proofs;
 use crate::py::canonical;
 
+/// How many ids one page of an outcome-only search scans.
+const OUTCOME_WINDOW: i64 = 200_000;
+
 pub fn create(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
@@ -149,6 +152,21 @@ pub fn events(
         clauses.push("id < ?");
         args.push(before);
     }
+    // No index covers outcome alone, so each page scans at most a window of ids and hands back where it stopped.
+    let floor = match (outcome.is_some_and(|o| !o.is_empty()), miner.is_some_and(|m| !m.is_empty()), task_id.is_some_and(|t| !t.is_empty())) {
+        (true, false, false) => {
+            let top = match before {
+                Some(before) => before,
+                None => conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM entries", [], |row| row.get::<_, i64>(0))?,
+            };
+            Some((top - OUTCOME_WINDOW).max(1))
+        }
+        _ => None,
+    };
+    if let Some(floor) = &floor {
+        clauses.push("id >= ?");
+        args.push(floor);
+    }
     args.push(&limit);
     let sql = format!(
         "SELECT id, round_id, hotkey, served_at, outcome, task_id, refusal, cause FROM entries WHERE {} ORDER BY id DESC LIMIT ?",
@@ -172,7 +190,10 @@ pub fn events(
         ))
     })?;
     let rows: Vec<(i64, Value)> = rows.collect::<rusqlite::Result<_>>()?;
-    let next = (rows.len() as i64 == limit).then(|| rows.last().map(|(id, _)| *id)).flatten();
+    let next = match floor {
+        Some(floor) if (rows.len() as i64) < limit => (floor > 1).then_some(floor),
+        _ => (rows.len() as i64 == limit).then(|| rows.last().map(|(id, _)| *id)).flatten(),
+    };
     Ok((rows.into_iter().map(|(_, event)| event).collect(), next))
 }
 
@@ -185,4 +206,42 @@ pub fn anchor(conn: &Connection, round_id: &str, now: f64) -> Result<String> {
 
 pub fn anchored_root(conn: &Connection, round_id: &str) -> Result<Option<String>> {
     Ok(conn.query_row("SELECT root FROM anchors WHERE round_id = ?", [round_id], |row| row.get(0)).optional()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_outcome_search_pages_through_windows_and_finds_old_entries() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        let total = OUTCOME_WINDOW * 2 + 10;
+        for id in 1..=total {
+            let outcome = if id == 5 { "refused" } else { "issued" };
+            tx.execute(
+                "INSERT INTO entries (id, round_id, hotkey, requested_at, served_at, outcome, receipt_sig) VALUES (?, 'r', 'h', 0, 0, ?, '')",
+                params![id, outcome],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let (mut found, mut before, mut pages) = (Vec::new(), None, 0);
+        loop {
+            let (events, next) = events(&conn, None, None, Some("refused"), before, 50).unwrap();
+            found.extend(events);
+            pages += 1;
+            match next {
+                Some(next) => before = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["id"], 5);
+        assert_eq!(pages, 3);
+        let (recent, next) = events(&conn, None, None, Some("issued"), None, 2).unwrap();
+        assert_eq!(recent.iter().map(|e| e["id"].as_i64().unwrap()).collect::<Vec<_>>(), [total, total - 1]);
+        assert_eq!(next, Some(total - 1));
+    }
 }
