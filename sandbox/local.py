@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REDIS_IMAGE = "redis:7-alpine"
-MINIO_IMAGE = "quay.io/minio/minio:latest"
+MINIO_IMAGE = "pgsty/minio:latest"
 API_IMAGE = "desearch-sandbox-task-api"
 API_DOCKERFILE = "task-api/Dockerfile"
 API_SOURCES = (
