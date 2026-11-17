@@ -31,6 +31,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const SERVERS: &str = "reference:servers";
 /// How long a server that failed is tried after the others.
 const BENCHED: Duration = Duration::from_secs(60);
+/// A reference computation that took this long in all is logged step by step.
+const SLOW: Duration = Duration::from_secs(3);
 
 /// Desearch's model servers, each behind an OpenAI-compatible `/v1/embeddings` with the same key, tried in order.
 pub struct Reference {
@@ -122,6 +124,7 @@ impl Reference {
     /// The texts not kept yet, read from the upload's input and embedded in one request.
     async fn compute(&self, state: &State, job: &Value, text_ids: &[String], kept: &[Option<String>]) -> Result<Vec<(String, String)>, Failure> {
         let missing: Vec<&String> = text_ids.iter().zip(kept).filter(|(_, kept)| kept.is_none()).map(|(id, _)| id).collect();
+        let started = Instant::now();
         let input_key = job["input_key"].as_str().ok_or_else(|| anyhow!("the upload has no input"))?;
         let input = match state.storage.get(input_key).await {
             Ok(body) => body,
@@ -131,19 +134,23 @@ impl Reference {
         if job["input_sha256"].as_str() != Some(hex(&Sha256::digest(&input)).as_str()) {
             return Err(anyhow!("its input does not match the hash it was issued with").into());
         }
+        let fetched = started.elapsed();
         let wanted: HashSet<String> = missing.iter().map(|id| id.to_string()).collect();
         let texts = tokio::task::spawn_blocking(move || input_texts(input, &wanted)).await.map_err(anyhow::Error::from)??;
         let mut inputs = Vec::with_capacity(missing.len());
         for id in &missing {
             inputs.push(texts.get(id.as_str()).ok_or_else(|| Failure::Unknown(id.to_string()))?.as_str());
         }
+        let parsed = started.elapsed();
         let _permit = self.calls.acquire().await.map_err(anyhow::Error::from)?;
+        let permitted = started.elapsed();
         let body = json!({"model": job["model"], "input": inputs, "encoding_format": "base64", "truncate_prompt_tokens": MAX_TOKENS});
         let mut failure = anyhow!("no model server is set");
         for server in self.servers(state).await {
             match self.embed(&server, &body, missing.len()).await {
                 Ok(vectors) => {
                     self.failed.lock().unwrap().remove(&server);
+                    note_slow(started.elapsed(), [fetched, parsed, permitted], missing.len(), &server);
                     return Ok(missing.into_iter().cloned().zip(vectors).collect());
                 }
                 Err(error) => {
@@ -154,6 +161,20 @@ impl Reference {
             }
         }
         Err(failure.into())
+    }
+}
+
+fn note_slow(took: Duration, [fetched, parsed, permitted]: [Duration; 3], texts: usize, server: &str) {
+    if took >= SLOW {
+        let ms = |d: Duration| d.as_millis();
+        eprintln!(
+            "slow reference: {} ms in all for {texts} texts: reading the input {} ms, finding the texts {} ms, waiting for a model call {} ms, the model server {server} {} ms",
+            ms(took),
+            ms(fetched),
+            ms(parsed - fetched),
+            ms(permitted - parsed),
+            ms(took - permitted),
+        );
     }
 }
 

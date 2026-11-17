@@ -57,6 +57,25 @@ async fn a_round_spread_over_time_is_released_in_its_order_as_each_task_comes_du
 }
 
 #[tokio::test]
+async fn a_release_takes_ranks_from_the_rank_hash_and_falls_back_to_the_payload_without_one() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("crawl", 60.0);
+    let order: Vec<String> = (0..3).map(|n| format!("rank-t{n}")).collect();
+    let payloads: Map<String, Value> = order.iter().map(|t| (t.clone(), json!({"url_count": 1, "urls": [format!("https://x.example/{t}")]}))).collect();
+    let now = desearch::time::now();
+    queue.fill(&h.redis, "rank", &order, &payloads, now, 30.0).await.unwrap();
+    let ranks = format!("{}:rank", queue.held);
+    let _: () = h.redis.clone().set("task:rank-t0", "not json").await.unwrap();
+    let _: () = h.redis.clone().hdel(&ranks, "rank-t2").await.unwrap();
+
+    assert_eq!(queue.release_due(&h.redis, now + 30.0, 100).await.unwrap(), 3);
+    let ready: Vec<String> = h.redis.clone().zrange(&queue.ready, 0, -1).await.unwrap();
+    assert_eq!(ready, order);
+    let left: i64 = h.redis.clone().hlen(&ranks).await.unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
 async fn concurrent_claims_cannot_exceed_the_budget() {
     let h = Harness::start().await;
     let (queue, _) = filled(&h.redis, "crawl", 10, "r1").await;

@@ -157,6 +157,10 @@ fn parsed(raw: Option<String>) -> Option<Value> {
     raw.and_then(|raw| serde_json::from_str(&raw).ok())
 }
 
+fn rank_key(held: &str) -> String {
+    format!("{held}:rank")
+}
+
 /// A JSON number Lua and Redis read the same way Python's `str(float)` writes it.
 fn number(x: f64) -> String {
     format!("{x}")
@@ -216,6 +220,7 @@ impl TaskQueue {
             pipe.set(format!("task:{task_id}"), Value::Object(payload).to_string()).ignore();
             if spread > 0.0 {
                 pipe.zadd(&self.held, task_id, now + spread * (position + 1) as f64 / order.len() as f64).ignore();
+                pipe.hset(rank_key(&self.held), task_id, rank).ignore();
             } else {
                 pipe.zadd(&self.ready, task_id, rank).ignore();
             }
@@ -232,7 +237,7 @@ impl TaskQueue {
 
     /// Moves held tasks whose time has come into the ready queue at their rank; how many.
     pub async fn release_due(&self, redis: &Redis, now: f64, limit: usize) -> Result<usize> {
-        Ok(RELEASE.key(&self.held).key(&self.ready).arg(number(now)).arg(limit).invoke_async(&mut redis.clone()).await?)
+        Ok(RELEASE.key(&self.held).key(&self.ready).key(rank_key(&self.held)).arg(number(now)).arg(limit).invoke_async(&mut redis.clone()).await?)
     }
 
     pub async fn in_flight(&self, redis: &Redis, hotkey: &str) -> Result<i64> {

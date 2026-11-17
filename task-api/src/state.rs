@@ -66,6 +66,7 @@ pub struct State {
     pub draining: AtomicBool,
     /// Completions and reference calls running on after their caller may have stopped waiting.
     pub detached: AtomicUsize,
+    pub gate: crate::gate::Gate,
 }
 
 pub async fn redis_from(url: &str) -> Result<Redis> {
@@ -163,6 +164,7 @@ impl State {
             draining: AtomicBool::new(false),
             detached: AtomicUsize::new(0),
             settings,
+            gate: crate::gate::Gate::default(),
         })
     }
 
@@ -240,6 +242,11 @@ impl State {
         Ok(self.record(vec![receipt]).await?.remove(0))
     }
 
+    pub fn poll_wait(&self, hotkey: &str) -> Option<f64> {
+        let limit = 1.max(crate::py::round(self.settings.poll_rate * POLL_WINDOW_S));
+        self.gate.take(&format!("poll:{hotkey}"), POLL_WINDOW_S, limit, now()).map(|wait| round_to(wait, 3))
+    }
+
     /// Seconds a hotkey polling past its rate waits, None while it is within it.
     pub async fn retry_after(&self, hotkey: &str) -> Result<Option<f64>> {
         let at = now();
@@ -264,33 +271,20 @@ impl State {
     }
 
     /// Log reads have a budget of their own, so a dashboard cannot use up the rest.
-    pub async fn read_wait(&self, ip: &str, logs: bool) -> Result<Option<i64>> {
-        let at = now();
+    pub fn read_wait(&self, ip: &str, logs: bool) -> Option<i64> {
         let (kind, limit) = if logs { ("logs", self.settings.log_reads_per_minute) } else { ("read", self.settings.reads_per_minute) };
-        let key = format!("rl:{kind}:{ip}:{}", (at / MINUTE).floor() as i64);
-        let mut redis = self.redis.clone();
-        let count: i64 = redis.incr(&key, 1).await?;
-        if count == 1 {
-            let _: bool = redis.expire(&key, 2 * MINUTE as i64).await?;
-        }
-        Ok((count > limit).then(|| MINUTE as i64 - (at % MINUTE) as i64))
+        self.gate.take(&format!("{kind}:{ip}"), MINUTE, limit, now()).map(|wait| wait.ceil() as i64)
     }
 
     /// Seconds an address that kept failing authentication waits before it may write again.
-    pub async fn write_wait(&self, ip: &str) -> Result<Option<i64>> {
+    pub fn write_wait(&self, ip: &str) -> Option<i64> {
         let at = now();
-        let failed: Option<i64> = self.redis.clone().get(format!("rl:denied:{ip}:{}", (at / MINUTE).floor() as i64)).await?;
-        Ok((failed.unwrap_or(0) >= self.settings.failed_writes_per_minute).then(|| MINUTE as i64 - (at % MINUTE) as i64))
+        let failed = self.gate.count(&format!("denied:{ip}"), MINUTE, at);
+        (failed >= self.settings.failed_writes_per_minute).then(|| MINUTE as i64 - (at % MINUTE) as i64)
     }
 
-    pub async fn write_denied(&self, ip: &str) -> Result<()> {
-        let key = format!("rl:denied:{ip}:{}", (now() / MINUTE).floor() as i64);
-        let mut redis = self.redis.clone();
-        let count: i64 = redis.incr(&key, 1).await?;
-        if count == 1 {
-            let _: bool = redis.expire(&key, 2 * MINUTE as i64).await?;
-        }
-        Ok(())
+    pub fn write_denied(&self, ip: &str) {
+        self.gate.take(&format!("denied:{ip}"), MINUTE, i64::MAX, now());
     }
 
     /// Sets `key` only when it is not set yet, expiring after `seconds`.

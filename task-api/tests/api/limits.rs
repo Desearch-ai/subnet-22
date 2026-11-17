@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use futures::stream;
+use redis::AsyncCommands;
 use serde_json::{json, Value};
 use task_api::lifecycle;
 use task_api::settings::{PagesStore, RegistryMode};
@@ -175,4 +176,26 @@ fn the_pages_bucket_can_live_on_its_own_endpoint_while_uploads_stay_on_r2() {
     let (storage, pages) = State::buckets(&settings).unwrap();
     assert!(signed(&storage).starts_with("https://r2.example/subnet-22/k?") && signed(&storage).contains("test%2F20231114%2Fauto%2F"));
     assert!(signed(&pages).starts_with("https://s3.example/desearch-pages/") && signed(&pages).contains("s3key%2F20231114%2Fus-east-va%2F"));
+}
+
+#[tokio::test]
+async fn head_requests_count_against_the_read_limit() {
+    let h = Harness::with(|s| s.reads_per_minute = 3).await;
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        statuses.push(h.http.head(format!("{}/v1/room", h.url)).send().await.unwrap().status().as_u16());
+    }
+    assert_eq!(statuses, [200, 200, 200, 429]);
+}
+
+#[tokio::test]
+async fn a_claim_over_its_poll_rate_is_refused_before_its_nonce_is_stored() {
+    let h = Harness::with(|s| s.poll_rate = 0.1).await;
+    h.enqueue(urls(6)).await;
+    assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
+    let refused = h.miner.claim().await;
+    assert_eq!(refused["refusal"]["code"], "RATE_LIMITED");
+    assert!(refused["refusal"]["inputs"]["retry_after"].as_f64().unwrap() > 0.0);
+    let nonces: Vec<String> = h.redis.clone().keys(format!("nonce:{}:*", h.miner.ss58())).await.unwrap();
+    assert_eq!(nonces.len(), 1);
 }

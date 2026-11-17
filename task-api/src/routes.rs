@@ -75,9 +75,9 @@ impl Steps {
 /// Runs work a caller may stop waiting for, counted so a stopping copy can say what it cuts short.
 fn detach<T: Send + 'static>(state: &Arc<State>, work: impl Future<Output = T> + Send + 'static) -> tokio::task::JoinHandle<T> {
     state.detached.fetch_add(1, Ordering::SeqCst);
-    let counted = state.clone();
+    let (counted, spent) = (state.clone(), crate::http::current_request());
     tokio::spawn(async move {
-        let outcome = work.await;
+        let outcome = crate::http::within_request(spent, work).await;
         counted.detached.fetch_sub(1, Ordering::SeqCst);
         outcome
     })
@@ -123,8 +123,14 @@ pub async fn claim(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Connect
     match claim_tasks(&state, &signed).await {
         Ok(answer) => answer.into_response(),
         Err(ApiError::Unavailable) => unavailable(CLAIM_PATH),
+        Err(ApiError::PollLimited(retry_after)) => rate_limited(&state, retry_after).into_response(),
         Err(error) => error.into_response(),
     }
+}
+
+fn rate_limited(state: &State, retry_after: f64) -> Json<Value> {
+    let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
+    Json(json!({"tasks": [], "refusal": refusal, "receipt": null}))
 }
 
 async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
@@ -142,8 +148,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     steps.mark("rate");
     if let Some(retry_after) = rated {
         // Not logged: signing and storing every excess poll would let a flooder grow the log.
-        let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
-        return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
+        return Ok(rate_limited(state, retry_after));
     }
     if kind == EMBED && !state.settings.embed_tasks {
         return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;

@@ -158,7 +158,13 @@ pub fn open_revealed(conn: &Connection) -> Result<Vec<String>> {
 
 /// The newest revealed round of each kind that is still open.
 pub fn latest_revealed(conn: &Connection) -> Result<HashMap<String, String>> {
-    let mut statement = conn.prepare("SELECT kind, round_id FROM rounds WHERE seed IS NOT NULL AND closed_at IS NULL ORDER BY opened_at")?;
+    // The two partial indexes together hold every revealed open round; a plain scan reads all rounds and holds the writer for seconds.
+    let mut statement = conn.prepare(
+        "SELECT kind, round_id, opened_at FROM rounds INDEXED BY rounds_unfilled WHERE seed IS NOT NULL AND filled_at IS NULL AND closed_at IS NULL
+         UNION ALL
+         SELECT kind, round_id, opened_at FROM rounds INDEXED BY rounds_open_filled WHERE seed IS NOT NULL AND filled_at IS NOT NULL AND closed_at IS NULL
+         ORDER BY opened_at",
+    )?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -290,6 +296,10 @@ mod tests {
         }
         assert_eq!(unfilled(&conn).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["r1"]);
         assert_eq!(open_revealed(&conn).unwrap(), ["r2"]);
+        assert_eq!(latest_revealed(&conn).unwrap(), HashMap::from([("crawl".to_string(), "r2".to_string())]));
+        mark_filled(&conn, "r1", &sealed_batches(&round("r1", 1, 1, 1.0, Some("s"))), 3.0).unwrap();
+        close(&conn, "r2", 4.0).unwrap();
+        assert_eq!(latest_revealed(&conn).unwrap(), HashMap::from([("crawl".to_string(), "r1".to_string())]));
     }
 
     #[test]

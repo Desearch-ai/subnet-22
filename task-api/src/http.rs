@@ -42,6 +42,7 @@ pub enum ApiError {
     },
     /// Redis is unreachable, restarting or not yet promoted: callers are told to come back.
     Unavailable,
+    PollLimited(f64),
     Internal(anyhow::Error),
 }
 
@@ -108,6 +109,7 @@ impl IntoResponse for ApiError {
                 }
             }
             ApiError::Unavailable => unavailable(""),
+            ApiError::PollLimited(wait) => with_retry_after(detail(StatusCode::TOO_MANY_REQUESTS, "too many requests".into()), &wait.ceil().to_string()),
             ApiError::Internal(error) => {
                 eprintln!("request failed: {error:#}");
                 detail(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".into())
@@ -184,6 +186,18 @@ tokio::task_local! {
     static SPENT: Arc<Spent>;
 }
 
+/// `work` counted toward the current request's time, for work spawned off it.
+pub async fn within_request<T>(spent: Option<Arc<Spent>>, work: impl std::future::Future<Output = T>) -> T {
+    match spent {
+        Some(spent) => SPENT.scope(spent, work).await,
+        None => work.await,
+    }
+}
+
+pub fn current_request() -> Option<Arc<Spent>> {
+    SPENT.try_with(Arc::clone).ok()
+}
+
 fn note(fill: impl FnOnce(&Spent)) {
     let _ = SPENT.try_with(|spent| fill(spent));
 }
@@ -215,17 +229,12 @@ async fn limit_requests(Shared(state): Shared<Arc<State>>, request: Request, nex
     let path = request.uri().path().to_string();
     let address = crate::auth::client_address(request.headers(), &peer(&request));
     let wait = match *request.method() {
-        Method::GET => state.read_wait(&address, logs::PATHS.iter().any(|p| path.starts_with(p))).await,
-        Method::POST => state.write_wait(&address).await,
-        _ => Ok(None),
+        Method::POST => state.write_wait(&address),
+        _ => state.read_wait(&address, logs::PATHS.iter().any(|p| path.starts_with(p))),
     };
     match wait {
-        Err(error) => match ApiError::from(error) {
-            ApiError::Unavailable => unavailable(&path),
-            other => other.into_response(),
-        },
-        Ok(Some(wait)) => with_retry_after(detail(StatusCode::TOO_MANY_REQUESTS, "too many requests".into()), &wait.to_string()),
-        Ok(None) => next.run(request).await,
+        Some(wait) => with_retry_after(detail(StatusCode::TOO_MANY_REQUESTS, "too many requests".into()), &wait.to_string()),
+        None => next.run(request).await,
     }
 }
 

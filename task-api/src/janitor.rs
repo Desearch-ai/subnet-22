@@ -233,7 +233,7 @@ async fn keep_warm(state: Arc<State>, mut stop: watch::Receiver<bool>) {
         match logs::warm(&state).await {
             Err(ApiError::Internal(error)) => eprintln!("could not make the log pages: {error:#}"),
             Err(ApiError::Status { status, detail, .. }) => eprintln!("could not make the log pages: {status} {detail}"),
-            Err(ApiError::Unavailable) | Ok(()) => {}
+            Err(ApiError::Unavailable | ApiError::PollLimited(_)) | Ok(()) => {}
         }
         tokio::select! {
             _ = tokio::time::sleep(WARM_EVERY) => {}

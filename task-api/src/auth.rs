@@ -45,7 +45,7 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
 pub async fn caller(state: &State, headers: &HeaderMap, method: &str, path: &str, body: &[u8], address: &str) -> Result<Caller, ApiError> {
     match authenticate(state, headers, method, path, body).await {
         Err(ApiError::Status { status, detail, retry_after }) => {
-            state.write_denied(address).await?;
+            state.write_denied(address);
             Err(ApiError::Status { status, detail, retry_after })
         }
         other => other,
@@ -74,6 +74,11 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
     }
     if !signature_verifies(hotkey, &signing_payload(method, path, body, timestamp, nonce), signature) {
         return Err(ApiError::status(401, "bad signature"));
+    }
+    if path == crate::http::CLAIM_PATH {
+        if let Some(wait) = state.poll_wait(hotkey) {
+            return Err(ApiError::PollLimited(wait));
+        }
     }
     // Claimed last so unauthenticated requests cannot fill the nonce cache.
     if !state.set_once(&format!("nonce:{hotkey}:{nonce}"), "1", NONCE_TTL_S).await? {
