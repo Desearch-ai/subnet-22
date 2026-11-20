@@ -646,6 +646,42 @@ async fn malformed_vectors_the_publisher_finds_get_the_miner_s_next_embed_upload
 }
 
 #[tokio::test]
+async fn a_second_malformed_report_in_a_day_costs_a_strike_and_half_the_budget() {
+    let h = embedding_unchecked().await;
+    established_in(&h, h.miner.ss58(), EMBED).await;
+    let hotkey = h.miner.ss58();
+    let budget = |h: &Harness| {
+        let hotkey = hotkey.clone();
+        let state = h.state.clone();
+        async move {
+            state
+                .db
+                .run(move |conn| {
+                    let strikes: i64 = conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [&hotkey], |row| row.get(0))?;
+                    Ok((budgets::get(conn, &hotkey, EMBED)?.budget, strikes))
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let report = |task: &str| json!({"task_id": task, "miner": h.miner.ss58(), "malformed": 1}).to_string();
+
+    let (start, _) = budget(&h).await;
+    let _: i64 = h.redis.clone().rpush(EMBED_MALFORMED, &report("published-1")).await.unwrap();
+    lifecycle::recheck_malformed(&h.state).await.unwrap();
+    assert_eq!(budget(&h).await, (start, 0), "one glitch costs nothing");
+
+    // The same report again, as after a failure on either side, is still one glitch.
+    let _: i64 = h.redis.clone().rpush(EMBED_MALFORMED, &report("published-1")).await.unwrap();
+    lifecycle::recheck_malformed(&h.state).await.unwrap();
+    assert_eq!(budget(&h).await, (start, 0), "a repeated report is not a second glitch");
+
+    let _: i64 = h.redis.clone().rpush(EMBED_MALFORMED, &report("published-2")).await.unwrap();
+    lifecycle::recheck_malformed(&h.state).await.unwrap();
+    assert_eq!(budget(&h).await, ((start / 2).max(1), 1), "a second is a strike");
+}
+
+#[tokio::test]
 async fn the_planner_s_room_leaves_out_embed_uploads_awaiting_a_verdict() {
     let h = Harness::with(|s| {
         s.embed_tasks = true;

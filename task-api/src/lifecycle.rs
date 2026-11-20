@@ -39,6 +39,7 @@ const REVEAL_AT_ONCE: i64 = 64;
 const SETTLE_AT_ONCE: usize = 16;
 const SLOW_ENQUEUE_S: f64 = 2.0;
 /// Malformed-vector reports read per pass, so a flood cannot hold the janitor.
+const VECTORS_MALFORMED: &str = "vectors_malformed";
 const MALFORMED_AT_ONCE: isize = 100;
 /// A check takes about a minute; an upload with less time left would be finalized before its votes land.
 pub const CHECKABLE_LEFT_S: f64 = 180.0;
@@ -638,7 +639,8 @@ async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> R
     ))
 }
 
-/// Embed uploads the publisher found malformed vectors in: their miners' next embed uploads are checked, with no strike or verdict.
+/// Embed uploads the publisher found malformed vectors in: their miners' next embed uploads are checked. An honest GPU can glitch once,
+/// so the first report in a day costs nothing; a second is a strike, or anyone could flood validators with checks for free.
 pub async fn recheck_malformed(state: &State) -> Result<usize> {
     let mut redis = state.redis.clone();
     let reported: Vec<String> = redis.lrange(queues::EMBED_MALFORMED, 0, MALFORMED_AT_ONCE - 1).await?;
@@ -657,11 +659,21 @@ pub async fn recheck_malformed(state: &State) -> Result<usize> {
         );
     }
     let rechecked = miners.len();
+    let at = now();
     state
         .db
         .run(move |conn| {
             for miner in &miners {
                 checks::start_recheck(conn, miner, EMBED)?;
+            }
+            for entry in &found {
+                let (miner, task_id) = (text(entry, "miner"), text(entry, "task_id"));
+                if miner.is_empty() || budgets::note_malformed(conn, miner, task_id, at)?.unwrap_or(0) < 2 {
+                    continue;
+                }
+                budgets::penalise(conn, miner, task_id, VECTORS_MALFORMED, EMBED, at)?;
+                let judged = validations::judged_since(conn, miner, at - STRIKE_WINDOW_H * HOUR, EMBED)?;
+                budgets::strike(conn, miner, VECTORS_MALFORMED, task_id, judged, EMBED, at)?;
             }
             Ok(())
         })
