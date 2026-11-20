@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 
 pub mod html;
 pub mod read;
+pub mod redirects;
 
 pub const SOURCE: &str = "wikipedia";
 pub const CONTENT_TYPE: &str = "text/html";

@@ -729,6 +729,7 @@ dependencies = [
  "desearch",
  "flate2",
  "rayon",
+ "serde",
  "serde_json",
  "tar",
  "tempfile",

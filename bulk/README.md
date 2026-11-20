@@ -51,6 +51,7 @@ bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
 bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
 bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
 bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
+bulk wikipedia-redirects --run runs/enwiki-1101 enwiki_namespace_0.tar.gz
 ```
 
 The shared extraction runs in Python: `bulk wikipedia`, `medlineplus`, `eurlex`, `subnet-sites`, `subnet-github`,
@@ -100,6 +101,8 @@ most-read articles first.
 
 Wikipedia articles are framed as the live page frames them and read by the same `extract()` a crawl uses, so the text
 matches a crawl of the live page. Hidden categories come from the category-namespace snapshot.
+`wikipedia-redirects` writes the run's `redirects.tsv`: each redirect title's URL with the URL of the run's page it
+leads to, for the router to find an article by an old or other title.
 
 Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), PMC asks users to credit NLM
 as the source, and an arXiv full text keeps its paper's CC licence (credit the authors, link the paper).

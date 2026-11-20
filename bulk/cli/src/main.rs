@@ -33,6 +33,8 @@ enum Command {
     Wikipedia(bulk_wikipedia::Args),
     /// Print the hidden categories of a category-namespace snapshot.
     HiddenCategories(bulk_wikipedia::HiddenArgs),
+    /// The redirect URLs that lead to a Wikipedia run's pages, from the snapshots it read.
+    WikipediaRedirects(bulk_wikipedia::redirects::RedirectsArgs),
     /// A page per Bittensor subnet from its chain identity.
     Subnets(bulk_bittensor::SubnetsArgs),
     /// The Bittensor subnets' fetched website pages.
@@ -98,6 +100,7 @@ fn main() -> anyhow::Result<()> {
         Command::Openalex(args) => bulk_openalex::main(args),
         Command::Wikipedia(args) => bulk_wikipedia::main(args),
         Command::HiddenCategories(args) => bulk_wikipedia::hidden_main(args),
+        Command::WikipediaRedirects(args) => bulk_wikipedia::redirects::main(args),
         Command::Subnets(args) => bulk_bittensor::subnets_main(args),
         Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),

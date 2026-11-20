@@ -411,6 +411,24 @@ pub fn diff_by_url(a: &Path, b: &Path, ignore: &[String], show: usize) -> Result
     Ok(out)
 }
 
+/// The `url` of every row in a complete run folder, in file order.
+pub fn page_urls(root: &Path) -> Result<Vec<String>> {
+    let run = open_run(root)?;
+    let mut urls = Vec::new();
+    for name in files(&run) {
+        let path = root.join(&name);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).with_context(|| format!("opening {}", path.display()))?)?;
+        let column = builder.schema().index_of("url").with_context(|| format!("{name} has no url column"))?;
+        let mask = parquet::arrow::ProjectionMask::roots(builder.parquet_schema(), [column]);
+        for batch in builder.with_projection(mask).with_batch_size(8192).build()? {
+            let batch = batch?;
+            let values = batch.column(0).as_string::<i32>();
+            urls.extend((0..values.len()).map(|i| values.value(i).to_string()));
+        }
+    }
+    Ok(urls)
+}
+
 /// Prints the diff as one JSON line; an error when the runs differ.
 pub fn main(args: DiffArgs) -> Result<()> {
     let found = if args.by_url { diff_by_url(&args.a, &args.b, &args.ignore, args.show)? } else { diff(&args.a, &args.b, args.show)? };
