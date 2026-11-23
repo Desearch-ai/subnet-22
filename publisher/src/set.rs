@@ -126,6 +126,8 @@ pub struct Set {
     undated_articles: bool,
     /// Undated hub pages of news sites with `hubs` are in.
     hub_pages: Option<HubPages>,
+    /// Pages the set takes by their exact URL, whatever their host's rule says.
+    pages: HashSet<String>,
 }
 
 impl Set {
@@ -189,7 +191,14 @@ impl Set {
                 Some(HubPages { types: strings("types")?, words: strings("words")?.into_iter().collect() })
             }
         };
-        Ok(Set { built: file["built"].as_str().map(String::from), sites, references, undated_articles, hub_pages })
+        let pages = match &file["pages"] {
+            Value::Null => HashSet::new(),
+            Value::Array(urls) => {
+                urls.iter().map(|url| url.as_str().map(String::from).ok_or_else(|| anyhow!("pages: {url} is not a URL"))).collect::<Result<_>>()?
+            }
+            other => bail!("pages {other} is not a list of URLs"),
+        };
+        Ok(Set { built: file["built"].as_str().map(String::from), sites, references, undated_articles, hub_pages, pages })
     }
 
     /// The listed host a host is, or is nearest under, and its rule.
@@ -228,8 +237,11 @@ impl Set {
         self.admit_from(url, published, page_type, false)
     }
 
-    /// Whether the page at `url`, from the bulk feed or crawled, is in, by the rule of its host's entry, and how.
+    /// Whether the page at `url`, from the bulk feed or crawled, is in, as a listed page or by the rule of its host's entry, and how.
     pub fn admit_from(&self, url: &str, published: &str, page_type: Option<&str>, bulk: bool) -> Result<Admitted, Refusal> {
+        if self.pages.contains(url) {
+            return Ok(Admitted::ByRule);
+        }
         let (host, path) = split_url(url);
         let Some((listed, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
         match rule {
@@ -476,6 +488,30 @@ mod tests {
             br#"{"hub_pages": {"types": ["home"]}, "sites": []}"#,
             br#"{"hub_pages": {"types": ["home"], "words": [1]}, "sites": []}"#,
         ] {
+            assert!(Set::parse(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+        }
+    }
+
+    #[test]
+    fn a_listed_page_is_in_whatever_its_host_s_rule_says() {
+        let set = Set::parse(
+            br#"{"pages": ["https://unlisted.example/a/b", "https://shut.example/x?id=1", "https://outlet.example/world/"], "sites": [
+                {"host": "shut.example", "rule": "out", "why": ["people-search"]},
+                {"host": "outlet.example", "rule": "news"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(set.admit("https://unlisted.example/a/b", "", None), Ok(Admitted::ByRule), "a listed page on a host the set does not list");
+        assert_eq!(set.admit("https://unlisted.example/a/c", "", None), Err(Refusal::Unlisted), "its host's other pages stay out");
+        assert_eq!(set.admit_from("https://shut.example/x?id=1", "", None, true), Ok(Admitted::ByRule), "an out host's listed page");
+        assert_eq!(set.admit("https://shut.example/x?id=2", "", None), Err(Refusal::Unlisted));
+        assert_eq!(set.admit("https://outlet.example/world/", "", Some("listing")), Ok(Admitted::ByRule), "an undated page of a news site");
+        assert_eq!(set.admit("https://www.unlisted.example/a/b", "", None), Err(Refusal::Unlisted), "only the exact URL");
+        assert_eq!(set.len(), 2, "pages are not sites");
+        let plain = Set::parse(br#"{"built": "2026-11-11", "news": "A", "undated": "article", "sites": [{"host": "a.example", "rule": "whole"}]}"#).unwrap();
+        assert_eq!(plain.admit("https://a.example/p", "", None), Ok(Admitted::ByRule), "a set file without pages reads as before");
+        assert_eq!(Set::parse(br#"{"pages": [], "sites": []}"#).unwrap().admit("https://a.example/", "", None), Err(Refusal::Unlisted));
+        for bad in [&br#"{"pages": "https://a.example/", "sites": []}"#[..], br#"{"pages": [1], "sites": []}"#] {
             assert!(Set::parse(bad).is_err(), "{}", String::from_utf8_lossy(bad));
         }
     }
