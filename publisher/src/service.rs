@@ -15,10 +15,12 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::bulk;
+use crate::changes::Change;
 use crate::outcomes;
 use crate::queue::{PublishQueue, PublishedVectors};
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
+use crate::remove;
 use crate::vectors;
 use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, CHANGED, EMBED};
 use desearch::feeds::{Feed, BULK, CHANGES, OUTCOMES};
@@ -225,6 +227,16 @@ impl ChangeFeed for BulkFeed {
             BULK.number(&self.pages, &self.redis, &key, rows).await
         })
     }
+}
+
+/// `remove::take_down` of `rows` into the change log, with the storage and Redis `serve` uses.
+pub async fn remove_from_env(rows: Vec<Change>, backup: PathBuf) -> Result<Vec<u64>> {
+    let redis_url = Settings::from_env()?.redis_url;
+    let (_, pages) = buckets_from_env(Arc::default())?;
+    pages.check().await?;
+    let redis = redis::Client::open(redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
+    let feed = R2Changes { pages, redis, handle: Handle::current(), day: day(now_us()) };
+    tokio::task::spawn_blocking(move || remove::take_down(&rows, &feed, &backup)).await?
 }
 
 /// `bulk::publish_run` on the run in `dir`, into the bulk feed with the storage and Redis `serve` uses.

@@ -14,6 +14,7 @@ pub mod planner;
 pub mod queue;
 pub mod reading;
 pub mod records;
+pub mod remove;
 pub mod service;
 pub mod set;
 pub mod vectors;

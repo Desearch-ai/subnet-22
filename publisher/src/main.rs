@@ -1,7 +1,7 @@
 //! publisher: publish validated uploads into the change feed, and keep the current state of every page compacted from it.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -11,6 +11,7 @@ use desearch::feeds::BULK;
 use desearch::r2::{self, Bucket, Credentials};
 use publisher::compactor::{self, R2Store, Split};
 use publisher::local::{LocalFeed, LocalLog, LocalUploads};
+use publisher::records::iso;
 use publisher::worker::{self, Job};
 use publisher::{bulk, outcomes, planner, service};
 
@@ -70,6 +71,13 @@ enum Command {
     },
     /// Turn published pages that need a vector into embed inputs for the task API, following the change log until SIGTERM.
     Plan,
+    /// Take down the pages at the URLs in a file, one a line, in change files of `removed` rows; counts them unless given `--backup`.
+    Remove {
+        urls: PathBuf,
+        /// Remove, after saving each page's key and URL to this new file.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -117,6 +125,7 @@ fn main() -> Result<()> {
         Command::Bulk(args) => bulk(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
         Command::Plan => tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(plan()),
+        Command::Remove { urls, backup } => remove(&urls, backup),
         Command::CheckCurrent { prefix, seqs, files, per_file, shards, explain } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = current_store(&runtime, &prefix, pages_store(&runtime)?)?;
@@ -202,6 +211,20 @@ fn bulk(args: BulkArgs) -> Result<()> {
     };
     let report = bulk::publish_run(&args.dir, &LocalLog::open(log, &BULK)?, &settings, &service::now_us)?;
     println!("{} files, {} pages, bulk files {:?}", report.files, report.pages, report.change_files);
+    Ok(())
+}
+
+fn remove(urls: &Path, backup: Option<PathBuf>) -> Result<()> {
+    let lines: Vec<String> = std::fs::read_to_string(urls).with_context(|| format!("reading {}", urls.display()))?.lines().map(str::to_string).collect();
+    let (rows, refused) = publisher::remove::removals(&lines, &iso(service::now_us()));
+    for line in &refused {
+        eprintln!("not a page URL: {line}");
+    }
+    println!("{} pages to take down, {} lines refused", rows.len(), refused.len());
+    let Some(backup) = backup else { return Ok(()) };
+    let count = rows.len();
+    let seqs = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_from_env(rows, backup))?;
+    println!("removed {count} pages in change files {seqs:?}");
     Ok(())
 }
 
