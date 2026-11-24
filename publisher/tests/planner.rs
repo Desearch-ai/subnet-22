@@ -4555,6 +4555,49 @@ fn prose(n: usize) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_on_the_set_s_pages_list_is_planned_whatever_its_language_from_the_log_and_the_backfill() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("listedlang");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let page = |url: &str, text: &str| v2(record(url, text, "article", "fr"));
+    log(&pages, 1, vec![page("https://news.example/log/listed", &prose(1)), page("https://news.example/log/other", &prose(2)), page("https://news.example/log/short", "Court.")]).await;
+    let row = |url: &str| PageRow { key: page_key(url).unwrap(), removed: false, change_seq: 1, version: record_version(&page(url, &prose(4))), published_at: "2026-10-20T01:00:00+00:00".into(), record: page(url, &prose(4)) };
+    shard(&current, 3, vec![vec![row("https://news.example/back/listed"), row("https://news.example/back/other")]]).await;
+    let set = dir.join("v1-set.json");
+    let listed = ["https://news.example/log/listed", "https://news.example/log/short", "https://news.example/back/listed"];
+    std::fs::write(&set, json!({"pages": listed, "sites": [{"host": "news.example", "rule": "whole"}]}).to_string()).unwrap();
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.set_file, backfilling.pages_per_input) = (true, 3..4, Some(set), 1);
+    backfilling.backfill_every = Duration::ZERO;
+
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards >= 1 {
+            break;
+        }
+    }
+    let planned: HashSet<String> = planner
+        .state
+        .pending()
+        .unwrap()
+        .iter()
+        .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap()["pages"][0]["url"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        planned,
+        HashSet::from(["https://news.example/log/listed".to_string(), "https://news.example/back/listed".to_string()]),
+        "French pages on the list are in; the same pages off it, and a listed page under the length minimum, stay out"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_naming_no_language_is_planned_from_the_log_and_the_backfill_when_its_text_reads_as_english() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");

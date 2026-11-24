@@ -232,6 +232,11 @@ impl Set {
         }
     }
 
+    /// Whether `url` is on the pages list, which takes it whatever its language.
+    pub fn listed(&self, url: &str) -> bool {
+        self.pages.contains(url)
+    }
+
     /// Whether the crawled page at `url` is in, by the rule of its host's entry, and how.
     pub fn admit(&self, url: &str, published: &str, page_type: Option<&str>) -> Result<Admitted, Refusal> {
         self.admit_from(url, published, page_type, false)
