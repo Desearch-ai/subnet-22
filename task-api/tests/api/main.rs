@@ -219,7 +219,7 @@ fn unpack(packed: &str) -> Value {
 
 #[tokio::test]
 async fn an_excess_poll_is_refused_with_a_retry_after_and_not_logged() {
-    let h = Harness::with(|s| s.poll_rate = 0.1).await;
+    let h = Harness::with(|s| s.claims_per_minute = 6.0).await;
     let mut answers = Vec::new();
     loop {
         let answer = h.miner.claim().await;
@@ -232,7 +232,7 @@ async fn an_excess_poll_is_refused_with_a_retry_after_and_not_logged() {
     let limited = answers.pop().unwrap();
     assert_eq!(limited["refusal"]["code"], "RATE_LIMITED");
     let retry = limited["refusal"]["inputs"]["retry_after"].as_f64().unwrap();
-    assert!(retry > 0.0 && retry <= 10.0);
+    assert_eq!(retry, 30.0);
     assert!(limited["receipt"].is_null(), "an excess poll is not signed into the log");
     assert!(answers.iter().all(|a| a["refusal"]["inputs"]["retry_after"] == 10.0));
     let entries = h.state.db.run(|conn| task_api::roundlog::entries(conn, "")).await.unwrap();

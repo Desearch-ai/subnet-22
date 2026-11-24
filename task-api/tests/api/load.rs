@@ -80,7 +80,7 @@ struct Signer {
 impl Signer {
     async fn post(&self, endpoint: &'static str, path: &str, body: &Value) -> (u16, Value) {
         let (asked, at) = (Instant::now(), self.started.elapsed().as_secs_f64());
-        let (status, answer) = self.send(path, body).await;
+        let (status, answer) = self.send(reqwest::Method::POST, path, serde_json::to_vec(body).unwrap()).await;
         self.log.call(endpoint, asked.elapsed().as_secs_f64(), status, at);
         (status, answer)
     }
@@ -88,24 +88,26 @@ impl Signer {
     /// As validators send a verdict: a 5xx is sent again after a pause, a few times; only the last answer is logged.
     async fn post_retrying(&self, endpoint: &'static str, path: &str, body: &Value) -> (u16, Value) {
         let (asked, at) = (Instant::now(), self.started.elapsed().as_secs_f64());
-        let mut answer = self.send(path, body).await;
+        let raw = serde_json::to_vec(body).unwrap();
+        let mut answer = self.send(reqwest::Method::POST, path, raw.clone()).await;
         for _ in 1..3 {
             if answer.0 < 500 && answer.0 != 0 {
                 break;
             }
             self.log.retried.fetch_add(1, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_secs(2)).await;
-            answer = self.send(path, body).await;
+            answer = self.send(reqwest::Method::POST, path, raw.clone()).await;
         }
         self.log.call(endpoint, asked.elapsed().as_secs_f64(), answer.0, at);
         answer
     }
 
-    async fn send(&self, path: &str, body: &Value) -> (u16, Value) {
-        let raw = serde_json::to_vec(body).unwrap();
+    async fn send(&self, method: reqwest::Method, path: &str, raw: Vec<u8>) -> (u16, Value) {
         let nonce: String = (0..16).map(|_| format!("{:02x}", rand::thread_rng().gen::<u8>())).collect();
-        let mut request = self.http.post(format!("{}{path}", self.targets.pick())).body(raw.clone()).header("content-type", "application/json");
-        for (name, value) in auth_headers(&self.key, "POST", path, &raw, chrono_now(), &nonce) {
+        let signed_path = path.split('?').next().unwrap_or(path);
+        let headers = auth_headers(&self.key, method.as_str(), signed_path, &raw, chrono_now(), &nonce);
+        let mut request = self.http.request(method, format!("{}{path}", self.targets.pick())).body(raw).header("content-type", "application/json");
+        for (name, value) in headers {
             request = request.header(name, value);
         }
         match request.send().await {
@@ -154,7 +156,7 @@ async fn the_api_carries_50m_urls_an_hour() {
         s.queue_target = 8000;
         s.check_share = 0.05;
         s.checks_per_hour = 400.0;
-        s.poll_rate = 2.0;
+        s.claims_per_minute = 120.0;
         s.seeds = SeedsMode::Chain { network: chain_url };
     })
     .await;
@@ -202,7 +204,7 @@ async fn the_api_carries_50m_urls_an_hour() {
             while !done.load(Ordering::Relaxed) {
                 allowance = (allowance + last.elapsed().as_secs_f64() * URLS_PER_HOUR / 3600.0).min(URLS_PER_HOUR * SAVED_SECONDS / 3600.0);
                 last = Instant::now();
-                let (status, room) = bot.post_get("room", "/v1/room").await;
+                let (status, room) = bot.get("room", "/v1/room").await;
                 if status == 200 && pending.is_empty() {
                     let budget = (room["room_tasks"].as_f64().unwrap_or(0.0) * TASK_URLS as f64).min(allowance) as usize;
                     for start in (0..budget).step_by(BATCH_URLS) {
@@ -375,13 +377,11 @@ async fn the_api_carries_50m_urls_an_hour() {
 
     {
         let (done, log, targets, http, fake, redis) = (done.clone(), log.clone(), targets.clone(), http.clone(), fake.clone(), h.redis.clone());
+        let watcher = signer(Hotkey::from_uri(ADMIN).unwrap());
         tasks.push(tokio::spawn(async move {
             while !done.load(Ordering::Relaxed) {
                 let base = targets.pick();
-                let room: Value = match http.get(format!("{base}/v1/room")).send().await {
-                    Ok(r) => r.json().await.unwrap_or(Value::Null),
-                    Err(_) => Value::Null,
-                };
+                let room = watcher.send(reqwest::Method::GET, "/v1/room", Vec::new()).await.1;
                 let health: Value = match http.get(format!("{base}/v1/health")).send().await {
                     Ok(r) => r.json().await.unwrap_or(Value::Null),
                     Err(_) => Value::Null,
@@ -515,16 +515,9 @@ fn judge(log: &Log, minutes: f64) {
 }
 
 impl Signer {
-    async fn post_get(&self, endpoint: &'static str, path: &str) -> (u16, Value) {
-        let asked = Instant::now();
-        let at = self.started.elapsed().as_secs_f64();
-        let (status, answer) = match self.http.get(format!("{}{path}", self.targets.pick())).send().await {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                (status, response.json().await.unwrap_or(Value::Null))
-            }
-            Err(_) => (0, Value::Null),
-        };
+    async fn get(&self, endpoint: &'static str, path: &str) -> (u16, Value) {
+        let (asked, at) = (Instant::now(), self.started.elapsed().as_secs_f64());
+        let (status, answer) = self.send(reqwest::Method::GET, path, Vec::new()).await;
         self.log.call(endpoint, asked.elapsed().as_secs_f64(), status, at);
         (status, answer)
     }

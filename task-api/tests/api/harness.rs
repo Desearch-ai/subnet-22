@@ -158,7 +158,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         claim_ttl: 180.0,
         embed_claim_ttl: 300.0,
         validation_ttl: 900.0,
-        poll_rate: 100.0,
+        claims_per_minute: 600_000.0,
         reads_per_minute: 100_000,
         log_reads_per_minute: 100_000,
         failed_writes_per_minute: 30,

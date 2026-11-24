@@ -2,6 +2,7 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::budgets::{CRAWL, EMBED};
 use crate::rounds::Url;
 
 pub const MAX_URL_DETAILS: usize = 1000;
@@ -250,6 +251,15 @@ pub struct ClaimBody {
 }
 
 impl ClaimBody {
+    pub fn kind_in(raw: &[u8]) -> &'static str {
+        let embed = serde_json::from_slice::<Value>(raw).is_ok_and(|body| body["kind"] == EMBED);
+        if embed {
+            EMBED
+        } else {
+            CRAWL
+        }
+    }
+
     pub fn parse(body: &Value) -> Result<ClaimBody, Invalid> {
         let Some(input) = body.as_object() else {
             if body.is_null() {

@@ -207,7 +207,7 @@ Each domain's queue has three lanes that send at the same time:
 Each lane gets its share of what the domain sends (`--new-share`, `--retry-share`, and the rest for
 changed pages), kept even across passes, and what one lane leaves unused goes to the others.
 
-Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
+Every 5 seconds the bot asks `GET /v1/room`, signed with its admin hotkey, how many tasks the API can take, and sends that many
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
 `--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
 least), so a site sees a steady stream rather than its hour in one burst. A site whose robots.txt

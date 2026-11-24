@@ -28,8 +28,8 @@ which writes passed pages and vectors to the pages bucket and takes withdrawn on
 
 ## How it works
 
-**Queue.** The [bot](../desearch-bot/README.md) fills the queue: it asks `GET /v1/room` how many
-tasks the queue can take and enqueues that many, each batch with an id so a batch sent twice is
+**Queue.** The [bot](../desearch-bot/README.md) fills the queue: it asks `GET /v1/room`, signed with
+an admin hotkey, how many tasks the queue can take and enqueues that many, each batch with an id so a batch sent twice is
 queued once. It reads back what became of every URL from the outcome feed.
 
 **Rounds.** URLs are enqueued in rounds. The API packs them into tasks of 1,000 URLs, the last one
@@ -145,8 +145,9 @@ the task, is refused.
   for a week. Validator-side problems never count.
 
 A completed upload must be Parquet: the API checks its first and last bytes and never parses it.
-Failed and void uploads are deleted. A miner may claim every 2 seconds; a refusal repeated within a
-minute is not signed into the log again.
+Failed and void uploads are deleted. A hotkey may claim each kind of task once every 12 seconds; a hotkey
+that sends claims of a kind more often is refused and blocked from that kind for 30 seconds. A refusal
+repeated within a minute is not signed into the log again.
 
 `GET /v1/shares` returns each miner's share of the paid work over the last 24 hours, per pool.
 How much of the emission is burned and how the rest is split between the pools is set in the
@@ -165,7 +166,7 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    passages split at its markdown headings, never inside a table row, a list item or a code block, each
    starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
    fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
-   while `GET /v1/room?kind=embed` has room, and cuts at most `PLANNER_EMBED_TASKS_PER_HOUR` inputs an hour.
+   while `GET /v1/room?kind=embed`, signed with `PLANNER_KEY_URI`, has room, and cuts at most `PLANNER_EMBED_TASKS_PER_HOUR` inputs an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
@@ -206,6 +207,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | Variable | Default | |
 | --- | --- | --- |
 | `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
+| `PLANNER_KEY_URI` | — | the admin key it signs its room requests with; required |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
 | `PLANNER_EMBED_TASKS_PER_HOUR` | 2500 | embed tasks (inputs) planned and handed over an hour, every lane together; 0 budgets in pages alone |
@@ -280,7 +282,13 @@ is checked, and the planner writes embed inputs the same way. Objects are readab
 which is why the API keeps `validation/open.json`. Mainnet serves it at
 `https://subnet-22.s3.us-east-va.io.cloud.ovh.us`, the validator's default `--neuron.storage_url`.
 
-The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`).
+The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`). Only an admin
+hotkey may call `POST /v1/admin/enqueue` and `GET /v1/room` (how many tasks the queue can take now).
+
+The watchdog ([`deploy/watchdog.py`](deploy/watchdog.py)) posts pipeline stalls to Discord every minute
+from `desearch-watchdog.timer`. It runs from `/opt/desearch-watchdog/.venv` with `bittensor-wallet`
+installed and reads `WATCHDOG_API`, `WATCHDOG_KEY_URI` (an admin key) and `WATCHDOG_WEBHOOK` from
+`/etc/desearch-watchdog.env`.
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -289,10 +297,10 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_NETWORK` | `finney` | the chain in `chain` mode: a network name or JSON-RPC URL, or several comma-separated to fall back on in order |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
 | `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
-| `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
+| `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue and read the room |
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
-| `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
+| `TASK_API_CLAIMS_PER_MINUTE` | 5 | claims of each kind one hotkey may make a minute, spaced evenly: one every 12 seconds at 5; a hotkey that sends claims more often is blocked from that kind for 30 seconds |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
@@ -343,7 +351,6 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/validators/{hotkey}` | the same for one validator |
 | `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome` |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
-| `GET /v1/room` | how many tasks the queue can take now, for the bot |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
