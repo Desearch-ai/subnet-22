@@ -241,8 +241,8 @@ fn bump(counts: &mut IndexMap<String, u64>, key: impl Into<String>) {
     *counts.entry(key.into()).or_insert(0) += 1;
 }
 
-fn eligible(page: &Page) -> bool {
-    setrule::page_eligible(&page.lang, crate::uploads::EXTRACTION_V2, &page.text)
+fn eligible(page: &Page, listed: bool) -> bool {
+    setrule::page_eligible(&page.lang, crate::uploads::EXTRACTION_V2, &page.text, listed)
 }
 
 pub fn build(o: &Options) -> Result<IndexMap<String, u64>> {
@@ -330,7 +330,7 @@ fn take(
             if o.skip.contains(&item_url) {
                 continue;
             }
-            if eligible(&item_page) {
+            if eligible(&item_page, false) {
                 batches.add(Row { url: item_url, fetched_at: fetched, content_type: content_type.clone(), page: item_page })?;
                 bump(counts, "page_edgar_item");
             }
@@ -340,7 +340,7 @@ fn take(
     if pystr::len(&page.text) > MAX_TEXT_CHARS {
         page.text = pystr::cut(&page.text, MAX_TEXT_CHARS).to_string();
     }
-    if !eligible(&page) {
+    if !eligible(&page, rule.is_some_and(|r| r.listed(url))) {
         bump(counts, "ineligible");
         return Ok(());
     }

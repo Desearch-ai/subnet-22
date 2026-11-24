@@ -2810,7 +2810,7 @@ impl Planner {
                 bulk_through.is_none_or(|through| row.change_seq >= 0 || row.change_seq - BULK_ORDER <= through)
                     && recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
                     // A page naming no language is read whole, and its text tells.
-                    && (lang_wanted(&langs, &record.lang) || record.lang.trim().is_empty())
+                    && (lang_wanted(&langs, &record.lang) || record.lang.trim().is_empty() || set.as_ref().is_some_and(|set| set.listed(&record.url)))
                     && set.as_ref().is_none_or(|set| {
                         set.class(domain_of_key(&row.key)) <= class && set.admit_from(&record.url, &record.published, record.page_type.as_deref(), from_bulk(record)).is_ok()
                     })
@@ -3302,7 +3302,8 @@ impl Planner {
     }
 
     fn admitted(&self, record: &Record) -> bool {
-        lang_wanted(&self.settings.langs, lang::page_lang(&record.lang, &record.text)) && record.text.chars().count() >= self.settings.min_chars
+        let listed = self.set.as_ref().is_some_and(|set| set.listed(&record.url));
+        (listed || lang_wanted(&self.settings.langs, lang::page_lang(&record.lang, &record.text))) && record.text.chars().count() >= self.settings.min_chars
     }
 
     /// Whether the host or a domain it is under is on the exclusion list.

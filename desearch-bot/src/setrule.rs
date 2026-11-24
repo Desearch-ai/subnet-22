@@ -319,6 +319,11 @@ impl SetRule {
         }
     }
 
+    /// Whether the set's pages list names this exact URL.
+    pub fn listed(&self, url: &str) -> bool {
+        self.pages.contains(url)
+    }
+
     /// Whether the set takes this page; `cap` bounds the crawl, not the set.
     pub fn admits(&self, url: &str, published: Option<&str>, page_type: Option<&str>) -> bool {
         if self.pages.contains(url) {
@@ -363,16 +368,55 @@ werden wie wir wird wordt yang ze zijn zu";
 static ENGLISH_WORDS: LazyLock<HashSet<&str>> = LazyLock::new(|| ENGLISH.split(' ').collect());
 static OTHER_WORDS: LazyLock<HashSet<&str>> = LazyLock::new(|| OTHER.split(' ').collect());
 
-/// Whether a text's start reads as English: enough ASCII words, little else, English words.
-pub fn english(text: &str) -> bool {
-    let sample = pystr::cut(text, 4000);
+/// Characters each window reads, at 0, 25, 50 and 75 percent of the text.
+pub const SAMPLE_CHARS: usize = 4000;
+pub const WINDOWS: usize = 4;
+/// A language-light window's ASCII letters are at most this many times its ASCII digits and punctuation.
+pub const LIGHT_LETTERS_TIMES: usize = 2;
+
+/// What one window reads as, if anything.
+struct Reading {
+    english: bool,
+    other: bool,
+    light: bool,
+}
+
+/// English: 30 ASCII words, few other characters, English function words 8 in 100 and twice other languages'; other-language: those bars reversed or many characters past ASCII; light: mostly digits and punctuation with sparse function words, other languages' no more than English ones.
+fn read(sample: &str) -> Reading {
     let words: Vec<String> =
         sample.split(|c: char| !c.is_ascii_alphabetic()).filter(|w| !w.is_empty()).map(str::to_ascii_lowercase).collect();
     let letters: usize = words.iter().map(String::len).sum();
     let non_ascii = sample.chars().filter(|c| !c.is_ascii()).count();
+    let marks = sample.chars().filter(|c| c.is_ascii_graphic() && !c.is_ascii_alphabetic()).count();
     let english_words = words.iter().filter(|w| ENGLISH_WORDS.contains(w.as_str())).count();
     let other_words = words.iter().filter(|w| OTHER_WORDS.contains(w.as_str())).count();
-    words.len() >= 30 && non_ascii * 10 <= letters && english_words * 100 >= 8 * words.len() && english_words > 2 * other_words
+    let enough = words.len() >= 30;
+    let ascii = non_ascii * 10 <= letters;
+    let dense = |n: usize| n * 100 >= 8 * words.len();
+    Reading {
+        english: enough && ascii && dense(english_words) && english_words > 2 * other_words,
+        other: (enough && dense(other_words) && other_words > 2 * english_words) || (non_ascii >= 30 && !ascii),
+        light: enough
+            && ascii
+            && letters <= LIGHT_LETTERS_TIMES * marks
+            && !dense(english_words)
+            && !dense(other_words)
+            && other_words <= english_words,
+    }
+}
+
+/// Whether a text reads as English: its start passes as it always has, or more of its windows read English than clearly other-language, or none reads other-language and one is language-light.
+pub fn english(text: &str) -> bool {
+    let chars = pystr::len(text);
+    let reads: Vec<Reading> = (0..WINDOWS)
+        .map(|k| {
+            let start = text.char_indices().nth(chars * k / WINDOWS).map_or("", |(at, _)| &text[at..]);
+            read(pystr::cut(start, SAMPLE_CHARS))
+        })
+        .collect();
+    let english = reads.iter().filter(|r| r.english).count();
+    let other = reads.iter().filter(|r| r.other).count();
+    reads[0].english || english > other || (other == 0 && reads.iter().any(|r| r.light))
 }
 
 /// The page's own language, or `en` when it names none and its text reads as English.
@@ -384,10 +428,10 @@ pub fn page_lang<'a>(lang: &'a str, text: &str) -> &'a str {
     }
 }
 
-/// The planner's checks before the set rule: language, extraction, length.
-pub fn page_eligible(lang: &str, extraction: &str, text: &str) -> bool {
+/// The planner's checks before the set rule: language, unless the set's pages list names the page, extraction, length.
+pub fn page_eligible(lang: &str, extraction: &str, text: &str, listed: bool) -> bool {
     let lang = page_lang(lang, text).to_lowercase();
-    LANGS.iter().any(|w| lang == *w || lang.starts_with(&format!("{w}-")) || lang.starts_with(&format!("{w}_")))
+    (listed || LANGS.iter().any(|w| lang == *w || lang.starts_with(&format!("{w}-")) || lang.starts_with(&format!("{w}_"))))
         && extraction == EXTRACTION
         && pystr::len(text) >= MIN_CHARS
 }
@@ -471,9 +515,19 @@ mod tests {
     fn english_text_counts_as_english() {
         let text = "This is the page that we were reading, and it has all of the words you want to see in it. ".repeat(3);
         assert!(english(&text));
-        assert!(page_eligible("", "v2", &text.repeat(3)));
-        assert!(!page_eligible("de", "v2", &text.repeat(3)));
-        assert!(page_eligible("en-GB", "v2", &text.repeat(3)));
-        assert!(!page_eligible("en", "v1", &text.repeat(3)));
+        assert!(page_eligible("", "v2", &text.repeat(3), false));
+        assert!(!page_eligible("de", "v2", &text.repeat(3), false));
+        assert!(page_eligible("en-GB", "v2", &text.repeat(3), false));
+        assert!(!page_eligible("en", "v1", &text.repeat(3), false));
+    }
+
+    #[test]
+    fn a_page_on_the_pages_list_is_eligible_whatever_its_language() {
+        let rule = SetRule::parse(br#"{"sites": [{"host": "lemonde.fr", "rule": "whole"}], "pages": ["https://www.lemonde.fr/a"]}"#).unwrap();
+        let text = "Le conseil municipal a voté mardi pour approuver un nouveau budget pour la ville. ".repeat(5);
+        assert!(page_eligible("fr", "v2", &text, rule.listed("https://www.lemonde.fr/a")));
+        assert!(!page_eligible("fr", "v2", &text, rule.listed("https://www.lemonde.fr/b")));
+        assert!(!page_eligible("fr", "v2", "Court.", true), "the length minimum stays");
+        assert!(!page_eligible("fr", "v1", &text, true));
     }
 }

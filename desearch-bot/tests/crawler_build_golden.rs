@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use desearch_bot::pagecheck::{fred_newest_first, is_mirror, is_wall, item_sections, text_headings};
 use desearch_bot::pystr::unquote;
-use desearch_bot::setrule::{english, normal_host, page_date, page_eligible, SetRule};
+use desearch_bot::setrule::{english, normal_host, page_date, page_eligible, SetRule, LIGHT_LETTERS_TIMES, SAMPLE_CHARS, WINDOWS};
 
 static GOLDEN: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("data/crawler_build_golden.json")).expect("the golden file parses"));
@@ -54,10 +54,19 @@ fn languages_and_eligibility_match() {
     for c in cases("langs") {
         let (lang, text) = (s(&c[0]), s(&c[1]));
         eng.push((text.to_string(), english(text), c[2].as_bool().unwrap()));
-        ok.push((format!("{lang:?} {text}"), page_eligible(lang, "v2", text), c[3].as_bool().unwrap()));
+        ok.push((format!("{lang:?} {text}"), page_eligible(lang, "v2", text, false), c[3].as_bool().unwrap()));
     }
     check("english", eng);
     check("page_eligible", ok);
+}
+
+#[test]
+fn the_language_rule_reads_every_shared_golden_text_as_the_planner_does() {
+    let golden: Value = serde_json::from_str(include_str!("../../publisher/tests/lang-golden.json")).unwrap();
+    let numbers = ["sample_chars", "windows", "light_letters_times"].map(|name| golden[name].as_u64().unwrap() as usize);
+    assert_eq!(numbers, [SAMPLE_CHARS, WINDOWS, LIGHT_LETTERS_TIMES]);
+    let cases = golden["cases"].as_array().unwrap();
+    check("lang-golden", cases.iter().map(|c| (s(&c["name"]).to_string(), english(s(&c["text"])), c["english"].as_bool().unwrap())).collect());
 }
 
 #[test]
