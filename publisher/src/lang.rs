@@ -1,6 +1,5 @@
 //! A page's language when its extraction found none: English by its text, read as the indexer reads it (`tests/lang-golden.json`).
 
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -70,18 +69,13 @@ fn window(text: &str, start: usize) -> &str {
     rest.char_indices().nth(SAMPLE_CHARS).map_or(rest, |(at, _)| &rest[..at])
 }
 
-/// Whether a text reads as English, by windows across it: more English windows than other-language ones, a tie going to the start window, and with neither a language-light window is enough.
+/// Whether a text reads as English: its start passes as it always has, or more of its windows read English than clearly other-language, or none reads other-language and one is language-light.
 pub fn english(text: &str) -> bool {
     let chars = text.chars().count();
     let reads = (0..WINDOWS).map(|k| read(window(text, chars * k / WINDOWS))).collect::<Vec<_>>();
     let count = |pick: fn(&Reading) -> bool| reads.iter().filter(|read| pick(read)).count();
     let (english, other) = (count(|read| read.english), count(|read| read.other));
-    match english.cmp(&other) {
-        Ordering::Greater => true,
-        Ordering::Less => false,
-        Ordering::Equal if english > 0 => reads[0].english,
-        Ordering::Equal => reads.iter().any(|read| read.light),
-    }
+    reads[0].english || english > other || (other == 0 && reads.iter().any(|read| read.light))
 }
 
 /// The page's own language, or `en` when it names none and its text reads as English.

@@ -1,6 +1,5 @@
 //! The v1 set file's rule and the planner's page checks: which pages each set site admits, and in which language.
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
@@ -406,7 +405,7 @@ fn read(sample: &str) -> Reading {
     }
 }
 
-/// Whether a text reads as English, by windows across it: more English windows than other-language ones, a tie going to the start window, and with neither a language-light window is enough.
+/// Whether a text reads as English: its start passes as it always has, or more of its windows read English than clearly other-language, or none reads other-language and one is language-light.
 pub fn english(text: &str) -> bool {
     let chars = pystr::len(text);
     let reads: Vec<Reading> = (0..WINDOWS)
@@ -417,12 +416,7 @@ pub fn english(text: &str) -> bool {
         .collect();
     let english = reads.iter().filter(|r| r.english).count();
     let other = reads.iter().filter(|r| r.other).count();
-    match english.cmp(&other) {
-        Ordering::Greater => true,
-        Ordering::Less => false,
-        Ordering::Equal if english > 0 => reads[0].english,
-        Ordering::Equal => reads.iter().any(|r| r.light),
-    }
+    reads[0].english || english > other || (other == 0 && reads.iter().any(|r| r.light))
 }
 
 /// The page's own language, or `en` when it names none and its text reads as English.
