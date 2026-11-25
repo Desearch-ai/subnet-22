@@ -243,7 +243,8 @@ one stops, and only one copy at a time runs the background work.
 
 **Database size.** Once a round's tasks are queued, SQLite keeps only each batch's count, hash and
 input; the URLs and an embed input's page list live in the task payloads. A round is deleted a week after
-it closes. SQLite reuses the space this frees, but the file never shrinks. To shrink it, stop the API
+it closes. The signed log, round anchors, verdicts, final verdicts, votes and budget events are deleted two
+weeks after they were written, oldest first. SQLite reuses the space this frees, but the file never shrinks. To shrink it, stop the API
 (no copy may run) and write a compact copy next to it, on the host that holds the volume:
 
 ```bash
@@ -353,7 +354,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
-| `GET /v1/rounds/{id}/log` | a round's signed log |
+| `GET /v1/rounds/{id}/log` | a round's signed log, kept two weeks |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
 
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
