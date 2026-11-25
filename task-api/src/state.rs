@@ -30,8 +30,8 @@ use crate::{db, roundstore};
 
 pub type Redis = redis::aio::ConnectionManager;
 
-pub const POLL_WINDOW_S: f64 = 10.0;
 pub const MINUTE: f64 = 60.0;
+pub const EARLY_CLAIM_WAIT_S: f64 = 30.0;
 const DEV_RECEIPT_KEY: &str = "//TaskApi";
 
 pub struct State {
@@ -242,25 +242,29 @@ impl State {
         Ok(self.record(vec![receipt]).await?.remove(0))
     }
 
-    pub fn poll_wait(&self, hotkey: &str) -> Option<f64> {
-        let limit = 1.max(crate::py::round(self.settings.poll_rate * POLL_WINDOW_S));
-        self.gate.take(&format!("poll:{hotkey}"), POLL_WINDOW_S, limit, now()).map(|wait| round_to(wait, 3))
+    pub fn claim_gap(&self) -> f64 {
+        MINUTE / self.settings.claims_per_minute
     }
 
-    /// Seconds a hotkey polling past its rate waits, None while it is within it.
-    pub async fn retry_after(&self, hotkey: &str) -> Result<Option<f64>> {
-        let at = now();
-        let window = (at / POLL_WINDOW_S).floor() as i64;
-        let key = format!("rl:hotkey:{hotkey}:{window}");
+    fn early_claim_wait(&self) -> f64 {
+        EARLY_CLAIM_WAIT_S.max(self.claim_gap())
+    }
+
+    pub fn poll_wait(&self, hotkey: &str, kind: &str) -> Option<f64> {
+        self.gate.space(&format!("poll:{kind}:{hotkey}"), self.claim_gap(), self.early_claim_wait(), now()).map(|wait| round_to(wait, 3))
+    }
+
+    /// Seconds a hotkey claiming within its gap waits from now, None while it may claim.
+    pub async fn retry_after(&self, hotkey: &str, kind: &str) -> Result<Option<f64>> {
+        let key = format!("rl:claim:{kind}:{hotkey}");
+        let (gap, penalty) = (self.claim_gap(), self.early_claim_wait());
         let mut redis = self.redis.clone();
-        let count: i64 = redis.incr(&key, 1).await?;
-        if count == 1 {
-            let _: bool = redis.expire(&key, 2 * POLL_WINDOW_S as i64).await?;
-        }
-        if count <= 1.max(crate::py::round(self.settings.poll_rate * POLL_WINDOW_S)) {
+        let set: Option<String> = redis::cmd("SET").arg(&key).arg("1").arg("NX").arg("PX").arg((gap * 1000.0).ceil() as i64).query_async(&mut redis).await?;
+        if set.is_some() {
             return Ok(None);
         }
-        Ok(Some(0.01f64.max(round_to((window + 1) as f64 * POLL_WINDOW_S - at, 3))))
+        let _: () = redis::cmd("SET").arg(&key).arg("1").arg("PX").arg((penalty * 1000.0).ceil() as i64).query_async(&mut redis).await?;
+        Ok(Some(round_to(penalty, 3)))
     }
 
     /// Only the first of a run of identical refusals is signed into the log.

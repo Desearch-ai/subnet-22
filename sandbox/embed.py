@@ -17,12 +17,13 @@ import numpy as np
 import pyarrow.parquet as pq
 from aiohttp import web
 
+from desearch.client import TaskApiClient, TaskApiError
 from desearch.embedding import INPUT_SCHEMA, EmbeddingModel, model_named, write_parquet
 from desearch.kinds import EMBED
 from neurons.validators.tasks import UPLOAD_CHANGED
 
 from sandbox import local
-from sandbox.local import PAGES_BUCKET, ROOT, UPLOADS_BUCKET, Ports
+from sandbox.local import ADMIN_URI, PAGES_BUCKET, ROOT, UPLOADS_BUCKET, Ports
 from sandbox.run import CHANGED_NOTE, Sandbox, get_json, where
 from sandbox.urls import host_of
 
@@ -370,7 +371,11 @@ class EmbedSandbox(Sandbox):
 
     async def feed(self, http: aiohttp.ClientSession) -> None:
         """Hands over inputs while the API has room, the way the planner does."""
-        room = await get_json(http, f"{self.ports.api_url}/v1/room?kind={EMBED}")
+        try:
+            async with TaskApiClient(self.ports.api_url, ADMIN_URI) as admin:
+                room = await admin.get(f"/v1/room?kind={EMBED}")
+        except TaskApiError:
+            room = {}
         for _ in range(int(room.get("room_tasks") or 0)):
             await asyncio.to_thread(self.hand_over, next(self.cycle))
             self.handed += 1

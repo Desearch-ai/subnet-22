@@ -5,4 +5,4 @@ After=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/desearch-watchdog.env
-ExecStart=/usr/bin/python3 /opt/desearch-watchdog/watchdog.py
+ExecStart=/opt/desearch-watchdog/.venv/bin/python /opt/desearch-watchdog/watchdog.py

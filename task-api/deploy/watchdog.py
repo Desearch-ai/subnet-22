@@ -1,11 +1,17 @@
 """Posts to a Discord webhook when the crawl pipeline stalls, once when it starts and again when it clears."""
 
+import hashlib
 import json
 import os
+import secrets
 import time
+import urllib.parse
 import urllib.request
 
+from bittensor_wallet import Keypair
+
 API = os.environ.get("WATCHDOG_API", "https://api-22.desearch.ai")
+KEY_URI = os.environ.get("WATCHDOG_KEY_URI", "")
 WEBHOOK = os.environ.get("WATCHDOG_WEBHOOK", "")
 STATE = os.environ.get("WATCHDOG_STATE", "/var/lib/desearch-watchdog/state.json")
 AGENT = "desearch-watchdog/1"
@@ -22,8 +28,22 @@ API_DOWN_RUNS = 3
 REMIND_S = 3600
 
 
-def get(path):
-    request = urllib.request.Request(f"{API}{path}", headers={"User-Agent": AGENT})
+def signed(key, path):
+    timestamp, nonce = str(int(time.time())), secrets.token_hex(16)
+    digest = hashlib.sha256(b"").hexdigest()
+    payload = f"GET\n{path}\n{digest}\n{timestamp}\n{nonce}".encode()
+    return {
+        "X-Hotkey": key.ss58_address,
+        "X-Timestamp": timestamp,
+        "X-Nonce": nonce,
+        "X-Signature": key.sign(payload).hex(),
+    }
+
+
+def get(key, path):
+    url = f"{API}{path}"
+    headers = {"User-Agent": AGENT, **signed(key, urllib.parse.urlsplit(url).path)}
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=20) as response:
         return json.load(response)
 
@@ -146,10 +166,14 @@ def save(state):
 
 
 def main():
-    state, now = load(), time.time()
+    if not KEY_URI:
+        raise SystemExit(
+            "WATCHDOG_KEY_URI must name an admin key: the room is read signed"
+        )
+    key, state, now = Keypair.create_from_uri(KEY_URI), load(), time.time()
     try:
-        health, room = get("/v1/health"), get("/v1/room")
-        newest = (get("/v1/rounds?limit=1").get("rounds") or [{}])[0]
+        health, room = get(key, "/v1/health"), get(key, "/v1/room")
+        newest = (get(key, "/v1/rounds?limit=1").get("rounds") or [{}])[0]
         state["api_down"] = 0
         found, worse = problems(state, health, room, newest, now)
     except Exception as error:

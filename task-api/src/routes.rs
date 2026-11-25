@@ -118,6 +118,14 @@ async fn validator(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiErro
     Ok(who)
 }
 
+async fn admin(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiError> {
+    let who = signed.caller(state).await?;
+    if !who.is_admin {
+        return Err(ApiError::status(403, "only admins may do this"));
+    }
+    Ok(who)
+}
+
 pub async fn claim(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Response {
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     match claim_tasks(&state, &signed).await {
@@ -129,7 +137,7 @@ pub async fn claim(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Connect
 }
 
 fn rate_limited(state: &State, retry_after: f64) -> Json<Value> {
-    let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
+    let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_minute": state.settings.claims_per_minute, "retry_after": retry_after}});
     Json(json!({"tasks": [], "refusal": refusal, "receipt": null}))
 }
 
@@ -144,7 +152,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let kind: &'static str = if body.kind == EMBED { EMBED } else { CRAWL };
     let round_id = state.current_round(kind);
 
-    let rated = state.retry_after(&who.hotkey).await?;
+    let rated = state.retry_after(&who.hotkey, kind).await?;
     steps.mark("rate");
     if let Some(retry_after) = rated {
         // Not logged: signing and storing every excess poll would let a flooder grow the log.
@@ -655,7 +663,14 @@ pub async fn shares(Shared(state): Shared<Arc<State>>) -> Answer {
 }
 
 /// How many tasks the queue can take now: crawl tasks for the bot, or with `?kind=embed` embed inputs for the planner.
-pub async fn room(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+pub async fn room(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    uri: Uri,
+    QueryParams(query): QueryParams<Query>,
+) -> Answer {
+    admin(&state, &Signed { headers: &headers, method: "GET", uri: &uri, body: &[], peer }).await?;
     if query.get("kind").map(String::as_str) == Some(EMBED) {
         return embed_room(&state).await;
     }
@@ -712,10 +727,7 @@ async fn embed_room(state: &State) -> Answer {
 
 /// A batch sent twice, after a timeout, is queued once.
 pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
-    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
-    if !who.is_admin {
-        return Err(ApiError::status(403, "only admins may do this"));
-    }
+    admin(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
     let request = Enqueue::parse(&json_body(&body)?)?;
     if let Some(long) = request.urls.iter().find(|url| url.url.chars().count() > MAX_URL_CHARS) {
         let start: String = long.url.chars().take(80).collect();

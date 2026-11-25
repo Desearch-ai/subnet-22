@@ -30,6 +30,7 @@ from neurons.miners.rows import UploadWriter, build_row, error_row
 log = logging.getLogger("miner")
 
 BACKOFF = {"QUEUE_EMPTY": 2.0, "NO_CAPACITY": 1.0}
+CLAIM_GAP_S = 12.5
 ERROR_BACKOFF = 2.0
 MAX_BACKOFF = 3600.0
 CLAIM_MARGIN_S = 30.0
@@ -72,6 +73,7 @@ class TaskWorker:
 
     async def run(self) -> None:
         stopped = asyncio.create_task(self.stopping.wait())
+        next_claim = 0.0
         try:
             while not stopped.done():
                 if len(self.in_flight) >= self.settings.max_tasks:
@@ -87,6 +89,11 @@ class TaskWorker:
                     )
                     continue
 
+                gap = next_claim - time.monotonic()
+                if gap > 0:
+                    await asyncio.wait({stopped}, timeout=gap)
+                    continue
+                next_claim = time.monotonic() + CLAIM_GAP_S
                 try:
                     delay = await self.poll()
                 except Exception:

@@ -76,7 +76,7 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
         return Err(ApiError::status(401, "bad signature"));
     }
     if path == crate::http::CLAIM_PATH {
-        if let Some(wait) = state.poll_wait(hotkey) {
+        if let Some(wait) = state.poll_wait(hotkey, crate::models::ClaimBody::kind_in(body)) {
             return Err(ApiError::PollLimited(wait));
         }
     }

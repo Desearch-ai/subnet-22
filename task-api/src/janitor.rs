@@ -15,7 +15,7 @@ use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::KINDS;
 use crate::state::State;
-use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::{checks, hours, lifecycle, logs, records, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -51,6 +51,8 @@ const SEAL_ROUNDS: i64 = 500;
 /// Batches read per sealing step, so a pass over rounds that still hold embed page lists stays short.
 const SEAL_BYTES: i64 = 16 << 20;
 const DROP_VERDICTS: i64 = 200;
+/// Rows past their two weeks deleted per table per pass: ~200 ms of writer time at most, on early October rows with 25 KB reports.
+const DROP_RECORDS: i64 = 200;
 /// Per-URL details cleared per pass: each frees ~50 KB, ~2 ms of writer time.
 const PRUNE_DETAILS: i64 = 10;
 /// Verdict rows counted into the hourly totals per pass; a first start catches up on the kept week this way.
@@ -152,6 +154,13 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
             state.db.run(move |conn| roundstore::mark_sealed(conn, closed_at)).await?;
         }
         state.db.run(|conn| validations::drop_publish_copies(conn, now() - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)).await?;
+        let mut dropped = 0;
+        for (table, column) in records::DATED {
+            dropped += state.db.run(move |conn| records::drop_older(conn, table, column, now() - records::KEPT_S, DROP_RECORDS)).await?;
+        }
+        if dropped > 0 {
+            eprintln!("janitor records: deleted {dropped} rows past two weeks");
+        }
     }
     if elapsed(due.logged_at, UPLOAD_LOG_EVERY) {
         due.logged_at = Some(Instant::now());

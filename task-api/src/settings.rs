@@ -55,7 +55,7 @@ pub struct Settings {
     pub claim_ttl: f64,
     pub embed_claim_ttl: f64,
     pub validation_ttl: f64,
-    pub poll_rate: f64,
+    pub claims_per_minute: f64,
     pub reads_per_minute: i64,
     pub log_reads_per_minute: i64,
     pub failed_writes_per_minute: i64,
@@ -159,6 +159,10 @@ impl Settings {
         if embed_tasks && embedding::model(&embed_model).is_none() {
             bail!("TASK_API_EMBED_MODEL={embed_model:?} is not a model whose vectors the task API knows");
         }
+        let claims_per_minute: f64 = number("TASK_API_CLAIMS_PER_MINUTE", 5.0)?;
+        if claims_per_minute.is_nan() || claims_per_minute <= 0.0 {
+            bail!("TASK_API_CLAIMS_PER_MINUTE must be above 0, not {claims_per_minute}");
+        }
         if key_uri.is_empty() && matches!(registry, RegistryMode::Chain { .. }) {
             bail!("TASK_API_KEY_URI must be set when TASK_API_REGISTRY=chain");
         }
@@ -169,7 +173,7 @@ impl Settings {
             claim_ttl: number("TASK_API_CLAIM_TTL", CLAIM_TTL_S as f64)?,
             embed_claim_ttl: number("TASK_API_EMBED_CLAIM_TTL", EMBED_CLAIM_TTL_S as f64)?,
             validation_ttl: number("TASK_API_VALIDATION_TTL", 900.0)?,
-            poll_rate: number("TASK_API_POLL_RATE", 0.5)?,
+            claims_per_minute,
             reads_per_minute: number("TASK_API_READS_PER_MINUTE", 120)?,
             log_reads_per_minute: number("TASK_API_LOG_READS_PER_MINUTE", 60)?,
             failed_writes_per_minute: number("TASK_API_FAILED_WRITES_PER_MINUTE", 30)?,
