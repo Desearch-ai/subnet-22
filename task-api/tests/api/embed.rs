@@ -180,22 +180,22 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
 async fn the_planner_gets_room_for_embed_inputs_apart_from_the_bots_crawl_room() {
     {
         let closed = Harness::start().await;
-        assert_eq!(closed.public("/v1/room?kind=embed").await.1["room_tasks"], 0, "no room while embed tasks are closed");
+        assert_eq!(closed.admin.get("/v1/room?kind=embed").await.unwrap()["room_tasks"], 0, "no room while embed tasks are closed");
     }
     let h = Harness::with(|s| {
         s.embed_tasks = true;
         s.embed_queue_target = 5;
     })
     .await;
-    assert_eq!(h.public("/v1/room?kind=embed").await.1["room_tasks"], 5);
+    assert_eq!(h.admin.get("/v1/room?kind=embed").await.unwrap()["room_tasks"], 5);
     let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, input().to_string()).await.unwrap();
-    assert_eq!(h.public("/v1/room?kind=embed").await.1["room_tasks"], 4, "a waiting input takes room");
+    assert_eq!(h.admin.get("/v1/room?kind=embed").await.unwrap()["room_tasks"], 4, "a waiting input takes room");
     lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
-    let unrevealed = h.public("/v1/room?kind=embed").await.1;
+    let unrevealed = h.admin.get("/v1/room?kind=embed").await.unwrap();
     assert_eq!((unrevealed["room_tasks"].clone(), unrevealed["unrevealed"].clone()), (json!(4), json!(1)));
-    assert_eq!(h.public("/v1/room").await.1["unrevealed"], 0, "embed rounds take none of the crawl room");
+    assert_eq!(h.admin.get("/v1/room").await.unwrap()["unrevealed"], 0, "embed rounds take none of the crawl room");
     h.revealed().await;
-    let queued = h.public("/v1/room?kind=embed").await.1;
+    let queued = h.admin.get("/v1/room?kind=embed").await.unwrap();
     assert_eq!((queued["room_tasks"].clone(), queued["queue"].clone()), (json!(4), json!(1)));
 }
 
@@ -655,9 +655,9 @@ async fn the_planner_s_room_leaves_out_embed_uploads_awaiting_a_verdict() {
     embed_round(&h, input()).await;
     let task = task_id(&embed_task(&h, &h.miner).await);
     h.opened(Some(&h.validator), Some(&task)).await;
-    let waiting = h.public("/v1/room?kind=embed").await.1;
+    let waiting = h.admin.get("/v1/room?kind=embed").await.unwrap();
     assert_eq!((waiting["awaiting_verdict"].clone(), waiting["queue"].clone(), waiting["room_tasks"].clone()), (json!(1), json!(0), json!(4)));
     score(&h, &task, embed_score("pass", "matched", "ok")).await;
-    let decided = h.public("/v1/room?kind=embed").await.1;
+    let decided = h.admin.get("/v1/room?kind=embed").await.unwrap();
     assert_eq!((decided["awaiting_verdict"].clone(), decided["room_tasks"].clone()), (json!(0), json!(5)));
 }

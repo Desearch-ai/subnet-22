@@ -12,6 +12,7 @@ use arrow_array::{ArrayRef, Int32Array, LargeStringArray, RecordBatch, StringArr
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use desearch::feeds::{Feed, BULK, CHANGES};
+use desearch::hotkey::{auth_headers, Hotkey};
 use desearch::r2::{self, Bucket, PARQUET};
 use desearch::time::utc_day;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
@@ -693,21 +694,28 @@ fn number<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
 
 /// Where the planner learns how many inputs the task API takes now.
 pub enum Room {
-    Api { url: String, http: reqwest::Client },
+    Api { url: String, path: String, key: Box<Hotkey>, http: reqwest::Client },
     Fixed(i64),
 }
 
 impl Room {
-    pub fn api(task_api: &str) -> Result<Room> {
+    pub fn api(task_api: &str, key: Hotkey) -> Result<Room> {
         let http = reqwest::Client::builder().timeout(ROOM_TIMEOUT).user_agent("desearch-planner").build()?;
-        Ok(Room::Api { url: format!("{}/v1/room?kind=embed", task_api.trim_end_matches('/')), http })
+        let url = format!("{}/v1/room?kind=embed", task_api.trim_end_matches('/'));
+        let path = reqwest::Url::parse(&url).with_context(|| format!("{url} is not a URL"))?.path().to_string();
+        Ok(Room::Api { url, path, key: Box::new(key), http })
     }
 
     async fn tasks(&self) -> Result<i64> {
         match self {
             Room::Fixed(room) => Ok(*room),
-            Room::Api { url, http } => {
-                let answer: Value = serde_json::from_slice(&http.get(url).send().await?.error_for_status()?.bytes().await?)?;
+            Room::Api { url, path, key, http } => {
+                let nonce = uuid::Uuid::new_v4().simple().to_string();
+                let mut request = http.get(url);
+                for (name, value) in auth_headers(key, "GET", path, b"", desearch::time::now() as i64, &nonce) {
+                    request = request.header(name, value);
+                }
+                let answer: Value = serde_json::from_slice(&request.send().await?.error_for_status()?.bytes().await?)?;
                 answer["room_tasks"].as_i64().ok_or_else(|| anyhow!("{url} answered without room_tasks"))
             }
         }

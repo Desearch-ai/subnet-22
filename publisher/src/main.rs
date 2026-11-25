@@ -265,8 +265,10 @@ async fn plan() -> Result<()> {
     let redis_url = std::env::var("TASK_API_REDIS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "redis://localhost:6379/15".into());
     let redis = redis::Client::open(redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
     let task_api = std::env::var("TASK_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "https://api-22.desearch.ai".into());
+    let key_uri = std::env::var("PLANNER_KEY_URI").ok().filter(|v| !v.is_empty()).context("PLANNER_KEY_URI must name the admin key the planner signs its room requests with")?;
+    let key = desearch::hotkey::Hotkey::from_uri(&key_uri).context("reading PLANNER_KEY_URI")?;
     let current = if settings.backfill { Some(current_bucket(&pages).await?) } else { None };
-    let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api)?).await?;
+    let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api, key)?).await?;
     planner.current = current;
     println!(
         "planning {} texts after change file {}, at most {} pages an hour and {} bulk pages an hour, inputs of {} pages, room from {task_api}",

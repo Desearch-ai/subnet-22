@@ -854,6 +854,7 @@ def _recording_miner(api: ScriptedApi, settings: Settings, pause: float = 0.0):
 
 
 def test_an_unexpected_poll_error_backs_off_and_keeps_leasing(monkeypatch, caplog):
+    monkeypatch.setattr(miner_script, "CLAIM_GAP_S", 0.0)
     monkeypatch.setattr(miner_script, "ERROR_BACKOFF", 0.01)
     monkeypatch.setitem(miner_script.BACKOFF, "QUEUE_EMPTY", 0.01)
     api = ScriptedApi(
@@ -891,7 +892,36 @@ def test_a_refused_miner_waits_as_long_as_the_api_asks(refusal, wait):
     assert asyncio.run(miner.poll()) == wait
 
 
+def test_claims_are_spaced_by_the_claim_gap_even_when_each_one_brings_tasks(
+    monkeypatch,
+):
+    monkeypatch.setattr(miner_script, "CLAIM_GAP_S", 0.2)
+    task = {"tasks": [{"task_id": "t", "urls": [], "upload": {}}]}
+    api = ScriptedApi(then=task)
+    claimed_at: list[float] = []
+    post = api.post
+
+    async def timed(path: str, body: dict | None = None) -> dict:
+        claimed_at.append(time.monotonic())
+        return await post(path, body)
+
+    api.post = timed
+    miner, _ = _recording_miner(api, Settings(max_tasks=100))
+
+    async def scenario() -> None:
+        running = asyncio.create_task(miner.run())
+        await asyncio.sleep(0.5)
+        miner.stop()
+        await asyncio.wait_for(running, 5)
+
+    asyncio.run(scenario())
+
+    assert 2 <= len(claimed_at) <= 3
+    assert all(b - a >= 0.19 for a, b in zip(claimed_at, claimed_at[1:]))
+
+
 def test_in_flight_work_is_finalized_when_every_later_poll_breaks(monkeypatch):
+    monkeypatch.setattr(miner_script, "CLAIM_GAP_S", 0.0)
     monkeypatch.setattr(miner_script, "ERROR_BACKOFF", 0.01)
     api = ScriptedApi(
         {"tasks": [{"task_id": "t-held", "urls": [], "upload": {}}]},

@@ -10,6 +10,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use bytes::Bytes;
 use desearch::feeds::{BULK, CHANGES};
+use desearch::hotkey::Hotkey;
 use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -2160,11 +2161,16 @@ async fn room_api(room: Arc<std::sync::atomic::AtomicI64>, slow: Arc<AtomicU64>,
                 }
             }
             asked.fetch_add(1, SeqCst);
+            let signed = String::from_utf8_lossy(&request).to_ascii_lowercase().contains("\r\nx-signature: ");
             if slow.fetch_update(SeqCst, SeqCst, |left| left.checked_sub(1)).is_ok() {
                 tokio::time::sleep(Duration::from_millis(2_500)).await;
             }
             let room = room.load(SeqCst);
-            let (status, body) = if room < 0 { ("503 Service Unavailable", String::new()) } else { ("200 OK", json!({"room_tasks": room}).to_string()) };
+            let (status, body) = match (signed, room) {
+                (false, _) => ("401 Unauthorized", String::new()),
+                (true, room) if room < 0 => ("503 Service Unavailable", String::new()),
+                (true, room) => ("200 OK", json!({"room_tasks": room}).to_string()),
+            };
             let answer = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
             let _ = socket.write_all(answer.as_bytes()).await;
         }
@@ -2197,7 +2203,7 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
         (one.pages_per_input, one.max_pending) = (1, 50);
         one
     };
-    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api, Hotkey::from_uri("//planner-test").unwrap()).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.inputs, asked.load(SeqCst)),
@@ -2215,7 +2221,7 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
 
     room.store(-1, SeqCst);
     log(&pages, 2, old("s", 10)).await;
-    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api, Hotkey::from_uri("//planner-test").unwrap()).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (10, 9), "a failed answer holds inputs too: asked at the start and the end, each time thrice");
     assert_eq!(planner.state.pending().unwrap().len(), 19);
@@ -2224,7 +2230,7 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
     room.store(100, SeqCst);
     slow.store(1, SeqCst);
     log(&pages, 3, old("t", 10)).await;
-    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api, Hotkey::from_uri("//planner-test").unwrap()).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.handed_over, asked.load(SeqCst)),
@@ -2575,7 +2581,7 @@ async fn inputs_held_back_only_by_the_pace_are_offered_again_at_once_not_after_t
     let api = room_api(room, slow, asked.clone()).await;
     let mut serving = settings(dir.join("state"), 36.0, 0);
     (serving.fresh, serving.budget_at_start) = (None, Duration::ZERO);
-    let mut planner = Planner::new(serving, pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    let mut planner = Planner::new(serving, pages.clone(), temp.clone(), redis.clone(), Room::api(&api, Hotkey::from_uri("//planner-test").unwrap()).unwrap()).await.unwrap();
     for _ in 0..4 {
         planner.pass().await.unwrap();
     }
@@ -4741,7 +4747,7 @@ async fn a_failed_room_question_is_asked_again_at_once_and_a_full_rest_lane_hold
     let api = room_api(room.clone(), slow, asked.clone()).await;
     let mut held = settings(dir.join("state"), 3600.0, 0);
     (held.pages_per_input, held.max_pending, held.fresh) = (1, 2, None);
-    let mut planner = Planner::new(held, pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    let mut planner = Planner::new(held, pages.clone(), temp.clone(), redis.clone(), Room::api(&api, Hotkey::from_uri("//planner-test").unwrap()).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.inputs, planner.counts.no_room, planner.counts.log_held, planner.read_through()),

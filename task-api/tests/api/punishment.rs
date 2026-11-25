@@ -170,13 +170,13 @@ async fn a_stopped_publisher_holds_back_the_queue_only_once_its_oldest_job_passe
     for n in 0..250 {
         let _: i64 = h.redis.clone().zadd(PPENDING, format!("waiting-{n}"), now - 60.0).await.unwrap();
     }
-    let room = h.public("/v1/room").await.1;
+    let room = h.admin.get("/v1/room").await.unwrap();
     assert!(room["room_tasks"].as_i64().unwrap() > 0 && room["refusing"] == json!(false));
     assert!(room["in_system"].as_i64().unwrap() >= 250);
     assert!(!h.miner.claim().await["tasks"].as_array().unwrap().is_empty(), "250 jobs waiting to be published do not stop claims");
 
     let _: i64 = h.redis.clone().zadd(PPENDING, "waiting-0", now - 601.0).await.unwrap();
-    let room = h.public("/v1/room").await.1;
+    let room = h.admin.get("/v1/room").await.unwrap();
     assert_eq!((room["room_tasks"].clone(), room["refusing"].clone()), (json!(0), json!(true)));
     let claim = h.miner.claim().await;
     assert_eq!((claim["tasks"].clone(), claim["refusal"]["code"].clone()), (json!([]), json!("VALIDATION_BACKLOG")));

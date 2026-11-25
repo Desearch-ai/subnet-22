@@ -20,6 +20,7 @@ pub mod outcomes;
 pub mod proofs;
 pub mod py;
 pub mod queues;
+pub mod records;
 pub mod reference;
 pub mod registry;
 pub mod roundlog;

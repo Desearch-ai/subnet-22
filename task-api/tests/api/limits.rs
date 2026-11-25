@@ -21,8 +21,7 @@ async fn a_claim_while_redis_is_down_finds_no_tasks_and_anything_else_is_asked_t
     assert!(answer["refusal"]["inputs"]["retry_after"].as_f64().unwrap() > 0.0);
     let refused = h.miner.post("/v1/tasks/0123456789abcdef/abandon", json!({})).await.unwrap_err();
     assert_eq!(refused.status, 503);
-    let (status, _) = h.public("/v1/room").await;
-    assert_eq!(status, 503);
+    assert_eq!(h.admin.get("/v1/room").await.unwrap_err().status, 503);
     h.proxy.restore();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while h.miner.claim().await["tasks"].as_array().is_none_or(Vec::is_empty) {
@@ -183,19 +182,65 @@ async fn head_requests_count_against_the_read_limit() {
     let h = Harness::with(|s| s.reads_per_minute = 3).await;
     let mut statuses = Vec::new();
     for _ in 0..4 {
-        statuses.push(h.http.head(format!("{}/v1/room", h.url)).send().await.unwrap().status().as_u16());
+        statuses.push(h.http.head(format!("{}/v1/ping", h.url)).send().await.unwrap().status().as_u16());
     }
     assert_eq!(statuses, [200, 200, 200, 429]);
 }
 
 #[tokio::test]
-async fn a_claim_over_its_poll_rate_is_refused_before_its_nonce_is_stored() {
-    let h = Harness::with(|s| s.poll_rate = 0.1).await;
+async fn a_claim_within_its_gap_is_refused_before_its_nonce_is_stored() {
+    let h = Harness::with(|s| s.claims_per_minute = 5.0).await;
     h.enqueue(urls(6)).await;
     assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
     let refused = h.miner.claim().await;
     assert_eq!(refused["refusal"]["code"], "RATE_LIMITED");
-    assert!(refused["refusal"]["inputs"]["retry_after"].as_f64().unwrap() > 0.0);
+    assert_eq!(refused["refusal"]["inputs"]["per_minute"], 5.0);
+    assert_eq!(refused["refusal"]["inputs"]["retry_after"], 30.0, "an early claim waits 30 s from then");
     let nonces: Vec<String> = h.redis.clone().keys(format!("nonce:{}:*", h.miner.ss58())).await.unwrap();
     assert_eq!(nonces.len(), 1);
+}
+
+#[tokio::test]
+async fn a_hotkey_that_sends_a_burst_of_claims_gets_none_in_the_next_window() {
+    let h = Harness::with(|s| s.claims_per_minute = 150.0).await;
+    h.enqueue(urls(12)).await;
+    let burst = || async { futures::future::join_all((0..10).map(|_| h.miner.claim())).await };
+    let issued = |answers: &[Value]| answers.iter().filter(|a| a["refusal"].is_null()).count();
+    assert_eq!(issued(&burst().await), 1);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let next = burst().await;
+    assert_eq!(issued(&next), 0, "the window after a burst gives that hotkey nothing");
+    assert!(next.iter().all(|a| a["refusal"]["inputs"]["retry_after"] == 30.0));
+    assert_eq!(h.rival.claim().await["tasks"].as_array().unwrap().len(), 1, "each hotkey has its own wait");
+}
+
+#[tokio::test]
+async fn the_room_answers_only_a_signed_admin() {
+    let h = Harness::start().await;
+    assert_eq!(h.public("/v1/room").await.0, 401);
+    assert_eq!(h.miner.get("/v1/room").await.unwrap_err().status, 403);
+    assert_eq!(h.validator.get("/v1/room?kind=embed").await.unwrap_err().status, 403);
+    assert!(h.admin.get("/v1/room").await.unwrap()["room_tasks"].is_i64());
+}
+
+#[tokio::test]
+async fn of_ten_claims_one_hotkey_sends_at_once_one_goes_through() {
+    let h = Harness::with(|s| s.claims_per_minute = 5.0).await;
+    h.enqueue(urls(6)).await;
+    let answers = futures::future::join_all((0..10).map(|_| h.miner.claim())).await;
+    let codes: Vec<&str> = answers.iter().map(|a| a["refusal"]["code"].as_str().unwrap_or("issued")).collect();
+    assert_eq!(codes.iter().filter(|c| **c == "issued").count(), 1, "{codes:?}");
+    assert_eq!(codes.iter().filter(|c| **c == "RATE_LIMITED").count(), 9, "{codes:?}");
+}
+
+#[tokio::test]
+async fn a_hotkey_waits_for_crawl_and_embed_claims_apart() {
+    let h = Harness::with(|s| s.claims_per_minute = 5.0).await;
+    let code = |answer: Value| answer["refusal"]["code"].clone();
+    assert_eq!(code(h.miner.claim().await), "QUEUE_EMPTY");
+    let embed = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap();
+    assert_ne!(code(embed.clone()), "RATE_LIMITED", "the embed miner on the same hotkey claims apart: {embed}");
+    let again = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap();
+    assert_eq!(code(again), "RATE_LIMITED");
+    assert_eq!(code(h.miner.claim().await), "RATE_LIMITED");
 }

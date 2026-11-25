@@ -73,8 +73,10 @@ Your budget is how many tasks you may crawl at once.
 - It starts at 1, grows by half (at least one) for each task paid for at least 85% of its URLs, up
   to 100, and halves when a task fails, a claim expires or you hand a task back.
 - Up to twice your budget in uploads may wait for a verdict while you keep crawling.
-- One claim returns as many tasks as you ask for and your budget allows; ask at most once every
-  2 seconds.
+- One claim returns as many tasks as you ask for and your budget allows. Each hotkey may claim each
+  kind of task once every 12 seconds (5 claims a minute), so the crawl and embed miners on one hotkey
+  claim apart. A hotkey that sends claims of a kind more often is refused with `RATE_LIMITED` and
+  blocked from that kind for 30 seconds; wait the seconds in `retry_after` before claiming.
 
 A strike is a failure you caused, or a claim that expired or you handed back; claims that lapse
 within 5 minutes of each other count as one. Two strikes within 24 hours, if they are at least 5% of
