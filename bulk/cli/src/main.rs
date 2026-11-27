@@ -71,6 +71,10 @@ enum Command {
     PubchemFetch(bulk_pubchem::FetchArgs),
     /// UniProtKB/Swiss-Prot reviewed entries, from the release's XML.
     Uniprot(bulk_uniprot::Args),
+    /// A Stack Exchange site's questions with their accepted and best answers, from its data dump.
+    Stackexchange(bulk_stackexchange::Args),
+    /// The page counts and body sizes of a Stack Exchange site's cuts by score.
+    StackexchangeSizes(bulk_stackexchange::SizesArgs),
     /// Save the newest MedlinePlus topics XML and the Genetics summaries.
     MedlineplusFetch(bulk_medlineplus::FetchArgs),
     /// Save the US Code's current release point.
@@ -119,6 +123,8 @@ fn main() -> anyhow::Result<()> {
         Command::Pubchem(args) => bulk_pubchem::main(args),
         Command::PubchemFetch(args) => bulk_pubchem::fetch_main(args),
         Command::Uniprot(args) => bulk_uniprot::main(args),
+        Command::Stackexchange(args) => bulk_stackexchange::main(args),
+        Command::StackexchangeSizes(args) => bulk_stackexchange::sizes_main(args),
         Command::MedlineplusFetch(args) => bulk_medlineplus::fetch_main(args),
         Command::UscodeFetch(args) => bulk_uscode::fetch_main(args),
         Command::EcfrFetch(args) => bulk_ecfr::fetch_main(args),

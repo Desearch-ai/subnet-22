@@ -1,0 +1,17 @@
+[package]
+name = "bulk-stackexchange"
+description = "Stack Exchange data dumps as a page per question, with its accepted and best answers, at the site's question address"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bulk-core.workspace = true
+clap.workspace = true
+quick-xml = "0.41"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

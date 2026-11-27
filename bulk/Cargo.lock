@@ -421,6 +421,7 @@ dependencies = [
  "bulk-pmc",
  "bulk-pubchem",
  "bulk-pubmed",
+ "bulk-stackexchange",
  "bulk-uniprot",
  "bulk-uscode",
  "bulk-wikipedia",
@@ -689,6 +690,18 @@ dependencies = [
  "reqwest",
  "roxmltree",
  "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bulk-stackexchange"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bulk-core",
+ "clap",
+ "quick-xml",
  "serde_json",
  "tempfile",
 ]
