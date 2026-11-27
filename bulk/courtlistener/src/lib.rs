@@ -427,6 +427,9 @@ pub struct Args {
     /// Close a run every this many pages and start the next in its own subfolder, `<out>/0001` as run `<run>-0001`; 0 for one run.
     #[arg(long = "part-pages", default_value_t = 0)]
     pub part_pages: u64,
+    /// Opinion text a case needs at least, so one-line orders make no page; the must-have tier is taken whatever its length.
+    #[arg(long = "min-chars", default_value_t = 500)]
+    pub min_chars: usize,
     /// The opinions dump the index was made from, decompressed (`-` for stdin).
     pub opinions: PathBuf,
 }
@@ -555,7 +558,7 @@ pub fn run(args: &Args, batches: &mut Parts) -> Result<Counts> {
         }
         let held = pending.remove(&cluster_id).unwrap_or_default();
         let case = cases.remove(&cluster_id).expect("a pending case");
-        emit(&case, held, batches, as_of_us, &mut counts)?;
+        emit(&case, held, args.min_chars, batches, as_of_us, &mut counts)?;
         if args.run.limit > 0 && counts.get("pages") >= args.run.limit {
             return Ok(counts);
         }
@@ -566,14 +569,19 @@ pub fn run(args: &Args, batches: &mut Parts) -> Result<Counts> {
         let held = pending.remove(&cluster_id).unwrap_or_default();
         if let Some(case) = cases.remove(&cluster_id) {
             counts.add(if case.opinions == 0 { "uncounted" } else { "incomplete" }, 1);
-            emit(&case, held, batches, as_of_us, &mut counts)?;
+            emit(&case, held, args.min_chars, batches, as_of_us, &mut counts)?;
         }
     }
     counts.add("missing", cases.len() as u64);
     Ok(counts)
 }
 
-fn emit(case: &Case, opinions: Vec<Opinion>, batches: &mut Parts, as_of_us: i64, counts: &mut Counts) -> Result<()> {
+fn emit(case: &Case, opinions: Vec<Opinion>, min_chars: usize, batches: &mut Parts, as_of_us: i64, counts: &mut Counts) -> Result<()> {
+    let chars: usize = opinions.iter().flat_map(|o| &o.paragraphs).map(|p| p.chars().count()).sum();
+    if chars < min_chars && case.tier != TIER_MUST {
+        counts.add(if chars == 0 { "empty" } else { "short" }, 1);
+        return Ok(());
+    }
     match page_of(case, opinions) {
         Some(page) => {
             batches.add(upload_row(&case.url(), page, as_of_us, CONTENT_TYPE))?;
@@ -691,6 +699,7 @@ mod tests {
             skip: 0,
             take: 0,
             part_pages: 0,
+            min_chars: 5,
             opinions: dump,
         };
         let mut parts = Parts::new(&args.run, 0).unwrap();
