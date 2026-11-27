@@ -66,6 +66,9 @@ pub struct CutArgs {
     /// Questions scored at least this.
     #[arg(long, default_value_t = 3)]
     pub min_score: i32,
+    /// Questions scored below this only, for a run of one score band; no bound when not given.
+    #[arg(long)]
+    pub below_score: Option<i32>,
     /// Questions without an accepted answer or an answer scored 1 or more too.
     #[arg(long)]
     pub unanswered: bool,
@@ -362,7 +365,9 @@ pub fn chosen(question: &QuestionStats, answers: &[AnswerStats], most: usize, mi
 
 /// Whether the question is in the cut, given the answers its page would hold.
 pub fn in_cut(question: &QuestionStats, answers: &[AnswerStats], cut: &CutArgs) -> bool {
-    question.score >= cut.min_score && (cut.unanswered || answers.iter().any(|a| a.id == question.accepted || a.score >= 1))
+    question.score >= cut.min_score
+        && cut.below_score.is_none_or(|below| question.score < below)
+        && (cut.unanswered || answers.iter().any(|a| a.id == question.accepted || a.score >= 1))
 }
 
 fn ids_file(path: &Path) -> Result<HashSet<u32>> {
@@ -653,7 +658,7 @@ pub fn sizes(args: &SizesArgs) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     for unanswered in [false, true] {
         for min_score in [0, 1, 2, 3, 5, 10, 25] {
-            let cut = CutArgs { min_score, unanswered, answers: args.answers, min_answer_score: args.min_answer_score };
+            let cut = CutArgs { min_score, below_score: None, unanswered, answers: args.answers, min_answer_score: args.min_answer_score };
             let (mut pages, mut answers, mut bytes) = (0u64, 0u64, 0u64);
             for q in &skeleton.questions {
                 let picked = chosen(q, by_question.get(&q.id).unwrap_or(&none), cut.answers, cut.min_answer_score);
@@ -715,7 +720,7 @@ mod tests {
         Args {
             run: RunArgs { out: dir.join(out), as_of: "2024-04-01T00:00:00Z".into(), run: "20240401-stackoverflow".into(), limit: 0 },
             site: site(dir),
-            cut: CutArgs { min_score: 3, unanswered: false, answers: 3, min_answer_score: 1 },
+            cut: CutArgs { min_score: 3, below_score: None, unanswered: false, answers: 3, min_answer_score: 1 },
             include_ids: None,
             only_included: false,
             skip_ids: None,
@@ -785,6 +790,14 @@ mod tests {
             "How do I sort a dict by value?\nHow do I `sort` a dict & keep it?\nTags: python, dictionary\n## Accepted answer\n```\nsorted(d.items())\n```\nSource: Stack Overflow, https://stackoverflow.com/questions/1/how-do-i-sort-a-dict-by-value. Question by Jane Doe (https://stackoverflow.com/users/7/jane-doe). Answer by gone user. Licensed under CC BY-SA 3.0, CC BY-SA 4.0."
         );
         assert_eq!(page.headings, vec!["Accepted answer"]);
+    }
+
+    #[test]
+    fn score_band() {
+        let q = QuestionStats { id: 1, score: 5, accepted: 2, body_len: 0 };
+        let a = [AnswerStats { id: 2, parent: 1, score: 0, body_len: 0 }];
+        let band = |min_score, below_score| in_cut(&q, &a, &CutArgs { min_score, below_score, unanswered: false, answers: 3, min_answer_score: 1 });
+        assert!(band(3, None) && band(5, Some(10)) && !band(0, Some(5)) && !band(6, None));
     }
 
     #[test]
