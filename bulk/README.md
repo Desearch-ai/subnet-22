@@ -94,6 +94,7 @@ where it left off: `published.txt` in the run folder lists the batch files alrea
 | `uniprot` | UniProtKB/Swiss-Prot's release XML | one per reviewed entry | reviewed entries only |
 | `pubchem` | PUG-View's Record Description annotations | one per compound | descriptions from sources whose terms allow reuse, each credited |
 | `gutenberg` | the plain-text archive and catalog | one per book, its opening | English, public domain in the USA, without the licence or the project's name in the text |
+| `stackexchange` | a site's archive from the Stack Exchange data dump | one per question at its question address, with the accepted answer and the best scored, up to 3 | questions from `--min-score` (3) with an accepted answer or an answer scored 1 or more, and every question `--include-ids` names |
 
 `pmc-order` lists the newest version of every PMC article, most cited per year since publication first, by
 OpenAlex's citation counts (joined by PMID through NCBI's PMCID table), so a run fed slices of that list embeds the
@@ -104,7 +105,7 @@ matches a crawl of the live page. Hidden categories come from the category-names
 `wikipedia-redirects` writes the run's `redirects.tsv`: each redirect title's URL with the URL of the run's page it
 leads to, for the router to find an article by an old or other title.
 
-Sources carry their own terms: Wikimedia content is CC BY-SA (credit, link, license), PMC asks users to credit NLM
+Sources carry their own terms: Stack Exchange posts are CC BY-SA and each page ends with its site, its question address and every author linked to their profile, as the dump's licence asks; Wikimedia content is CC BY-SA (credit, link, license), PMC asks users to credit NLM
 as the source, and an arXiv full text keeps its paper's CC licence (credit the authors, link the paper).
 
 ## Refresh
