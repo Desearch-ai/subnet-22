@@ -16,6 +16,7 @@ bulk-arxiv.workspace = true
 bulk-arxiv-text.workspace = true
 bulk-bittensor.workspace = true
 bulk-core.workspace = true
+bulk-courtlistener.workspace = true
 bulk-ctgov.workspace = true
 bulk-dailymed.workspace = true
 bulk-ecfr.workspace = true

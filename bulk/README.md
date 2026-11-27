@@ -51,6 +51,9 @@ bulk arxiv --out runs/arxiv-1027 --as-of 2026-10-27T00:00:00Z oai/*.xml
 bulk arxiv-text --out runs/arxiv-text-1110 --as-of 2024-09-04T00:00:00Z --oai oai *_arxiv-papers.jsonl.gz
 bulk hidden-categories enwiki_namespace_14.tar.gz > hidden.txt
 bulk wikipedia --out runs/enwiki-1101 --as-of 2026-11-01T00:00:00Z --hidden hidden.txt enwiki_namespace_0.tar.gz
+lbzip2 -dc opinions-2026-09-30.csv.bz2 | bulk courtlistener-opinions --out opinions-index.tsv -
+bulk courtlistener-cases --courts courts.csv --clusters opinion-clusters.csv --dockets dockets.csv --citations citations.csv --opinions opinions-index.tsv --must must.txt --out cases.jsonl
+lbzip2 -dc opinions-2026-09-30.csv.bz2 | bulk courtlistener --out runs/cl-0930 --as-of 2026-09-30T00:00:00Z --cases cases.jsonl --tiers 0,1,2,3 --part-pages 200000 -
 ```
 
 The shared extraction runs in Python: `bulk wikipedia`, `medlineplus`, `eurlex`, `subnet-sites`, `subnet-github`,
@@ -93,6 +96,7 @@ where it left off: `published.txt` in the run folder lists the batch files alrea
 | `uniprot` | UniProtKB/Swiss-Prot's release XML | one per reviewed entry | reviewed entries only |
 | `pubchem` | PUG-View's Record Description annotations | one per compound | descriptions from sources whose terms allow reuse, each credited |
 | `gutenberg` | the plain-text archive and catalog | one per book, its opening | English, public domain in the USA, without the licence or the project's name in the text |
+| `courtlistener` | CourtListener's quarterly opinions dump, with the cases file `courtlistener-cases` builds from its clusters, dockets, courts and citations dumps | one per opinion cluster at its courtlistener.com address, its opinions in order under their headings | clusters and dockets not blocked; tiers by value: a must-have list, the Supreme Court, published federal appellate and state supreme court opinions, then by citations |
 
 `pmc-order` lists the newest version of every PMC article, most cited per year since publication first, by
 OpenAlex's citation counts (joined by PMID through NCBI's PMCID table), so a run fed slices of that list embeds the

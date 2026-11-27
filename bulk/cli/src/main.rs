@@ -41,6 +41,12 @@ enum Command {
     SubnetGithub(bulk_bittensor::GithubArgs),
     /// Save the subnets' chain identities, websites and READMEs for `subnets`, `subnet-sites` and `subnet-github`.
     BittensorFetch(bulk_bittensor::fetch::FetchArgs),
+    /// CourtListener's court opinions, a page per opinion cluster, from the opinions dump and the cases file.
+    Courtlistener(bulk_courtlistener::Args),
+    /// The cases file: CourtListener's opinion clusters with their courts, dockets and citations, best tier first.
+    CourtlistenerCases(bulk_courtlistener::CasesArgs),
+    /// Index CourtListener's opinions dump by cluster.
+    CourtlistenerOpinions(bulk_courtlistener::OpinionsArgs),
     /// ClinicalTrials.gov, a page per study, from the all-studies JSON zip.
     Ctgov(bulk_ctgov::Args),
     /// DailyMed's human prescription and OTC drug labels, from its full release zips.
@@ -102,6 +108,9 @@ fn main() -> anyhow::Result<()> {
         Command::SubnetSites(args) => bulk_bittensor::sites_main(args),
         Command::SubnetGithub(args) => bulk_bittensor::github_main(args),
         Command::BittensorFetch(args) => bulk_bittensor::fetch::main(args),
+        Command::Courtlistener(args) => bulk_courtlistener::main(args),
+        Command::CourtlistenerCases(args) => bulk_courtlistener::cases_main(args),
+        Command::CourtlistenerOpinions(args) => bulk_courtlistener::opinions_main(args),
         Command::Ctgov(args) => bulk_ctgov::main(args),
         Command::Dailymed(args) => bulk_dailymed::main(args),
         Command::Ecfr(args) => bulk_ecfr::main(args),
