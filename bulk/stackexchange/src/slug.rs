@@ -30,11 +30,11 @@ fn ascii_of(c: char) -> &'static str {
     }
 }
 
-/// Stack Exchange's `URLFriendly`: ASCII letters and digits lowercased, separators as single dashes, accents folded, the first 81 characters read.
+/// Stack Exchange's `URLFriendly`: ASCII letters and digits lowercased, separators as single dashes, accents folded, the first 80 characters read.
 pub fn slug(title: &str) -> String {
     let mut out = String::with_capacity(title.len().min(MAX_CHARS + 8));
     let mut dash = false;
-    for (i, c) in title.chars().enumerate() {
+    for c in title.chars().take(MAX_CHARS) {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {
             out.push(c);
             dash = false;
@@ -52,9 +52,6 @@ pub fn slug(title: &str) -> String {
                 out.push_str(folded);
                 dash = false;
             }
-        }
-        if i == MAX_CHARS {
-            break;
         }
     }
     if dash {
@@ -79,6 +76,10 @@ mod tests {
             ),
             ("Café crème — naïve résumé", "cafe-creme-naive-resume"),
             ("C++ / C# ...", "c-c"),
+            (
+                "ffmpeg scaling: how to set scale so width and height don't exceed a certain amount?",
+                "ffmpeg-scaling-how-to-set-scale-so-width-and-height-dont-exceed-a-certain-amou",
+            ),
         ] {
             assert_eq!(slug(title), want, "{title}");
         }
